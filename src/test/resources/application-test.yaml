@@ -1,0 +1,8 @@
+# Perfil de tests. La base de datos la provee Testcontainers (@ServiceConnection).
+spring:
+  liquibase:
+    contexts: test
+
+app:
+  jwt:
+    secret: omniretail-test-secret-only-for-tests-32b

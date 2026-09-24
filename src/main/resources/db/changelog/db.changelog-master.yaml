@@ -1,0 +1,14 @@
+# Changelog maestro. NO agregar changesets aqui.
+#
+# Cada modulo agrega su propio archivo en `changes/`, que se ejecuta en orden alfabetico:
+#   001-tenants-branches.yaml, 002-users-roles-auth.yaml, 003-catalog-products.yaml, ...
+#   999-seed-data.yaml (semilla demo: marcar sus changesets con `context: dev`).
+#
+# Reglas:
+# - Un changeset ya aplicado (y subido a `development`) nunca se edita: se corrige con uno nuevo.
+# - id del changeset: <numero>-<descripcion>, author: usuario de GitHub.
+databaseChangeLog:
+  - includeAll:
+      path: db/changelog/changes/
+      endsWithFilter: .yaml
+      errorIfMissingOrEmpty: false

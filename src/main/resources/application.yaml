@@ -1,0 +1,56 @@
+# Configuracion base, comun a todos los perfiles.
+# Los valores sensibles o propios de cada maquina salen de variables de entorno / `.env`.
+spring:
+  application:
+    name: omniretail-backend
+
+  # Lee el `.env` de la raiz del proyecto si existe (mismo archivo que usa docker compose).
+  config:
+    import: optional:file:.env[.properties]
+
+  # Sin perfil explicito se asume desarrollo local. Produccion activa `prod` a proposito.
+  profiles:
+    default: dev
+
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:omniretail}
+    username: ${POSTGRES_USER:omniretail}
+    password: ${POSTGRES_PASSWORD:omniretail_dev}
+
+  jpa:
+    hibernate:
+      ddl-auto: validate # Liquibase administra el esquema; Hibernate solo valida.
+    open-in-view: false
+
+  liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+
+  threads:
+    virtual:
+      enabled: true
+
+server:
+  port: ${SERVER_PORT:8080}
+
+app:
+  api:
+    base-path: /api/v1
+  jwt:
+    secret: ${JWT_SECRET:}
+    issuer: omniretail-backend
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
+
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: method
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

@@ -1,0 +1,18 @@
+# Desarrollo local.
+spring:
+  jpa:
+    properties:
+      hibernate:
+        format_sql: true
+  liquibase:
+    contexts: dev # Incluye los changesets de semilla (context: dev).
+
+app:
+  jwt:
+    # Solo para desarrollo. Nunca usar este valor fuera de dev.
+    secret: ${JWT_SECRET:omniretail-dev-secret-change-me-min-32-chars!!}
+
+logging:
+  level:
+    com.omniretail: DEBUG
+    org.hibernate.SQL: DEBUG

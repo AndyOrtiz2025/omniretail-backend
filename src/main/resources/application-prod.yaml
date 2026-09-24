@@ -1,0 +1,18 @@
+# Produccion. Todo valor sensible viene de variables de entorno, sin defaults.
+spring:
+  liquibase:
+    contexts: prod # La semilla demo (context: dev) nunca se carga aqui.
+
+app:
+  jwt:
+    secret: ${JWT_SECRET} # Obligatoria: la app no arranca sin ella.
+
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+logging:
+  level:
+    com.omniretail: INFO

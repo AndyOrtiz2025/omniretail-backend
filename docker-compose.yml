@@ -1,0 +1,32 @@
+name: omniretail
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: omniretail-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-omniretail}
+      POSTGRES_USER: ${POSTGRES_USER:-omniretail}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-omniretail_dev}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-omniretail} -d ${POSTGRES_DB:-omniretail}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: omniretail-mailpit
+    ports:
+      - "${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+
+volumes:
+  pgdata:
