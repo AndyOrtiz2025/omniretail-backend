@@ -47,14 +47,19 @@ public class CurrentSessionService {
         if (user.getType() == UserType.employee && tenant.getStatus() != TenantStatus.active) {
             throw unauthenticated();
         }
+        // Employee sin rol activo no puede operar: 401. Customer sin rol es normal: role = null.
+        RoleView role = activeRole(user);
+        if (user.getType() == UserType.employee && role == null) {
+            throw unauthenticated();
+        }
         Session session = sessionRepository.findById(principal.sessionId())
                 .orElseThrow(CurrentSessionService::unauthenticated);
 
-        return new CurrentSessionResponse(UserView.from(user), activeRole(user), TenantView.from(tenant),
+        return new CurrentSessionResponse(UserView.from(user), role, TenantView.from(tenant),
                 SessionView.from(session));
     }
 
-    /** Solo si existe, es del mismo tenant y esta activo; si no, null (sin error). */
+    /** Solo si existe, es del mismo tenant y esta activo; si no, null. */
     private RoleView activeRole(User user) {
         if (user.getRoleId() == null) {
             return null;

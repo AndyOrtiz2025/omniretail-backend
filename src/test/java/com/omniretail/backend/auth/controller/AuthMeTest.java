@@ -1,5 +1,6 @@
 package com.omniretail.backend.auth.controller;
 
+import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -65,13 +66,28 @@ class AuthMeTest {
     void employeeWithActiveRoleGetsFullSnapshot() throws Exception {
         Tenant tenant = tenant(TenantStatus.active);
         Role role = role(tenant, RoleStatus.active, "admin.branches.read", "admin.branches.manage");
-        User user = user(tenant, UserType.employee, UserStatus.active, role);
+        UUID allowedBranch = UUID.randomUUID();
+        User user = User.builder()
+                .name("Empleado completo")
+                .email("user-" + UUID.randomUUID() + "@test.local")
+                .phone("5555-1234")
+                .employeeCode("EMP-" + UUID.randomUUID().toString().substring(0, 8))
+                .type(UserType.employee)
+                .roleId(role.getId())
+                .allowedBranchIds(List.of(allowedBranch))
+                .build();
+        user.setTenantId(tenant.getId());
+        user = userRepository.save(user);
         Session session = session(user, true);
 
         me(jwtService.generateToken(user, session))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.user.id").value(user.getId().toString()))
                 .andExpect(jsonPath("$.user.email").value(user.getEmail()))
+                .andExpect(jsonPath("$.user.phone").value("5555-1234"))
+                .andExpect(jsonPath("$.user.employeeCode").value(user.getEmployeeCode()))
+                .andExpect(jsonPath("$.user.customerId").doesNotExist())
+                .andExpect(jsonPath("$.user.allowedBranchIds", contains(allowedBranch.toString())))
                 .andExpect(jsonPath("$.user.type").value("employee"))
                 .andExpect(jsonPath("$.user.status").value("active"))
                 .andExpect(jsonPath("$.user.roleId").value(role.getId().toString()))
@@ -101,30 +117,57 @@ class AuthMeTest {
     }
 
     @Test
-    void archivedRoleIsReturnedAsNull() throws Exception {
+    void customerWithArchivedRoleGetsNullRole() throws Exception {
         Tenant tenant = tenant(TenantStatus.active);
-        User user = user(tenant, UserType.employee, UserStatus.active, role(tenant, RoleStatus.archived, "x.y"));
+        User customer = user(tenant, UserType.customer, UserStatus.active, role(tenant, RoleStatus.archived, "x.y"));
 
-        me(tokenFor(user))
+        me(tokenFor(customer))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.role").doesNotExist());
     }
 
     @Test
-    void roleFromAnotherTenantIsReturnedAsNull() throws Exception {
+    void nullAllowedBranchIdsAreReturnedAsEmptyList() throws Exception {
+        Tenant tenant = tenant(TenantStatus.active);
+        User customer = user(tenant, UserType.customer, UserStatus.active, null);
+
+        me(tokenFor(customer))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.user.allowedBranchIds").isArray())
+                .andExpect(jsonPath("$.user.allowedBranchIds").isEmpty());
+    }
+
+    @Test
+    void employeeWithoutRoleIsUnauthorized() throws Exception {
+        Tenant tenant = tenant(TenantStatus.active);
+        User user = user(tenant, UserType.employee, UserStatus.active, null);
+
+        me(tokenFor(user))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
+    }
+
+    @Test
+    void employeeWithArchivedRoleIsUnauthorized() throws Exception {
+        Tenant tenant = tenant(TenantStatus.active);
+        User user = user(tenant, UserType.employee, UserStatus.active, role(tenant, RoleStatus.archived, "x.y"));
+
+        me(tokenFor(user)).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void employeeWithRoleFromAnotherTenantIsUnauthorized() throws Exception {
         Tenant tenant = tenant(TenantStatus.active);
         Role foreignRole = role(tenant(TenantStatus.active), RoleStatus.active, "x.y");
         User user = user(tenant, UserType.employee, UserStatus.active, foreignRole);
 
-        me(tokenFor(user))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.role").doesNotExist());
+        me(tokenFor(user)).andExpect(status().isUnauthorized());
     }
 
     @Test
     void inactiveUserIsUnauthorized() throws Exception {
         Tenant tenant = tenant(TenantStatus.active);
-        User user = user(tenant, UserType.employee, UserStatus.inactive, null);
+        User user = user(tenant, UserType.employee, UserStatus.inactive, role(tenant, RoleStatus.active, "x.y"));
 
         me(tokenFor(user))
                 .andExpect(status().isUnauthorized())
@@ -134,7 +177,7 @@ class AuthMeTest {
     @Test
     void employeeOfInactiveTenantIsUnauthorized() throws Exception {
         Tenant tenant = tenant(TenantStatus.inactive);
-        User user = user(tenant, UserType.employee, UserStatus.active, null);
+        User user = user(tenant, UserType.employee, UserStatus.active, role(tenant, RoleStatus.active, "x.y"));
 
         me(tokenFor(user)).andExpect(status().isUnauthorized());
     }
@@ -147,7 +190,7 @@ class AuthMeTest {
     @Test
     void afterLogoutIsUnauthorized() throws Exception {
         Tenant tenant = tenant(TenantStatus.active);
-        String token = tokenFor(user(tenant, UserType.employee, UserStatus.active, null));
+        String token = tokenFor(user(tenant, UserType.employee, UserStatus.active, role(tenant, RoleStatus.active, "x.y")));
 
         me(token).andExpect(status().isOk());
         mockMvc.perform(post(LOGOUT).header("Authorization", "Bearer " + token)).andExpect(status().isNoContent());

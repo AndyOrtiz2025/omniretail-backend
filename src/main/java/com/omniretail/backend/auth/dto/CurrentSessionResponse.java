@@ -15,21 +15,27 @@ import java.util.UUID;
 /** Respuesta de {@code GET /auth/me}. Nunca incluye el hash de la contrasena ni datos de auth_accounts. */
 public record CurrentSessionResponse(UserView user, RoleView role, TenantView tenant, SessionView session) {
 
+    /** Mismos campos que User.ts del frontend. {@code allowedBranchIds} nunca es null. */
     public record UserView(
-            UUID id, String name, String email, UserType type, UserStatus status,
-            UUID tenantId, UUID roleId, UUID branchId) {
+            UUID id, String name, String email, String phone, UserType type, UserStatus status,
+            UUID tenantId, UUID customerId, String employeeCode, UUID roleId, UUID branchId,
+            List<UUID> allowedBranchIds) {
 
         public static UserView from(User user) {
-            return new UserView(user.getId(), user.getName(), user.getEmail(), user.getType(), user.getStatus(),
-                    user.getTenantId(), user.getRoleId(), user.getBranchId());
+            List<UUID> allowedBranchIds = user.getAllowedBranchIds() != null
+                    ? List.copyOf(user.getAllowedBranchIds())
+                    : List.of();
+            return new UserView(user.getId(), user.getName(), user.getEmail(), user.getPhone(), user.getType(),
+                    user.getStatus(), user.getTenantId(), user.getCustomerId(), user.getEmployeeCode(),
+                    user.getRoleId(), user.getBranchId(), allowedBranchIds);
         }
     }
 
     public record RoleView(UUID id, String name, List<String> permissions, BranchScope branchScope, RoleStatus status) {
 
         public static RoleView from(Role role) {
-            return new RoleView(role.getId(), role.getName(), List.copyOf(role.getPermissions()),
-                    role.getBranchScope(), role.getStatus());
+            List<String> permissions = role.getPermissions() != null ? List.copyOf(role.getPermissions()) : List.of();
+            return new RoleView(role.getId(), role.getName(), permissions, role.getBranchScope(), role.getStatus());
         }
     }
 
