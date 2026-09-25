@@ -11,6 +11,7 @@ import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -32,6 +33,17 @@ public class GlobalExceptionHandler {
         ex.getBindingResult().getFieldErrors()
                 .forEach(error -> fields.putIfAbsent(error.getField(), error.getDefaultMessage()));
         return build(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "La solicitud tiene datos invalidos.", request, fields);
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiError> handleUnreadableBody(
+            HttpMessageNotReadableException ex, HttpServletRequest request) {
+        return build(
+                HttpStatus.BAD_REQUEST,
+                "REQUEST_ERROR",
+                "El cuerpo de la solicitud contiene datos invalidos.",
+                request,
+                null);
     }
 
     @ExceptionHandler(AccessDeniedException.class)
