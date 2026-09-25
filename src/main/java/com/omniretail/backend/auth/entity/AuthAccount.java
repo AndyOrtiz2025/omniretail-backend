@@ -34,7 +34,7 @@ public class AuthAccount extends BaseEntity {
     @NotBlank
     @Email
     @Size(max = 200)
-    @Column(name = "email", nullable = false, unique = true)
+    @Column(name = "email", nullable = false)
     private String email;
 
     @NotBlank
@@ -43,13 +43,15 @@ public class AuthAccount extends BaseEntity {
     private String passwordHash;
 
     @NotNull
+    @Builder.Default
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false)
-    private AccountStatus status;
+    private AccountStatus status = AccountStatus.password_reset_required;
 
     @NotNull
+    @Builder.Default
     @Column(name = "failed_login_attempts", nullable = false)
-    private Integer failedLoginAttempts;
+    private Integer failedLoginAttempts = 0;
 
     @Column(name = "locked_until")
     private Instant lockedUntil;

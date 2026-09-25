@@ -186,8 +186,6 @@ databaseChangeLog:
                   type: VARCHAR(200)
                   constraints:
                     nullable: false
-                    unique: true
-                    uniqueConstraintName: uk_auth_accounts_email
               - column:
                   name: password_hash
                   type: VARCHAR(255)
@@ -228,6 +226,12 @@ databaseChangeLog:
                     nullable: false
         - sql:
             sql: "ALTER TABLE auth_accounts ADD CONSTRAINT ck_auth_accounts_status CHECK (status IN ('pending_verification', 'active', 'temporarily_locked', 'password_reset_required', 'disabled', 'archived'))"
+        - createIndex:
+            tableName: auth_accounts
+            indexName: idx_auth_accounts_email
+            columns:
+              - column:
+                  name: email
         - createTable:
             tableName: sessions
             columns:

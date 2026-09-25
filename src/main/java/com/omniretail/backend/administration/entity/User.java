@@ -57,9 +57,10 @@ public class User extends TenantScopedEntity {
     private UserType type;
 
     @NotNull
+    @Builder.Default
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false)
-    private UserStatus status;
+    private UserStatus status = UserStatus.active;
 
     @Column(name = "role_id")
     private UUID roleId;

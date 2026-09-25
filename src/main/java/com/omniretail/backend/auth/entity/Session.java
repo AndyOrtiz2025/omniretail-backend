@@ -46,8 +46,9 @@ public class Session {
     private String deviceLabel;
 
     @NotNull
+    @Builder.Default
     @Column(name = "remember_me", nullable = false)
-    private Boolean rememberMe;
+    private Boolean rememberMe = false;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
