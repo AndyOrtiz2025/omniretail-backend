@@ -1,10 +1,14 @@
 package com.omniretail.backend.shared.exception;
 
 import jakarta.servlet.http.HttpServletRequest;
+import java.sql.SQLException;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 import lombok.extern.slf4j.Slf4j;
+import org.hibernate.exception.ConstraintViolationException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
@@ -35,6 +39,35 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.FORBIDDEN, "ACCESS_DENIED", "No tienes permiso para realizar esta accion.", request, null);
     }
 
+    /**
+     * Red de seguridad ante condiciones de carrera: la BD rechaza lo que las validaciones previas
+     * (existsBy...) no alcanzaron a detectar. Al cliente nunca va el nombre de la constraint, tabla,
+     * columna ni el mensaje SQL; eso solo queda en el log.
+     */
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ApiError> handleDataIntegrity(DataIntegrityViolationException ex, HttpServletRequest request) {
+        String sqlState = findCause(ex, SQLException.class).map(SQLException::getSQLState).orElse(null);
+        String constraint = findCause(ex, ConstraintViolationException.class)
+                .map(ConstraintViolationException::getConstraintName)
+                .orElse(null);
+        log.warn("Violacion de integridad en {} {}: sqlState={}, constraint={}",
+                request.getMethod(), request.getRequestURI(), sqlState, constraint);
+
+        if ("23505".equals(sqlState)) {
+            return build(HttpStatus.CONFLICT, "DUPLICATE_RESOURCE", "Ya existe un registro con esos datos.", request, null);
+        }
+        if ("23503".equals(sqlState)) {
+            return build(HttpStatus.CONFLICT, "REFERENCE_CONFLICT",
+                    "La operación no es posible porque el registro está relacionado con otros datos.", request, null);
+        }
+        if ("23514".equals(sqlState) || "23502".equals(sqlState)) {
+            return build(HttpStatus.BAD_REQUEST, "DATA_INTEGRITY_ERROR",
+                    "Los datos no cumplen las reglas requeridas.", request, null);
+        }
+        return build(HttpStatus.CONFLICT, "DATA_CONFLICT",
+                "No se pudo completar la operación por un conflicto de datos.", request, null);
+    }
+
     /** Ultimo recurso: se registra el detalle en el log, pero al cliente solo va un mensaje generico. */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiError> handleUnexpected(Exception ex, HttpServletRequest request) {
@@ -45,6 +78,19 @@ public class GlobalExceptionHandler {
         }
         log.error("Error no controlado en {} {}", request.getMethod(), request.getRequestURI(), ex);
         return build(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "Ocurrio un error inesperado.", request, null);
+    }
+
+    /** Recorre la cadena de causas (sin incluir {@code ex}) hasta encontrar una del tipo pedido. */
+    private static <T extends Throwable> Optional<T> findCause(Throwable ex, Class<T> type) {
+        Throwable cause = ex.getCause();
+        // El limite evita un bucle infinito si alguna libreria arma una cadena de causas circular.
+        for (int depth = 0; cause != null && depth < 20; depth++) {
+            if (type.isInstance(cause)) {
+                return Optional.of(type.cast(cause));
+            }
+            cause = cause.getCause();
+        }
+        return Optional.empty();
     }
 
     private ResponseEntity<ApiError> build(
