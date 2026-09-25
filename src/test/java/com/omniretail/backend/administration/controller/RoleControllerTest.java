@@ -1,5 +1,6 @@
 package com.omniretail.backend.administration.controller;
 
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -7,15 +8,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.omniretail.backend.TestcontainersConfiguration;
-import com.omniretail.backend.administration.entity.Branch;
-import com.omniretail.backend.administration.entity.BranchStatus;
-import com.omniretail.backend.administration.entity.BranchType;
 import com.omniretail.backend.administration.entity.Role;
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.entity.User;
 import com.omniretail.backend.administration.entity.UserType;
-import com.omniretail.backend.administration.repository.BranchRepository;
 import com.omniretail.backend.administration.repository.RoleRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.administration.repository.UserRepository;
@@ -39,9 +36,9 @@ import org.springframework.test.web.servlet.MockMvc;
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @Import(TestcontainersConfiguration.class)
-class BranchControllerTest {
+class RoleControllerTest {
 
-    private static final String BASE_URL = "/api/v1/administration/branches";
+    private static final String BASE_URL = "/api/v1/administration/roles";
 
     @Autowired
     private MockMvc mockMvc;
@@ -56,13 +53,10 @@ class BranchControllerTest {
     private UserRepository userRepository;
 
     @Autowired
-    private RoleRepository roleRepository;
-
-    @Autowired
     private SessionRepository sessionRepository;
 
     @Autowired
-    private BranchRepository branchRepository;
+    private RoleRepository roleRepository;
 
     @Test
     void withoutTokenReturnsUnauthorized() throws Exception {
@@ -70,12 +64,12 @@ class BranchControllerTest {
     }
 
     @Test
-    void createBranchSuccess() throws Exception {
+    void createRoleSuccess() throws Exception {
         Tenant tenantA = persistTenant();
         String token = tokenFor(tenantA);
 
         String body = """
-                {"code":"centro","name":"Sucursal Centro","type":"main","address":"Zona 1, Guatemala"}
+                {"name":"Soporte","permissions":["admin.branches.read","admin.branches.manage"]}
                 """;
 
         mockMvc.perform(post(BASE_URL)
@@ -83,18 +77,20 @@ class BranchControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.code").value("CENTRO"))
-                .andExpect(jsonPath("$.name").value("Sucursal Centro"))
-                .andExpect(jsonPath("$.tenantId").value(tenantA.getId().toString()));
+                .andExpect(jsonPath("$.name").value("Soporte"))
+                .andExpect(jsonPath("$.isSystem").value(false))
+                .andExpect(jsonPath("$.tenantId").value(tenantA.getId().toString()))
+                .andExpect(jsonPath("$.permissions[0]").value("admin.branches.read"))
+                .andExpect(jsonPath("$.permissions[1]").value("admin.branches.manage"));
     }
 
     @Test
-    void createBranchDuplicateCodeConflict() throws Exception {
+    void createRoleDuplicateNameConflict() throws Exception {
         Tenant tenantA = persistTenant();
         String token = tokenFor(tenantA);
 
         String body = """
-                {"code":"CENTRO","name":"Sucursal Centro","type":"main"}
+                {"name":"Soporte"}
                 """;
 
         mockMvc.perform(post(BASE_URL)
@@ -108,7 +104,50 @@ class BranchControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.code").value("BRANCH_CODE_EXISTS"));
+                .andExpect(jsonPath("$.code").value("ROLE_NAME_EXISTS"));
+    }
+
+    @Test
+    void createRoleWithNonDelegablePermissionIsForbidden() throws Exception {
+        Tenant tenantA = persistTenant();
+        // Puede gestionar roles, pero NUNCA tuvo admin.branches.manage: no puede delegarlo.
+        String token = tokenFor(tenantA, List.of("admin.roles.read", "admin.roles.manage"));
+
+        String body = """
+                {"name":"Soporte","permissions":["admin.branches.manage"]}
+                """;
+
+        mockMvc.perform(post(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("PERMISSION_NOT_DELEGABLE"));
+    }
+
+    @Test
+    void systemRoleCannotBeModifiedOrArchived() throws Exception {
+        Tenant tenantA = persistTenant();
+        String token = tokenFor(tenantA);
+
+        Role systemRole = Role.builder().name("Administrador").isSystem(true).build();
+        systemRole.setTenantId(tenantA.getId());
+        systemRole = roleRepository.save(systemRole);
+
+        String updateBody = """
+                {"name":"Administrador Editado","permissions":[]}
+                """;
+
+        mockMvc.perform(put(BASE_URL + "/" + systemRole.getId())
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(updateBody))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("CANNOT_MODIFY_SYSTEM_ROLE"));
+
+        mockMvc.perform(delete(BASE_URL + "/" + systemRole.getId()).header("Authorization", bearer(token)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("CANNOT_ARCHIVE_SYSTEM_ROLE"));
     }
 
     @Test
@@ -117,29 +156,24 @@ class BranchControllerTest {
         Tenant tenantB = persistTenant();
         String tokenB = tokenFor(tenantB);
 
-        Branch branch = Branch.builder()
-                .code("CENTRO")
-                .name("Sucursal Centro")
-                .type(BranchType.main)
-                .status(BranchStatus.active)
-                .build();
-        branch.setTenantId(tenantA.getId());
-        branch = branchRepository.save(branch);
+        Role role = Role.builder().name("Soporte").build();
+        role.setTenantId(tenantA.getId());
+        role = roleRepository.save(role);
 
-        mockMvc.perform(get(BASE_URL + "/" + branch.getId()).header("Authorization", bearer(tokenB)))
+        mockMvc.perform(get(BASE_URL + "/" + role.getId()).header("Authorization", bearer(tokenB)))
                 .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.code").value("BRANCH_NOT_FOUND"));
+                .andExpect(jsonPath("$.code").value("ROLE_NOT_FOUND"));
 
         String updateBody = """
-                {"name":"Sucursal Centro Actualizada","type":"main"}
+                {"name":"Soporte Editado","permissions":[]}
                 """;
 
-        mockMvc.perform(put(BASE_URL + "/" + branch.getId())
+        mockMvc.perform(put(BASE_URL + "/" + role.getId())
                         .header("Authorization", bearer(tokenB))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(updateBody))
                 .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.code").value("BRANCH_NOT_FOUND"));
+                .andExpect(jsonPath("$.code").value("ROLE_NOT_FOUND"));
     }
 
     private Tenant persistTenant() {
@@ -155,18 +189,24 @@ class BranchControllerTest {
     }
 
     private String tokenFor(Tenant tenant) {
-        Role role = Role.builder()
-                .name("Rol Sucursales " + UUID.randomUUID())
-                .permissions(List.of("admin.branches.read", "admin.branches.manage"))
+        return tokenFor(
+                tenant,
+                List.of("admin.roles.read", "admin.roles.manage", "admin.branches.read", "admin.branches.manage"));
+    }
+
+    private String tokenFor(Tenant tenant, List<String> permissions) {
+        Role actorRole = Role.builder()
+                .name("Rol Actor " + UUID.randomUUID())
+                .permissions(permissions)
                 .build();
-        role.setTenantId(tenant.getId());
-        role = roleRepository.save(role);
+        actorRole.setTenantId(tenant.getId());
+        actorRole = roleRepository.save(actorRole);
 
         User user = User.builder()
                 .name("Empleado Demo")
                 .email("empleado-" + UUID.randomUUID() + "@omniretail.local")
                 .type(UserType.employee)
-                .roleId(role.getId())
+                .roleId(actorRole.getId())
                 .build();
         user.setTenantId(tenant.getId());
         user = userRepository.save(user);

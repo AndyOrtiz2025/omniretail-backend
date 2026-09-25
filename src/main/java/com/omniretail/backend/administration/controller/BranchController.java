@@ -6,6 +6,7 @@ import com.omniretail.backend.administration.dto.UpdateBranchRequest;
 import com.omniretail.backend.administration.entity.BranchStatus;
 import com.omniretail.backend.administration.service.BranchService;
 import com.omniretail.backend.shared.dto.PageResponse;
+import com.omniretail.backend.shared.security.RequirePermission;
 import jakarta.validation.Valid;
 import java.util.List;
 import java.util.UUID;
@@ -31,33 +32,39 @@ public class BranchController {
 
     private final BranchService branchService;
 
+    @RequirePermission("admin.branches.read")
     @GetMapping
     public PageResponse<BranchResponse> list(
             @RequestParam(required = false) BranchStatus status, @PageableDefault(size = 20) Pageable pageable) {
         return branchService.listBranches(status, pageable);
     }
 
+    @RequirePermission("admin.branches.read")
     @GetMapping("/active")
     public List<BranchResponse> listActive() {
         return branchService.listActiveBranches();
     }
 
+    @RequirePermission("admin.branches.read")
     @GetMapping("/{id}")
     public BranchResponse getById(@PathVariable UUID id) {
         return branchService.getBranchById(id);
     }
 
+    @RequirePermission("admin.branches.manage")
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public BranchResponse create(@Valid @RequestBody CreateBranchRequest request) {
         return branchService.createBranch(request);
     }
 
+    @RequirePermission("admin.branches.manage")
     @PutMapping("/{id}")
     public BranchResponse update(@PathVariable UUID id, @Valid @RequestBody UpdateBranchRequest request) {
         return branchService.updateBranch(id, request);
     }
 
+    @RequirePermission("admin.branches.manage")
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable UUID id) {
