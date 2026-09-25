@@ -2,7 +2,9 @@
 #
 # Cada modulo agrega su propio archivo en `changes/`, que se ejecuta en orden alfabetico:
 #   001-tenants-branches.yaml, 002-users-roles-auth.yaml, 003-catalog-products.yaml, ...
-#   999-seed-data.yaml (semilla demo: marcar sus changesets con `context: dev`).
+#   999-01-seed-base.yaml, 999-02-..., 999-03-... (semillas demo: marcar sus changesets con
+#   `context: dev`; el sufijo numerico despues de `999-` evita que el orden alfabetico dependa
+#   de si el nombre siguiente tiene mas guiones que el actual).
 #
 # Reglas:
 # - Un changeset ya aplicado (y subido a `development`) nunca se edita: se corrige con uno nuevo.
