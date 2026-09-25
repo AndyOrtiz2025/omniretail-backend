@@ -1,5 +1,7 @@
 package com.omniretail.backend.shared.security;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.BDDMockito.given;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -9,9 +11,11 @@ import com.omniretail.backend.administration.entity.User;
 import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.auth.entity.Session;
 import com.omniretail.backend.auth.service.JwtService;
+import com.omniretail.backend.auth.service.SessionService;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -23,6 +27,7 @@ import org.springframework.security.oauth2.jwt.JwtClaimsSet;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -44,6 +49,15 @@ class CurrentUserSecurityTest {
 
     @Autowired
     private JwtEncoder jwtEncoder;
+
+    /** Aqui solo se prueban los claims; la validacion de sesion contra la BD se cubre en AuthControllerTest. */
+    @MockitoBean
+    private SessionService sessionService;
+
+    @BeforeEach
+    void everySessionIsActive() {
+        given(sessionService.isActive(any(), any())).willReturn(true);
+    }
 
     @Test
     void withoutTokenIsUnauthorized() throws Exception {
