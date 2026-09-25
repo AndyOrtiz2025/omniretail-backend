@@ -1,6 +1,6 @@
 databaseChangeLog:
   - changeSet:
-      id: 999-seed-data-demo
+      id: 999-01-seed-base
       author: joga17000
       context: dev
       changes:
