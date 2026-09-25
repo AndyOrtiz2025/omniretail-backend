@@ -1,0 +1,488 @@
+databaseChangeLog:
+  - changeSet:
+      id: 009-ecommerce-checkout-foundation
+      author: nafer
+      changes:
+        - createTable:
+            tableName: customers
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_customers_tenant
+              - column:
+                  name: user_id
+                  type: UUID
+                  constraints:
+                    referencedTableName: users
+                    referencedColumnNames: id
+                    foreignKeyName: fk_customers_user
+              - column:
+                  name: code
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: name
+                  type: VARCHAR(200)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: email
+                  type: VARCHAR(200)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: phone
+                  type: VARCHAR(20)
+              - column:
+                  name: segment_id
+                  type: UUID
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  defaultValue: active
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addUniqueConstraint:
+            tableName: customers
+            columnNames: tenant_id, code
+            constraintName: uk_customers_tenant_code
+        - addUniqueConstraint:
+            tableName: customers
+            columnNames: tenant_id, user_id
+            constraintName: uk_customers_tenant_user
+        - createIndex:
+            tableName: customers
+            indexName: idx_customers_tenant_status
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: status
+        - sql:
+            sql: "ALTER TABLE customers ADD CONSTRAINT ck_customers_status CHECK (status IN ('active', 'inactive', 'archived'))"
+        - createTable:
+            tableName: addresses
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_addresses_tenant
+              - column:
+                  name: customer_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: customers
+                    referencedColumnNames: id
+                    foreignKeyName: fk_addresses_customer
+              - column:
+                  name: label
+                  type: VARCHAR(40)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: recipient_name
+                  type: VARCHAR(70)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: line1
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: line2
+                  type: VARCHAR(50)
+              - column:
+                  name: city
+                  type: VARCHAR(100)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: state_or_department
+                  type: VARCHAR(100)
+              - column:
+                  name: postal_code
+                  type: VARCHAR(20)
+              - column:
+                  name: country
+                  type: VARCHAR(100)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: references
+                  type: VARCHAR(120)
+              - column:
+                  name: is_default
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - createIndex:
+            tableName: addresses
+            indexName: idx_addresses_tenant_customer
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: customer_id
+        - createTable:
+            tableName: orders
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_orders_tenant
+              - column:
+                  name: branch_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: branches
+                    referencedColumnNames: id
+                    foreignKeyName: fk_orders_branch
+              - column:
+                  name: order_number
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: source
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: customer_id
+                  type: UUID
+                  constraints:
+                    referencedTableName: customers
+                    referencedColumnNames: id
+                    foreignKeyName: fk_orders_customer
+              - column:
+                  name: guest_customer
+                  type: JSONB
+              - column:
+                  name: status
+                  type: VARCHAR(30)
+                  defaultValue: pending
+                  constraints:
+                    nullable: false
+              - column:
+                  name: delivery_method
+                  type: VARCHAR(30)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: transport_mode
+                  type: VARCHAR(30)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: delivery_address
+                  type: JSONB
+              - column:
+                  name: notification_contact
+                  type: JSONB
+              - column:
+                  name: subtotal
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: discount_total
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: shipping_total
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: total
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: tracking_token
+                  type: VARCHAR(128)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: idempotency_key
+                  type: VARCHAR(128)
+              - column:
+                  name: idempotency_fingerprint
+                  type: TEXT
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addUniqueConstraint:
+            tableName: orders
+            columnNames: tenant_id, order_number
+            constraintName: uk_orders_tenant_number
+        - addUniqueConstraint:
+            tableName: orders
+            columnNames: tenant_id, tracking_token
+            constraintName: uk_orders_tenant_tracking_token
+        - addUniqueConstraint:
+            tableName: orders
+            columnNames: tenant_id, source, idempotency_key
+            constraintName: uk_orders_tenant_source_idempotency_key
+        - createIndex:
+            tableName: orders
+            indexName: idx_orders_tenant_branch_created
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: branch_id
+              - column:
+                  name: created_at
+              - column:
+                  name: id
+        - sql:
+            sql: "ALTER TABLE orders ADD CONSTRAINT ck_orders_source CHECK (source IN ('ecommerce', 'pos', 'mobileApp'))"
+        - sql:
+            sql: "ALTER TABLE orders ADD CONSTRAINT ck_orders_status CHECK (status IN ('pending', 'confirmed', 'preparing', 'picking', 'packing', 'ready_for_pickup', 'ready_for_dispatch', 'dispatched', 'delivered', 'cancelled'))"
+        - sql:
+            sql: "ALTER TABLE orders ADD CONSTRAINT ck_orders_delivery_method CHECK (delivery_method IN ('immediate', 'store_pickup', 'home_delivery'))"
+        - sql:
+            sql: "ALTER TABLE orders ADD CONSTRAINT ck_orders_transport_mode CHECK (transport_mode IN ('none', 'customer', 'own_fleet', 'third_party'))"
+        - sql:
+            sql: "ALTER TABLE orders ADD CONSTRAINT ck_orders_customer_identity CHECK ((customer_id IS NOT NULL AND guest_customer IS NULL) OR (customer_id IS NULL AND guest_customer IS NOT NULL))"
+        - sql:
+            sql: "ALTER TABLE orders ADD CONSTRAINT ck_orders_amounts CHECK (subtotal >= 0 AND discount_total >= 0 AND shipping_total >= 0 AND total >= 0)"
+        - createTable:
+            tableName: order_items
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: order_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: orders
+                    referencedColumnNames: id
+                    foreignKeyName: fk_order_items_order
+              - column:
+                  name: product_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: products
+                    referencedColumnNames: id
+                    foreignKeyName: fk_order_items_product
+              - column:
+                  name: sku_snapshot
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: name_snapshot
+                  type: VARCHAR(300)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: quantity
+                  type: NUMERIC(12,3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: inventory_quantity
+                  type: NUMERIC(12,3)
+              - column:
+                  name: unit_price
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: discount
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: subtotal
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+        - createIndex:
+            tableName: order_items
+            indexName: idx_order_items_order
+            columns:
+              - column:
+                  name: order_id
+        - sql:
+            sql: "ALTER TABLE order_items ADD CONSTRAINT ck_order_items_quantity CHECK (quantity > 0 AND (inventory_quantity IS NULL OR inventory_quantity > 0))"
+        - sql:
+            sql: "ALTER TABLE order_items ADD CONSTRAINT ck_order_items_amounts CHECK (unit_price >= 0 AND discount >= 0 AND subtotal >= 0)"
+        - createTable:
+            tableName: inventory_reservations
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_inventory_reservations_tenant
+              - column:
+                  name: branch_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: branches
+                    referencedColumnNames: id
+                    foreignKeyName: fk_inventory_reservations_branch
+              - column:
+                  name: order_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: orders
+                    referencedColumnNames: id
+                    foreignKeyName: fk_inventory_reservations_order
+              - column:
+                  name: order_item_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: order_items
+                    referencedColumnNames: id
+                    foreignKeyName: fk_inventory_reservations_order_item
+              - column:
+                  name: product_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: products
+                    referencedColumnNames: id
+                    foreignKeyName: fk_inventory_reservations_product
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  defaultValue: active
+                  constraints:
+                    nullable: false
+              - column:
+                  name: allocations
+                  type: JSONB
+                  defaultValueComputed: "'[]'::jsonb"
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addUniqueConstraint:
+            tableName: inventory_reservations
+            columnNames: order_item_id
+            constraintName: uk_inventory_reservations_order_item
+        - createIndex:
+            tableName: inventory_reservations
+            indexName: idx_inventory_reservations_tenant_product_status
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: product_id
+              - column:
+                  name: status
+        - sql:
+            sql: "ALTER TABLE inventory_reservations ADD CONSTRAINT ck_inventory_reservations_status CHECK (status IN ('active', 'consumed', 'released'))"
+        - addForeignKeyConstraint:
+            baseTableName: payments
+            baseColumnNames: order_id
+            constraintName: fk_payments_order
+            referencedTableName: orders
+            referencedColumnNames: id
