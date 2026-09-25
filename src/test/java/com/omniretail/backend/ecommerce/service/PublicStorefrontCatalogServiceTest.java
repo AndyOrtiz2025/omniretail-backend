@@ -13,7 +13,6 @@ import com.omniretail.backend.catalog.entity.CategoryStatus;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.entity.Unit;
-import com.omniretail.backend.catalog.entity.UnitStatus;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
@@ -50,7 +49,7 @@ class PublicStorefrontCatalogServiceTest {
         when(tenantRepository.findBySlug("ferreteria-los-simpson")).thenReturn(Optional.of(tenant));
         when(categoryRepository.findByTenantIdAndStatus(tenantId, CategoryStatus.active))
                 .thenReturn(List.of(category));
-        when(unitRepository.findByTenantIdAndStatus(tenantId, UnitStatus.active)).thenReturn(List.of(unit));
+        when(unitRepository.findByTenantId(tenantId)).thenReturn(List.of(unit));
         when(productRepository.findByTenantIdAndStatusAndChannelEcommerceTrue(tenantId, ProductStatus.published))
                 .thenReturn(List.of(product));
 
@@ -64,17 +63,22 @@ class PublicStorefrontCatalogServiceTest {
     }
 
     @Test
-    void hidesAProductWhenItsCategoryIsNotPublic() {
+    void keepsAProductWhenItsCategoryIsNotPublic() {
         UUID tenantId = UUID.randomUUID();
-        Product product = productWithCategory(UUID.randomUUID());
+        UUID categoryId = UUID.randomUUID();
+        UUID unitId = UUID.randomUUID();
+        Product product = product(UUID.randomUUID(), categoryId, unitId);
         Tenant tenant = tenant(tenantId);
+        Unit unit = unit(unitId);
         when(tenantRepository.findBySlug("ferreteria-los-simpson")).thenReturn(Optional.of(tenant));
         when(categoryRepository.findByTenantIdAndStatus(tenantId, CategoryStatus.active)).thenReturn(List.of());
-        when(unitRepository.findByTenantIdAndStatus(tenantId, UnitStatus.active)).thenReturn(List.of());
+        when(unitRepository.findByTenantId(tenantId)).thenReturn(List.of(unit));
         when(productRepository.findByTenantIdAndStatusAndChannelEcommerceTrue(tenantId, ProductStatus.published))
                 .thenReturn(List.of(product));
 
-        assertThat(service.listProducts("ferreteria-los-simpson")).isEmpty();
+        assertThat(service.listProducts("ferreteria-los-simpson"))
+                .singleElement()
+                .satisfies(item -> assertThat(item.categoryName()).isNull());
     }
 
     @Test
@@ -117,12 +121,6 @@ class PublicStorefrontCatalogServiceTest {
         when(product.getSalePrice()).thenReturn(new BigDecimal("75.00"));
         when(product.getCategoryId()).thenReturn(categoryId);
         when(product.getBaseUnitId()).thenReturn(unitId);
-        return product;
-    }
-
-    private Product productWithCategory(UUID categoryId) {
-        Product product = mock(Product.class);
-        when(product.getCategoryId()).thenReturn(categoryId);
         return product;
     }
 }

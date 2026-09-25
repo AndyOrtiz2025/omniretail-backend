@@ -8,7 +8,6 @@ import com.omniretail.backend.catalog.entity.CategoryStatus;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.entity.Unit;
-import com.omniretail.backend.catalog.entity.UnitStatus;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
@@ -16,7 +15,6 @@ import com.omniretail.backend.ecommerce.dto.PublicStorefrontProductResponse;
 import com.omniretail.backend.shared.exception.BusinessException;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Function;
 import lombok.RequiredArgsConstructor;
@@ -40,12 +38,11 @@ public class PublicStorefrontCatalogService {
         Map<UUID, Category> activeCategories = categoryRepository
                 .findByTenantIdAndStatus(tenantId, CategoryStatus.active).stream()
                 .collect(java.util.stream.Collectors.toMap(Category::getId, Function.identity()));
-        Map<UUID, Unit> activeUnits = unitRepository.findByTenantIdAndStatus(tenantId, UnitStatus.active).stream()
+        Map<UUID, Unit> units = unitRepository.findByTenantId(tenantId).stream()
                 .collect(java.util.stream.Collectors.toMap(Unit::getId, Function.identity()));
 
         return productRepository.findByTenantIdAndStatusAndChannelEcommerceTrue(tenantId, ProductStatus.published).stream()
-                .filter(product -> activeCategories.containsKey(product.getCategoryId()))
-                .flatMap(product -> toResponse(product, activeCategories, activeUnits).stream())
+                .map(product -> toResponse(product, activeCategories, units))
                 .toList();
     }
 
@@ -54,25 +51,28 @@ public class PublicStorefrontCatalogService {
         Product product = productRepository
                 .findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(tenantId, productId, ProductStatus.published)
                 .orElseThrow(() -> productNotFound());
-        Category category = categoryRepository.findById(product.getCategoryId())
+        String categoryName = categoryRepository.findById(product.getCategoryId())
                 .filter(found -> found.getTenantId().equals(tenantId) && found.getStatus() == CategoryStatus.active)
-                .orElseThrow(() -> productNotFound());
+                .map(Category::getName)
+                .orElse(null);
         UUID saleUnitId = product.getSaleUnitId() != null ? product.getSaleUnitId() : product.getBaseUnitId();
-        Unit unit = unitRepository.findById(saleUnitId)
-                .filter(found -> found.getTenantId().equals(tenantId) && found.getStatus() == UnitStatus.active)
-                .orElseThrow(() -> productNotFound());
-        return PublicStorefrontProductResponse.from(product, category.getName(), saleUnitId, unit.getName());
+        String saleUnitName = unitRepository.findById(saleUnitId)
+                .filter(found -> found.getTenantId().equals(tenantId))
+                .map(Unit::getName)
+                .orElse(null);
+        return PublicStorefrontProductResponse.from(product, categoryName, saleUnitId, saleUnitName);
     }
 
-    private Optional<PublicStorefrontProductResponse> toResponse(
+    private PublicStorefrontProductResponse toResponse(
             Product product, Map<UUID, Category> categories, Map<UUID, Unit> units) {
         UUID saleUnitId = product.getSaleUnitId() != null ? product.getSaleUnitId() : product.getBaseUnitId();
         Unit saleUnit = units.get(saleUnitId);
-        if (saleUnit == null) {
-            return Optional.empty();
-        }
-        return Optional.of(PublicStorefrontProductResponse.from(
-                product, categories.get(product.getCategoryId()).getName(), saleUnitId, saleUnit.getName()));
+        Category category = categories.get(product.getCategoryId());
+        return PublicStorefrontProductResponse.from(
+                product,
+                category != null ? category.getName() : null,
+                saleUnitId,
+                saleUnit != null ? saleUnit.getName() : null);
     }
 
     private Tenant resolveActiveTenant(String slug) {
