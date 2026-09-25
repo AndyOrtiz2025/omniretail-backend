@@ -1,0 +1,84 @@
+databaseChangeLog:
+  - changeSet:
+      id: 006-cash-movements
+      author: rique
+      changes:
+        - createTable:
+            tableName: cash_movements
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_cash_movements_tenant
+              - column:
+                  name: cash_shift_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: cash_shifts
+                    referencedColumnNames: id
+                    foreignKeyName: fk_cash_movements_cash_shift
+              - column:
+                  name: type
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: amount
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: reason
+                  type: TEXT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: reference_type
+                  type: TEXT
+              - column:
+                  name: reference_id
+                  type: UUID
+              - column:
+                  name: created_by_user_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: users
+                    referencedColumnNames: id
+                    foreignKeyName: fk_cash_movements_created_by_user
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - createIndex:
+            tableName: cash_movements
+            indexName: idx_cash_movements_tenant_shift_created
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: cash_shift_id
+              - column:
+                  name: created_at
+              - column:
+                  name: id
+        - sql:
+            sql: "ALTER TABLE cash_movements ADD CONSTRAINT ck_cash_movements_type CHECK (type IN ('in', 'out'))"
+        - sql:
+            sql: "ALTER TABLE cash_movements ADD CONSTRAINT ck_cash_movements_amount CHECK (amount > 0)"
+        - sql:
+            sql: "ALTER TABLE cash_movements ADD CONSTRAINT ck_cash_movements_reference_pair CHECK ((reference_type IS NULL) = (reference_id IS NULL))"

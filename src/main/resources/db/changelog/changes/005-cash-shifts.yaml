@@ -1,0 +1,92 @@
+databaseChangeLog:
+  - changeSet:
+      id: 005-cash-shifts
+      author: rique
+      changes:
+        - createTable:
+            tableName: cash_shifts
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_cash_shifts_tenant
+              - column:
+                  name: branch_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: branches
+                    referencedColumnNames: id
+                    foreignKeyName: fk_cash_shifts_branch
+              - column:
+                  name: user_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: users
+                    referencedColumnNames: id
+                    foreignKeyName: fk_cash_shifts_user
+              - column:
+                  name: register_code
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(30)
+                  defaultValue: open
+                  constraints:
+                    nullable: false
+              - column:
+                  name: opened_at
+                  type: TIMESTAMPTZ
+                  constraints:
+                    nullable: false
+              - column:
+                  name: opening_amount
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: closed_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: expected_amount
+                  type: NUMERIC(12,2)
+              - column:
+                  name: counted_amount
+                  type: NUMERIC(12,2)
+              - column:
+                  name: difference
+                  type: NUMERIC(12,2)
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - sql:
+            sql: "ALTER TABLE cash_shifts ADD CONSTRAINT ck_cash_shifts_status CHECK (status IN ('open', 'closed', 'closed_with_difference'))"
+        - sql:
+            sql: "ALTER TABLE cash_shifts ADD CONSTRAINT ck_cash_shifts_opening_amount CHECK (opening_amount >= 0)"
+        - sql:
+            sql: "ALTER TABLE cash_shifts ADD CONSTRAINT ck_cash_shifts_counted_amount CHECK (counted_amount IS NULL OR counted_amount >= 0)"
+        - sql:
+            sql: "CREATE UNIQUE INDEX uk_cash_shifts_open_tenant_branch_user ON cash_shifts (tenant_id, branch_id, user_id) WHERE status = 'open'"

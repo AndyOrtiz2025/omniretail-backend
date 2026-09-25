@@ -1,0 +1,118 @@
+databaseChangeLog:
+  - changeSet:
+      id: 008-payments
+      author: rique
+      changes:
+        - createTable:
+            tableName: payments
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_payments_tenant
+              - column:
+                  name: order_id
+                  type: UUID
+              - column:
+                  name: sale_id
+                  type: UUID
+                  constraints:
+                    referencedTableName: sales
+                    referencedColumnNames: id
+                    foreignKeyName: fk_payments_sale
+              - column:
+                  name: method
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: amount
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: currency
+                  type: VARCHAR(3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: bank_account_id
+                  type: UUID
+              - column:
+                  name: reference
+                  type: TEXT
+              - column:
+                  name: externally_verified
+                  type: BOOLEAN
+              - column:
+                  name: verified_by_user_id
+                  type: UUID
+                  constraints:
+                    referencedTableName: users
+                    referencedColumnNames: id
+                    foreignKeyName: fk_payments_verified_by_user
+              - column:
+                  name: verified_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - createIndex:
+            tableName: payments
+            indexName: idx_payments_tenant_sale_created
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: sale_id
+              - column:
+                  name: created_at
+              - column:
+                  name: id
+        - createIndex:
+            tableName: payments
+            indexName: idx_payments_tenant_order_created
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: order_id
+              - column:
+                  name: created_at
+              - column:
+                  name: id
+        - sql:
+            sql: "ALTER TABLE payments ADD CONSTRAINT ck_payments_method CHECK (method IN ('cash', 'card', 'transfer'))"
+        - sql:
+            sql: "ALTER TABLE payments ADD CONSTRAINT ck_payments_status CHECK (status IN ('pending', 'approved', 'rejected', 'refunded'))"
+        - sql:
+            sql: "ALTER TABLE payments ADD CONSTRAINT ck_payments_amount CHECK (amount >= 0)"
+        - sql:
+            sql: "ALTER TABLE payments ADD CONSTRAINT ck_payments_currency CHECK (currency IN ('GTQ', 'USD'))"
+        - sql:
+            sql: "ALTER TABLE payments ADD CONSTRAINT ck_payments_manual_verification CHECK ((externally_verified IS NULL AND verified_by_user_id IS NULL AND verified_at IS NULL) OR (externally_verified IS NOT NULL AND verified_by_user_id IS NOT NULL AND verified_at IS NOT NULL))"

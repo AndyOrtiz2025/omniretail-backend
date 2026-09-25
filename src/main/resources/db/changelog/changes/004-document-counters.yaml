@@ -1,0 +1,52 @@
+databaseChangeLog:
+  - changeSet:
+      id: 004-document-counters
+      author: rique
+      changes:
+        - createTable:
+            tableName: document_counters
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_document_counters_tenant
+              - column:
+                  name: counter_key
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: last_value
+                  type: BIGINT
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addUniqueConstraint:
+            tableName: document_counters
+            columnNames: tenant_id, counter_key
+            constraintName: uk_document_counters_tenant_key
+        - sql:
+            sql: "ALTER TABLE document_counters ADD CONSTRAINT ck_document_counters_last_value CHECK (last_value >= 0)"

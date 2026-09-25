@@ -9,6 +9,7 @@ import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.annotation.AnnotationTemplateExpressionDefaults;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
@@ -51,6 +52,12 @@ public class SecurityConfig {
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter)))
                 .build();
+    }
+
+    /** Habilita placeholders como {@code {value}} en meta-anotaciones de seguridad ({@link RequirePermission}). */
+    @Bean
+    static AnnotationTemplateExpressionDefaults annotationTemplateDefaults() {
+        return new AnnotationTemplateExpressionDefaults();
     }
 
     @Bean
