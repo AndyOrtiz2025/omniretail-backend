@@ -4,6 +4,7 @@ import com.omniretail.backend.administration.entity.User;
 import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.auth.entity.Session;
 import com.omniretail.backend.auth.repository.SessionRepository;
+import com.omniretail.backend.shared.security.SessionRevoker;
 import com.omniretail.backend.shared.security.SessionValidator;
 import java.time.Duration;
 import java.time.Instant;
@@ -15,7 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 @RequiredArgsConstructor
-public class SessionService implements SessionValidator {
+public class SessionService implements SessionValidator, SessionRevoker {
 
     static final Duration EMPLOYEE_TTL = Duration.ofHours(8);
     static final Duration CUSTOMER_TTL = Duration.ofHours(2);
@@ -46,6 +47,13 @@ public class SessionService implements SessionValidator {
         sessionRepository.findById(sessionId)
                 .filter(session -> session.getRevokedAt() == null)
                 .ifPresent(session -> session.setRevokedAt(Instant.now()));
+    }
+
+    @Override
+    @Transactional
+    public void revokeAllSessions(UUID userId) {
+        Instant now = Instant.now();
+        sessionRepository.findByUserIdAndRevokedAtIsNull(userId).forEach(session -> session.setRevokedAt(now));
     }
 
     @Override

@@ -4,7 +4,6 @@ import com.omniretail.backend.administration.dto.CreateUserRequest;
 import com.omniretail.backend.administration.dto.UpdateUserRequest;
 import com.omniretail.backend.administration.dto.UserResponse;
 import com.omniretail.backend.administration.entity.UserStatus;
-import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.administration.service.UserService;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.security.RequirePermission;
@@ -34,10 +33,8 @@ public class UserController {
     @RequirePermission("admin.users.read")
     @GetMapping
     public PageResponse<UserResponse> list(
-            @RequestParam(required = false) UserType type,
-            @RequestParam(required = false) UserStatus status,
-            @PageableDefault(size = 20) Pageable pageable) {
-        return userService.listUsers(type, status, pageable);
+            @RequestParam(required = false) UserStatus status, @PageableDefault(size = 20) Pageable pageable) {
+        return userService.listUsers(status, pageable);
     }
 
     @RequirePermission("admin.users.read")

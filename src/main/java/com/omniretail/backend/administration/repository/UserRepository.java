@@ -26,7 +26,7 @@ public interface UserRepository extends JpaRepository<User, UUID> {
     Page<User> findByTenantIdAndTypeAndStatus(
             UUID tenantId, UserType type, UserStatus status, Pageable pageable);
 
-    boolean existsByTenantIdAndEmailIgnoreCase(UUID tenantId, String email);
+    boolean existsByEmailIgnoreCaseAndType(String email, UserType type);
 
     boolean existsByTenantIdAndEmployeeCodeIgnoreCase(UUID tenantId, String employeeCode);
 
