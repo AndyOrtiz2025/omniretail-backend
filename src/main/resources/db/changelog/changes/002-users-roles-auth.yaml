@@ -1,0 +1,286 @@
+databaseChangeLog:
+  - changeSet:
+      id: 002-users-roles-auth
+      author: joga17000
+      changes:
+        - createTable:
+            tableName: roles
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_roles_tenant
+              - column:
+                  name: name
+                  type: VARCHAR(100)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: description
+                  type: TEXT
+              - column:
+                  name: is_system
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: permissions
+                  type: TEXT[]
+                  defaultValueComputed: "'{}'::text[]"
+                  constraints:
+                    nullable: false
+              - column:
+                  name: branch_scope
+                  type: VARCHAR(20)
+                  defaultValue: assigned
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  defaultValue: active
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addUniqueConstraint:
+            tableName: roles
+            columnNames: tenant_id, name
+            constraintName: uk_roles_tenant_name
+        - sql:
+            sql: "ALTER TABLE roles ADD CONSTRAINT ck_roles_branch_scope CHECK (branch_scope IN ('assigned', 'selected', 'all'))"
+        - sql:
+            sql: "ALTER TABLE roles ADD CONSTRAINT ck_roles_status CHECK (status IN ('active', 'inactive', 'archived'))"
+        - createTable:
+            tableName: users
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_users_tenant
+              - column:
+                  name: customer_id
+                  type: UUID
+              - column:
+                  name: employee_code
+                  type: VARCHAR(50)
+              - column:
+                  name: name
+                  type: VARCHAR(200)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: email
+                  type: VARCHAR(200)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: phone
+                  type: VARCHAR(20)
+              - column:
+                  name: type
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  defaultValue: active
+                  constraints:
+                    nullable: false
+              - column:
+                  name: role_id
+                  type: UUID
+                  constraints:
+                    nullable: true
+                    referencedTableName: roles
+                    referencedColumnNames: id
+                    foreignKeyName: fk_users_role
+              - column:
+                  name: branch_id
+                  type: UUID
+                  constraints:
+                    nullable: true
+                    referencedTableName: branches
+                    referencedColumnNames: id
+                    foreignKeyName: fk_users_branch
+              - column:
+                  name: allowed_branch_ids
+                  type: UUID[]
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addUniqueConstraint:
+            tableName: users
+            columnNames: tenant_id, email
+            constraintName: uk_users_tenant_email
+        - sql:
+            sql: "ALTER TABLE users ADD CONSTRAINT ck_users_type CHECK (type IN ('customer', 'employee'))"
+        - sql:
+            sql: "ALTER TABLE users ADD CONSTRAINT ck_users_status CHECK (status IN ('active', 'inactive', 'blocked', 'archived'))"
+        - createTable:
+            tableName: auth_accounts
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: user_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    unique: true
+                    uniqueConstraintName: uk_auth_accounts_user
+                    referencedTableName: users
+                    referencedColumnNames: id
+                    foreignKeyName: fk_auth_accounts_user
+                    deleteCascade: true
+              - column:
+                  name: email
+                  type: VARCHAR(200)
+                  constraints:
+                    nullable: false
+                    unique: true
+                    uniqueConstraintName: uk_auth_accounts_email
+              - column:
+                  name: password_hash
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(30)
+                  defaultValue: password_reset_required
+                  constraints:
+                    nullable: false
+              - column:
+                  name: failed_login_attempts
+                  type: INTEGER
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: locked_until
+                  type: TIMESTAMPTZ
+              - column:
+                  name: password_changed_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: last_login_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - sql:
+            sql: "ALTER TABLE auth_accounts ADD CONSTRAINT ck_auth_accounts_status CHECK (status IN ('pending_verification', 'active', 'temporarily_locked', 'password_reset_required', 'disabled', 'archived'))"
+        - createTable:
+            tableName: sessions
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: user_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: users
+                    referencedColumnNames: id
+                    foreignKeyName: fk_sessions_user
+                    deleteCascade: true
+              - column:
+                  name: active_branch_id
+                  type: UUID
+                  constraints:
+                    nullable: true
+                    referencedTableName: branches
+                    referencedColumnNames: id
+                    foreignKeyName: fk_sessions_active_branch
+              - column:
+                  name: device_label
+                  type: VARCHAR(200)
+              - column:
+                  name: remember_me
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: expires_at
+                  type: TIMESTAMPTZ
+                  constraints:
+                    nullable: false
+              - column:
+                  name: revoked_at
+                  type: TIMESTAMPTZ
+        - createIndex:
+            tableName: sessions
+            indexName: idx_sessions_user
+            columns:
+              - column:
+                  name: user_id
