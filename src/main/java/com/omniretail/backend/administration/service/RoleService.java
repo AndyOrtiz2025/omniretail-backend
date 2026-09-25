@@ -9,8 +9,11 @@ import com.omniretail.backend.administration.entity.RoleStatus;
 import com.omniretail.backend.administration.repository.RoleRepository;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.exception.BusinessException;
+import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
+import com.omniretail.backend.shared.security.PermissionResolver;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -27,6 +30,7 @@ public class RoleService {
 
     private final RoleRepository roleRepository;
     private final CurrentUser currentUser;
+    private final PermissionResolver permissionResolver;
 
     public PageResponse<RoleResponse> listRoles(RoleStatus status, Pageable pageable) {
         UUID tenantId = currentUser.require().tenantId();
@@ -57,12 +61,15 @@ public class RoleService {
             throw new BusinessException(
                     HttpStatus.CONFLICT, "ROLE_NAME_EXISTS", "Ya existe un rol con el nombre " + name);
         }
+        List<String> permissions = distinctPermissions(request.permissions());
+        ensureDelegatablePermissions(tenantId, permissions);
+
         Role role = Role.builder()
                 .name(name)
                 .description(request.description() != null ? request.description().trim() : null)
                 .isSystem(false)
-                .permissions(request.permissions() != null ? new ArrayList<>(request.permissions()) : new ArrayList<>())
-                .branchScope(request.branchScope() != null ? request.branchScope() : BranchScope.assigned)
+                .permissions(permissions)
+                .branchScope(BranchScope.assigned)
                 .status(request.status() != null ? request.status() : RoleStatus.active)
                 .build();
         role.setTenantId(tenantId);
@@ -87,16 +94,46 @@ public class RoleService {
                     HttpStatus.CONFLICT, "ROLE_NAME_EXISTS", "Ya existe un rol con el nombre " + newName);
         }
 
+        List<String> permissions = distinctPermissions(request.permissions());
+        ensureDelegatablePermissions(tenantId, permissions);
+
         role.setName(newName);
         role.setDescription(request.description() != null ? request.description().trim() : null);
-        role.setPermissions(request.permissions() != null ? new ArrayList<>(request.permissions()) : new ArrayList<>());
-        role.setBranchScope(request.branchScope() != null ? request.branchScope() : BranchScope.assigned);
+        role.setPermissions(permissions);
+        // branchScope deliberadamente no se toca: lo define User, no este endpoint (ver RoleDto.ts).
         if (request.status() != null) {
             role.setStatus(request.status());
         }
 
         Role saved = roleRepository.save(role);
         return RoleResponse.from(saved);
+    }
+
+    private static List<String> distinctPermissions(List<String> permissions) {
+        return permissions != null ? new ArrayList<>(new LinkedHashSet<>(permissions)) : new ArrayList<>();
+    }
+
+    /**
+     * Un actor solo puede otorgar permisos que el mismo posee (regla del frontend,
+     * {@code ensureDelegatablePermissions} en {@code role.validation.ts}) -- nunca delegar mas de
+     * lo que tiene, sin excepcion de "super admin"/{@code isSystem}. Sin rol asignado, el actor no
+     * tiene ningun permiso propio: cualquier lista no vacia se rechaza.
+     */
+    private void ensureDelegatablePermissions(UUID tenantId, List<String> requestedPermissions) {
+        if (requestedPermissions.isEmpty()) {
+            return;
+        }
+        AuthenticatedUser actor = currentUser.require();
+        UUID actorRoleId = actor.roleId();
+        boolean canDelegateAll = actorRoleId != null
+                && requestedPermissions.stream()
+                        .allMatch(permission -> permissionResolver.hasPermission(tenantId, actorRoleId, permission));
+        if (!canDelegateAll) {
+            throw new BusinessException(
+                    HttpStatus.FORBIDDEN,
+                    "PERMISSION_NOT_DELEGABLE",
+                    "No puedes asignar permisos que tu propia cuenta no tiene.");
+        }
     }
 
     public void archiveRole(UUID id) {

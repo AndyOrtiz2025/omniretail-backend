@@ -10,11 +10,13 @@ import com.omniretail.backend.TestcontainersConfiguration;
 import com.omniretail.backend.administration.entity.Branch;
 import com.omniretail.backend.administration.entity.BranchStatus;
 import com.omniretail.backend.administration.entity.BranchType;
+import com.omniretail.backend.administration.entity.Role;
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.entity.User;
 import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.administration.repository.BranchRepository;
+import com.omniretail.backend.administration.repository.RoleRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.administration.repository.UserRepository;
 import com.omniretail.backend.auth.entity.Session;
@@ -22,6 +24,7 @@ import com.omniretail.backend.auth.repository.SessionRepository;
 import com.omniretail.backend.auth.service.JwtService;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -51,6 +54,9 @@ class BranchControllerTest {
 
     @Autowired
     private UserRepository userRepository;
+
+    @Autowired
+    private RoleRepository roleRepository;
 
     @Autowired
     private SessionRepository sessionRepository;
@@ -149,10 +155,18 @@ class BranchControllerTest {
     }
 
     private String tokenFor(Tenant tenant) {
+        Role role = Role.builder()
+                .name("Rol Sucursales " + UUID.randomUUID())
+                .permissions(List.of("admin.branches.read", "admin.branches.manage"))
+                .build();
+        role.setTenantId(tenant.getId());
+        role = roleRepository.save(role);
+
         User user = User.builder()
                 .name("Empleado Demo")
                 .email("empleado-" + UUID.randomUUID() + "@omniretail.local")
                 .type(UserType.employee)
+                .roleId(role.getId())
                 .build();
         user.setTenantId(tenant.getId());
         user = userRepository.save(user);

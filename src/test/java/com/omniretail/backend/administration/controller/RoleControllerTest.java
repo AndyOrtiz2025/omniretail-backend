@@ -21,6 +21,7 @@ import com.omniretail.backend.auth.repository.SessionRepository;
 import com.omniretail.backend.auth.service.JwtService;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -107,6 +108,24 @@ class RoleControllerTest {
     }
 
     @Test
+    void createRoleWithNonDelegablePermissionIsForbidden() throws Exception {
+        Tenant tenantA = persistTenant();
+        // Puede gestionar roles, pero NUNCA tuvo admin.branches.manage: no puede delegarlo.
+        String token = tokenFor(tenantA, List.of("admin.roles.read", "admin.roles.manage"));
+
+        String body = """
+                {"name":"Soporte","permissions":["admin.branches.manage"]}
+                """;
+
+        mockMvc.perform(post(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("PERMISSION_NOT_DELEGABLE"));
+    }
+
+    @Test
     void systemRoleCannotBeModifiedOrArchived() throws Exception {
         Tenant tenantA = persistTenant();
         String token = tokenFor(tenantA);
@@ -116,7 +135,7 @@ class RoleControllerTest {
         systemRole = roleRepository.save(systemRole);
 
         String updateBody = """
-                {"name":"Administrador Editado"}
+                {"name":"Administrador Editado","permissions":[]}
                 """;
 
         mockMvc.perform(put(BASE_URL + "/" + systemRole.getId())
@@ -146,7 +165,7 @@ class RoleControllerTest {
                 .andExpect(jsonPath("$.code").value("ROLE_NOT_FOUND"));
 
         String updateBody = """
-                {"name":"Soporte Editado"}
+                {"name":"Soporte Editado","permissions":[]}
                 """;
 
         mockMvc.perform(put(BASE_URL + "/" + role.getId())
@@ -170,10 +189,24 @@ class RoleControllerTest {
     }
 
     private String tokenFor(Tenant tenant) {
+        return tokenFor(
+                tenant,
+                List.of("admin.roles.read", "admin.roles.manage", "admin.branches.read", "admin.branches.manage"));
+    }
+
+    private String tokenFor(Tenant tenant, List<String> permissions) {
+        Role actorRole = Role.builder()
+                .name("Rol Actor " + UUID.randomUUID())
+                .permissions(permissions)
+                .build();
+        actorRole.setTenantId(tenant.getId());
+        actorRole = roleRepository.save(actorRole);
+
         User user = User.builder()
                 .name("Empleado Demo")
                 .email("empleado-" + UUID.randomUUID() + "@omniretail.local")
                 .type(UserType.employee)
+                .roleId(actorRole.getId())
                 .build();
         user.setTenantId(tenant.getId());
         user = userRepository.save(user);

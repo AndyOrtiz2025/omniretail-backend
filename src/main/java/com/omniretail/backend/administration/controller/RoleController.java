@@ -6,6 +6,7 @@ import com.omniretail.backend.administration.dto.UpdateRoleRequest;
 import com.omniretail.backend.administration.entity.RoleStatus;
 import com.omniretail.backend.administration.service.RoleService;
 import com.omniretail.backend.shared.dto.PageResponse;
+import com.omniretail.backend.shared.security.RequirePermission;
 import jakarta.validation.Valid;
 import java.util.List;
 import java.util.UUID;
@@ -31,33 +32,39 @@ public class RoleController {
 
     private final RoleService roleService;
 
+    @RequirePermission("admin.roles.read")
     @GetMapping
     public PageResponse<RoleResponse> list(
             @RequestParam(required = false) RoleStatus status, @PageableDefault(size = 20) Pageable pageable) {
         return roleService.listRoles(status, pageable);
     }
 
+    @RequirePermission("admin.roles.read")
     @GetMapping("/active")
     public List<RoleResponse> listActive() {
         return roleService.listActiveRoles();
     }
 
+    @RequirePermission("admin.roles.read")
     @GetMapping("/{id}")
     public RoleResponse getById(@PathVariable UUID id) {
         return roleService.getRoleById(id);
     }
 
+    @RequirePermission("admin.roles.manage")
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public RoleResponse create(@Valid @RequestBody CreateRoleRequest request) {
         return roleService.createRole(request);
     }
 
+    @RequirePermission("admin.roles.manage")
     @PutMapping("/{id}")
     public RoleResponse update(@PathVariable UUID id, @Valid @RequestBody UpdateRoleRequest request) {
         return roleService.updateRole(id, request);
     }
 
+    @RequirePermission("admin.roles.manage")
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable UUID id) {
