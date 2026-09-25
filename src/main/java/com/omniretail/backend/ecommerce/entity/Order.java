@@ -75,6 +75,10 @@ public class Order extends TenantScopedEntity {
     @Column(name = "notification_contact", columnDefinition = "jsonb", updatable = false)
     private String notificationContact;
 
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "store_pickup_contact", columnDefinition = "jsonb", updatable = false)
+    private String storePickupContact;
+
     @NotNull
     @DecimalMin("0.00")
     @Column(name = "subtotal", nullable = false, updatable = false, precision = 12, scale = 2)

@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 009-ecommerce-checkout-foundation
-      author: nafer
+      author: mafer
       changes:
         - createTable:
             tableName: customers
@@ -40,7 +40,7 @@ databaseChangeLog:
                     nullable: false
               - column:
                   name: email
-                  type: VARCHAR(200)
+                  type: VARCHAR(254)
                   constraints:
                     nullable: false
               - column:
@@ -113,22 +113,22 @@ databaseChangeLog:
                     foreignKeyName: fk_addresses_customer
               - column:
                   name: label
-                  type: VARCHAR(40)
+                  type: VARCHAR(35)
                   constraints:
                     nullable: false
               - column:
                   name: recipient_name
-                  type: VARCHAR(70)
+                  type: VARCHAR(60)
                   constraints:
                     nullable: false
               - column:
                   name: line1
-                  type: VARCHAR(50)
+                  type: VARCHAR(200)
                   constraints:
                     nullable: false
               - column:
                   name: line2
-                  type: VARCHAR(50)
+                  type: VARCHAR(200)
               - column:
                   name: city
                   type: VARCHAR(100)
@@ -146,8 +146,8 @@ databaseChangeLog:
                   constraints:
                     nullable: false
               - column:
-                  name: references
-                  type: VARCHAR(120)
+                  name: reference_notes
+                  type: VARCHAR(300)
               - column:
                   name: is_default
                   type: BOOLEAN
@@ -243,6 +243,9 @@ databaseChangeLog:
                   name: notification_contact
                   type: JSONB
               - column:
+                  name: store_pickup_contact
+                  type: JSONB
+              - column:
                   name: subtotal
                   type: NUMERIC(12,2)
                   constraints:
@@ -309,6 +312,22 @@ databaseChangeLog:
                   name: created_at
               - column:
                   name: id
+        - createIndex:
+            tableName: orders
+            indexName: idx_orders_tenant_customer
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: customer_id
+        - createIndex:
+            tableName: orders
+            indexName: idx_orders_tenant_status
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: status
         - sql:
             sql: "ALTER TABLE orders ADD CONSTRAINT ck_orders_source CHECK (source IN ('ecommerce', 'pos', 'mobileApp'))"
         - sql:
@@ -318,7 +337,9 @@ databaseChangeLog:
         - sql:
             sql: "ALTER TABLE orders ADD CONSTRAINT ck_orders_transport_mode CHECK (transport_mode IN ('none', 'customer', 'own_fleet', 'third_party'))"
         - sql:
-            sql: "ALTER TABLE orders ADD CONSTRAINT ck_orders_customer_identity CHECK ((customer_id IS NOT NULL AND guest_customer IS NULL) OR (customer_id IS NULL AND guest_customer IS NOT NULL))"
+            sql: "ALTER TABLE orders ADD CONSTRAINT ck_orders_customer_identity CHECK (NOT (customer_id IS NOT NULL AND guest_customer IS NOT NULL))"
+        - sql:
+            sql: "ALTER TABLE orders ADD CONSTRAINT ck_orders_ecommerce_customer CHECK (source <> 'ecommerce' OR customer_id IS NOT NULL OR guest_customer IS NOT NULL)"
         - sql:
             sql: "ALTER TABLE orders ADD CONSTRAINT ck_orders_amounts CHECK (subtotal >= 0 AND discount_total >= 0 AND shipping_total >= 0 AND total >= 0)"
         - createTable:
@@ -380,6 +401,9 @@ databaseChangeLog:
                   type: NUMERIC(12,2)
                   constraints:
                     nullable: false
+              - column:
+                  name: fulfillment_components
+                  type: JSONB
         - createIndex:
             tableName: order_items
             indexName: idx_order_items_order
@@ -484,5 +508,11 @@ databaseChangeLog:
             baseTableName: payments
             baseColumnNames: order_id
             constraintName: fk_payments_order
+            referencedTableName: orders
+            referencedColumnNames: id
+        - addForeignKeyConstraint:
+            baseTableName: sales
+            baseColumnNames: source_order_id
+            constraintName: fk_sales_source_order
             referencedTableName: orders
             referencedColumnNames: id

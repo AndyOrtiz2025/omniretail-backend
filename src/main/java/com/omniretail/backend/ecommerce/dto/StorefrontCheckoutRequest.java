@@ -15,7 +15,7 @@ import java.util.List;
 public record StorefrontCheckoutRequest(
         @NotEmpty List<@Valid StorefrontCheckoutItemRequest> items,
         @NotBlank
-                @Size(max = 70)
+                @Size(max = 60)
                 @Pattern(regexp = "^[\\p{L}\\p{M} '-]+$", message = "Nombre de entrega inválido")
                 String fullName,
         @NotBlank
@@ -29,18 +29,22 @@ public record StorefrontCheckoutRequest(
                 @Pattern(regexp = "^[0-9]{8}$", message = "Teléfono inválido")
                 String phone,
         @NotBlank
-                @Size(max = 50)
+                @Size(max = 200)
                 @Pattern(
-                        regexp = "^(?!.*--)[A-Za-z0-9][A-Za-z0-9 .-]*$",
+                        regexp = "^[\\p{L}\\p{N}][\\p{L}\\p{N} .,#!'/\\-]*$",
                         message = "Dirección inválida")
                 String addressLine1,
-        @Size(max = 50)
-                @Pattern(regexp = "^$|^[A-Za-z0-9][A-Za-z0-9 ]*$", message = "Complemento inválido")
+        @Size(max = 200)
+                @Pattern(
+                        regexp = "^$|^[\\p{L}\\p{N}][\\p{L}\\p{N} .,#!'/\\-]*$",
+                        message = "Complemento inválido")
                 String addressLine2,
         @NotBlank @Size(max = 100) String city,
         @Size(max = 100) String department,
-        @Size(max = 120)
-                @Pattern(regexp = "^$|^[A-Za-z0-9][A-Za-z0-9 ,]*$", message = "Referencias inválidas")
+        @Size(max = 300)
+                @Pattern(
+                        regexp = "^$|^[\\p{L}\\p{N}][\\p{L}\\p{N} .,#!'/\\-]*$",
+                        message = "Referencias inválidas")
                 String references,
         @NotBlank @Size(max = 120) String cardholderName,
         @NotBlank @Pattern(regexp = "^[0-9]{4}$", message = "Últimos cuatro inválidos") String cardLastFour) {}

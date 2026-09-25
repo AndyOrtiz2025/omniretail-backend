@@ -28,21 +28,21 @@ public class Address extends TenantScopedEntity {
     private UUID customerId;
 
     @NotBlank
-    @Size(max = 40)
+    @Size(max = 35)
     @Column(name = "label", nullable = false)
     private String label;
 
     @NotBlank
-    @Size(max = 70)
+    @Size(max = 60)
     @Column(name = "recipient_name", nullable = false)
     private String recipientName;
 
     @NotBlank
-    @Size(max = 50)
+    @Size(max = 200)
     @Column(name = "line1", nullable = false)
     private String line1;
 
-    @Size(max = 50)
+    @Size(max = 200)
     @Column(name = "line2")
     private String line2;
 
@@ -64,8 +64,8 @@ public class Address extends TenantScopedEntity {
     @Column(name = "country", nullable = false)
     private String country;
 
-    @Size(max = 120)
-    @Column(name = "references")
+    @Size(max = 300)
+    @Column(name = "reference_notes")
     private String references;
 
     @NotNull
