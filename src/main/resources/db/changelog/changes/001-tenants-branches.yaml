@@ -1,0 +1,137 @@
+databaseChangeLog:
+  - changeSet:
+      id: 001-tenants-branches
+      author: joga17000
+      changes:
+        - createTable:
+            tableName: tenants
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: name
+                  type: VARCHAR(200)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: legal_name
+                  type: VARCHAR(300)
+              - column:
+                  name: slug
+                  type: VARCHAR(100)
+                  constraints:
+                    nullable: false
+                    unique: true
+                    uniqueConstraintName: uk_tenants_slug
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  defaultValue: active
+                  constraints:
+                    nullable: false
+              - column:
+                  name: default_currency
+                  type: VARCHAR(3)
+                  defaultValue: GTQ
+                  constraints:
+                    nullable: false
+              - column:
+                  name: timezone
+                  type: VARCHAR(50)
+                  defaultValue: America/Guatemala
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - sql:
+            sql: "ALTER TABLE tenants ADD CONSTRAINT ck_tenants_status CHECK (status IN ('active', 'inactive', 'archived'))"
+        - createTable:
+            tableName: branches
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_branches_tenant
+              - column:
+                  name: code
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: name
+                  type: VARCHAR(200)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: type
+                  type: VARCHAR(20)
+                  defaultValue: store
+                  constraints:
+                    nullable: false
+              - column:
+                  name: address
+                  type: TEXT
+              - column:
+                  name: phone
+                  type: VARCHAR(20)
+              - column:
+                  name: email
+                  type: VARCHAR(200)
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  defaultValue: active
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addUniqueConstraint:
+            tableName: branches
+            columnNames: tenant_id, code
+            constraintName: uk_branches_tenant_code
+        - createIndex:
+            tableName: branches
+            indexName: idx_branches_tenant
+            columns:
+              - column:
+                  name: tenant_id
+        - sql:
+            sql: "ALTER TABLE branches ADD CONSTRAINT ck_branches_type CHECK (type IN ('main', 'store', 'warehouse'))"
+        - sql:
+            sql: "ALTER TABLE branches ADD CONSTRAINT ck_branches_status CHECK (status IN ('active', 'inactive', 'archived'))"
