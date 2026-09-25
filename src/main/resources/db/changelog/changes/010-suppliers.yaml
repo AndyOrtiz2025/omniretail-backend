@@ -1,0 +1,84 @@
+databaseChangeLog:
+  - changeSet:
+      id: 010-suppliers
+      author: joga17000
+      changes:
+        - createTable:
+            tableName: suppliers
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_suppliers_tenant
+              - column:
+                  name: name
+                  type: VARCHAR(120)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: legal_name
+                  type: VARCHAR(160)
+              - column:
+                  name: tax_id
+                  type: VARCHAR(20)
+              - column:
+                  name: email
+                  type: VARCHAR(254)
+              - column:
+                  name: phone
+                  type: VARCHAR(20)
+              - column:
+                  name: address
+                  type: VARCHAR(180)
+              - column:
+                  name: notes
+                  type: VARCHAR(500)
+              - column:
+                  name: lead_time_days
+                  type: INT
+                  defaultValueNumeric: 0
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  defaultValue: active
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - sql:
+            sql: "ALTER TABLE suppliers ADD CONSTRAINT chk_suppliers_status CHECK (status IN ('active', 'inactive', 'archived'))"
+        - createIndex:
+            tableName: suppliers
+            indexName: idx_suppliers_tenant_id
+            columns:
+              - column:
+                  name: tenant_id
+        - createIndex:
+            tableName: suppliers
+            indexName: idx_suppliers_tenant_status
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: status
