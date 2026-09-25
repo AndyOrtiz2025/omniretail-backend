@@ -1,0 +1,208 @@
+databaseChangeLog:
+  - changeSet:
+      id: 007-sales-sale-items
+      author: rique
+      changes:
+        - createTable:
+            tableName: sales
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_sales_tenant
+              - column:
+                  name: branch_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: branches
+                    referencedColumnNames: id
+                    foreignKeyName: fk_sales_branch
+              - column:
+                  name: number
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: customer_id
+                  type: UUID
+              - column:
+                  name: source_order_id
+                  type: UUID
+              - column:
+                  name: confirmation_id
+                  type: UUID
+              - column:
+                  name: confirmation_fingerprint
+                  type: TEXT
+              - column:
+                  name: cash_shift_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: cash_shifts
+                    referencedColumnNames: id
+                    foreignKeyName: fk_sales_cash_shift
+              - column:
+                  name: status
+                  type: VARCHAR(30)
+                  defaultValue: completed
+                  constraints:
+                    nullable: false
+              - column:
+                  name: document_type
+                  type: VARCHAR(20)
+              - column:
+                  name: document_tax_id
+                  type: TEXT
+              - column:
+                  name: document_legal_name
+                  type: TEXT
+              - column:
+                  name: document_fiscal_address
+                  type: TEXT
+              - column:
+                  name: subtotal
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: discount_total
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: tax_total
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: total
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_by_user_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: users
+                    referencedColumnNames: id
+                    foreignKeyName: fk_sales_created_by_user
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addUniqueConstraint:
+            tableName: sales
+            columnNames: tenant_id, number
+            constraintName: uk_sales_tenant_number
+        - addUniqueConstraint:
+            tableName: sales
+            columnNames: tenant_id, confirmation_id
+            constraintName: uk_sales_tenant_confirmation
+        - createIndex:
+            tableName: sales
+            indexName: idx_sales_tenant_branch_created
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: branch_id
+              - column:
+                  name: created_at
+              - column:
+                  name: id
+        - sql:
+            sql: "ALTER TABLE sales ADD CONSTRAINT ck_sales_status CHECK (status IN ('completed', 'partially_returned', 'returned', 'cancelled'))"
+        - sql:
+            sql: "ALTER TABLE sales ADD CONSTRAINT ck_sales_document_type CHECK (document_type IN ('ticket', 'invoice'))"
+        - sql:
+            sql: "ALTER TABLE sales ADD CONSTRAINT ck_sales_document_snapshot CHECK ((document_type IS NULL AND document_tax_id IS NULL AND document_legal_name IS NULL AND document_fiscal_address IS NULL) OR (document_type = 'ticket' AND document_tax_id IS NULL AND document_legal_name IS NULL AND document_fiscal_address IS NULL) OR (document_type = 'invoice' AND document_tax_id IS NOT NULL AND btrim(document_tax_id) <> '' AND document_legal_name IS NOT NULL AND btrim(document_legal_name) <> '' AND document_fiscal_address IS NOT NULL AND btrim(document_fiscal_address) <> ''))"
+        - sql:
+            sql: "ALTER TABLE sales ADD CONSTRAINT ck_sales_amounts CHECK (subtotal >= 0 AND discount_total >= 0 AND tax_total >= 0 AND total >= 0)"
+        - createTable:
+            tableName: sale_items
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: sale_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: sales
+                    referencedColumnNames: id
+                    foreignKeyName: fk_sale_items_sale
+              - column:
+                  name: product_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: products
+                    referencedColumnNames: id
+                    foreignKeyName: fk_sale_items_product
+              - column:
+                  name: sku_snapshot
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: name_snapshot
+                  type: VARCHAR(300)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: quantity
+                  type: NUMERIC(12,3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: unit_price
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: discount
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: subtotal
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+        - createIndex:
+            tableName: sale_items
+            indexName: idx_sale_items_sale
+            columns:
+              - column:
+                  name: sale_id
+        - sql:
+            sql: "ALTER TABLE sale_items ADD CONSTRAINT ck_sale_items_quantity CHECK (quantity > 0)"
+        - sql:
+            sql: "ALTER TABLE sale_items ADD CONSTRAINT ck_sale_items_amounts CHECK (unit_price >= 0 AND discount >= 0 AND subtotal >= 0)"
