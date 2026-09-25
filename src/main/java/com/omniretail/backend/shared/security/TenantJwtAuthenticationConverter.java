@@ -2,6 +2,7 @@ package com.omniretail.backend.shared.security;
 
 import com.omniretail.backend.administration.entity.UserType;
 import java.util.UUID;
+import lombok.RequiredArgsConstructor;
 import org.springframework.core.convert.converter.Converter;
 import org.springframework.security.authentication.AbstractAuthenticationToken;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -14,11 +15,17 @@ import org.springframework.stereotype.Component;
  * <p>Si falta o es invalido {@code sub}, {@code tenantId}, {@code sid} o {@code userType} lanza
  * {@link InvalidBearerTokenException}: el resource server la responde como 401, igual que un token
  * vencido o mal firmado. El claim que fallo no se revela al cliente.
+ *
+ * <p>Tambien rechaza el token si su sesion ({@code sid}) ya no esta activa: asi logout y
+ * revocaciones surten efecto antes de que el JWT expire.
  */
 @Component
+@RequiredArgsConstructor
 public class TenantJwtAuthenticationConverter implements Converter<Jwt, AbstractAuthenticationToken> {
 
     private static final String INVALID_TOKEN = "Token invalido.";
+
+    private final SessionValidator sessionValidator;
 
     @Override
     public AbstractAuthenticationToken convert(Jwt jwt) {
@@ -29,6 +36,9 @@ public class TenantJwtAuthenticationConverter implements Converter<Jwt, Abstract
                 optionalUuid(jwt.getClaimAsString(JwtClaimNames.ROLE_ID)),
                 optionalUuid(jwt.getClaimAsString(JwtClaimNames.BRANCH_ID)),
                 requiredUuid(jwt.getClaimAsString(JwtClaimNames.SESSION_ID)));
+        if (!sessionValidator.isActive(user.sessionId(), user.userId())) {
+            throw new InvalidBearerTokenException(INVALID_TOKEN);
+        }
         return new AuthenticatedUserToken(user, jwt);
     }
 
