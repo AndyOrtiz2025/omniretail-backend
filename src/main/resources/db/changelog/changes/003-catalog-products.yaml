@@ -296,6 +296,8 @@ databaseChangeLog:
             sql: "ALTER TABLE products ADD CONSTRAINT ck_products_type CHECK (product_type IN ('physical', 'service', 'kit'))"
         - sql:
             sql: "ALTER TABLE products ADD CONSTRAINT ck_products_status CHECK (status IN ('published', 'archived'))"
+        - sql:
+            sql: "ALTER TABLE products ADD CONSTRAINT ck_products_sale_price CHECK (sale_price >= 0)"
         - createTable:
             tableName: unit_conversions
             columns:
@@ -350,13 +352,7 @@ databaseChangeLog:
                   defaultValueComputed: now()
                   constraints:
                     nullable: false
-        - createIndex:
-            tableName: unit_conversions
-            indexName: idx_unit_conversions_product
-            columns:
-              - column:
-                  name: tenant_id
-              - column:
-                  name: product_id
         - sql:
             sql: "ALTER TABLE unit_conversions ADD CONSTRAINT ck_unit_conversions_factor CHECK (factor > 0)"
+        - sql:
+            sql: "ALTER TABLE unit_conversions ADD CONSTRAINT uk_unit_conversions_tenant_product_units UNIQUE NULLS NOT DISTINCT (tenant_id, product_id, from_unit_id, to_unit_id)"
