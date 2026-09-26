@@ -4,6 +4,7 @@ import com.omniretail.backend.catalog.dto.ProductCreateRequest;
 import com.omniretail.backend.catalog.dto.ProductDto;
 import com.omniretail.backend.catalog.service.ProductService;
 import com.omniretail.backend.shared.dto.PageResponse;
+import com.omniretail.backend.shared.security.RequirePermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.enums.ParameterIn;
@@ -27,6 +28,7 @@ public class ProductController {
     private final ProductService productService;
 
     @GetMapping
+    @RequirePermission("catalog.products.read")
     @Operation(parameters = {
         @Parameter(
                 name = "page",
@@ -50,6 +52,7 @@ public class ProductController {
     }
 
     @PostMapping
+    @RequirePermission("catalog.products.create")
     @ResponseStatus(HttpStatus.CREATED)
     public ProductDto create(@Valid @RequestBody ProductCreateRequest request) {
         return productService.create(request);

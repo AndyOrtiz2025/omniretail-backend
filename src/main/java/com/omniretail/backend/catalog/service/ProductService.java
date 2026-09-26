@@ -4,7 +4,9 @@ import com.omniretail.backend.catalog.dto.ProductChannelsDto;
 import com.omniretail.backend.catalog.dto.ProductCreateRequest;
 import com.omniretail.backend.catalog.dto.ProductDto;
 import com.omniretail.backend.catalog.dto.ProductTrackingDto;
+import com.omniretail.backend.catalog.entity.CategoryStatus;
 import com.omniretail.backend.catalog.entity.Product;
+import com.omniretail.backend.catalog.entity.UnitStatus;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
@@ -14,6 +16,7 @@ import com.omniretail.backend.shared.security.CurrentUser;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Pageable;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,12 +38,15 @@ public class ProductService {
     @Transactional
     public ProductDto create(ProductCreateRequest request) {
         UUID tenantId = currentUser.require().tenantId();
-        validateSkuIsAvailable(tenantId, request.sku());
+        String sku = request.sku().trim();
+        String barcode = normalizeBarcode(request.barcode());
+        validateSkuIsAvailable(tenantId, sku);
+        validateBarcodeIsAvailable(tenantId, barcode);
         validateCatalogReferences(tenantId, request);
 
         Product product = Product.builder()
-                .sku(request.sku())
-                .barcode(request.barcode())
+                .sku(sku)
+                .barcode(barcode)
                 .name(request.name())
                 .description(request.description())
                 .brand(request.brand())
@@ -69,9 +75,27 @@ public class ProductService {
         }
     }
 
+    private void validateBarcodeIsAvailable(UUID tenantId, String barcode) {
+        if (barcode != null && productRepository.existsByTenantIdAndBarcode(tenantId, barcode)) {
+            throw BusinessException.conflict(
+                    "PRODUCT_BARCODE_CONFLICT", "Ya existe un producto con ese codigo de barras.");
+        }
+    }
+
+    private String normalizeBarcode(String barcode) {
+        if (barcode == null || barcode.isBlank()) {
+            return null;
+        }
+        return barcode.trim();
+    }
+
     private void validateCatalogReferences(UUID tenantId, ProductCreateRequest request) {
-        if (!categoryRepository.existsByIdAndTenantId(request.categoryId(), tenantId)) {
-            throw BusinessException.notFound("La categoria no existe.");
+        if (!categoryRepository.existsByIdAndTenantIdAndStatus(
+                request.categoryId(), tenantId, CategoryStatus.active)) {
+            throw new BusinessException(
+                    HttpStatus.NOT_FOUND,
+                    "CATEGORY_NOT_FOUND",
+                    "La categoria no existe o se encuentra inactiva.");
         }
         requireOwnedUnit(request.baseUnitId(), tenantId);
         if (request.inventoryUnitId() != null) {
@@ -83,8 +107,11 @@ public class ProductService {
     }
 
     private void requireOwnedUnit(UUID unitId, UUID tenantId) {
-        if (!unitRepository.existsByIdAndTenantId(unitId, tenantId)) {
-            throw BusinessException.notFound("La unidad no existe.");
+        if (!unitRepository.existsByIdAndTenantIdAndStatus(unitId, tenantId, UnitStatus.active)) {
+            throw new BusinessException(
+                    HttpStatus.NOT_FOUND,
+                    "UNIT_NOT_FOUND",
+                    "La unidad no existe o se encuentra inactiva.");
         }
     }
 

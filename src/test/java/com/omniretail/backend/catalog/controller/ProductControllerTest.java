@@ -2,6 +2,8 @@ package com.omniretail.backend.catalog.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -24,6 +26,7 @@ import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.service.ProductService;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.exception.BusinessException;
+import com.omniretail.backend.shared.security.PermissionResolver;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -64,9 +67,13 @@ class ProductControllerTest {
     @MockitoBean
     private SessionService sessionService;
 
+    @MockitoBean
+    private PermissionResolver permissionResolver;
+
     @BeforeEach
     void setUp() {
         given(sessionService.isActive(any(), any())).willReturn(true);
+        given(permissionResolver.hasPermission(any(UUID.class), any(UUID.class), anyString())).willReturn(true);
     }
 
     @Test
@@ -75,7 +82,7 @@ class ProductControllerTest {
     }
 
     @Test
-    void authenticatedGetSucceeds() throws Exception {
+    void authenticatedGetWithReadPermissionSucceeds() throws Exception {
         given(productService.list(any(Pageable.class)))
                 .willReturn(new PageResponse<>(List.of(productDto()), 1, 20, 1, 1));
 
@@ -84,6 +91,17 @@ class ProductControllerTest {
                 .andExpect(jsonPath("$.items[0].tenantId").value(TENANT_ID.toString()))
                 .andExpect(jsonPath("$.items[0].tracking.stock").value(true))
                 .andExpect(jsonPath("$.items[0].channels.mobileApp").value(false));
+    }
+
+    @Test
+    void authenticatedGetWithoutReadPermissionIsForbidden() throws Exception {
+        given(permissionResolver.hasPermission(
+                        any(UUID.class), any(UUID.class), eq("catalog.products.read")))
+                .willReturn(false);
+
+        mockMvc.perform(get(PRODUCTS).header("Authorization", token()))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
     }
 
     @Test
@@ -128,7 +146,7 @@ class ProductControllerTest {
     }
 
     @Test
-    void validPostSucceeds() throws Exception {
+    void authenticatedPostWithCreatePermissionSucceeds() throws Exception {
         given(productService.create(any(ProductCreateRequest.class))).willReturn(productDto());
 
         mockMvc.perform(post(PRODUCTS)
@@ -142,6 +160,20 @@ class ProductControllerTest {
     }
 
     @Test
+    void authenticatedPostWithoutCreatePermissionIsForbidden() throws Exception {
+        given(permissionResolver.hasPermission(
+                        any(UUID.class), any(UUID.class), eq("catalog.products.create")))
+                .willReturn(false);
+
+        mockMvc.perform(post(PRODUCTS)
+                        .header("Authorization", token())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validBody(null)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+    }
+
+    @Test
     void invalidRequiredDataIsRejected() throws Exception {
         mockMvc.perform(post(PRODUCTS)
                         .header("Authorization", token())
@@ -152,8 +184,20 @@ class ProductControllerTest {
     }
 
     @Test
-    void lotAndExpirationMustBeConfiguredTogether() throws Exception {
+    void lotWithoutExpirationIsAccepted() throws Exception {
         String body = validBody(null).replace("\"expiration\": true", "\"expiration\": false");
+        given(productService.create(any(ProductCreateRequest.class))).willReturn(productDto());
+
+        mockMvc.perform(post(PRODUCTS)
+                        .header("Authorization", token())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isCreated());
+    }
+
+    @Test
+    void expirationWithoutLotIsRejected() throws Exception {
+        String body = validBody(null).replace("\"lot\": true", "\"lot\": false");
 
         mockMvc.perform(post(PRODUCTS)
                         .header("Authorization", token())
@@ -210,6 +254,7 @@ class ProductControllerTest {
                 .name("Usuario catalogo")
                 .email("catalogo@test.local")
                 .type(UserType.employee)
+                .roleId(UUID.randomUUID())
                 .build();
         ReflectionTestUtils.setField(user, "id", UUID.randomUUID());
         user.setTenantId(TENANT_ID);

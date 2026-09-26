@@ -12,9 +12,11 @@ import com.omniretail.backend.catalog.dto.ProductChannelsDto;
 import com.omniretail.backend.catalog.dto.ProductCreateRequest;
 import com.omniretail.backend.catalog.dto.ProductDto;
 import com.omniretail.backend.catalog.dto.ProductTrackingDto;
+import com.omniretail.backend.catalog.entity.CategoryStatus;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.entity.ProductType;
+import com.omniretail.backend.catalog.entity.UnitStatus;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
@@ -139,44 +141,160 @@ class ProductServiceTest {
     }
 
     @Test
+    void duplicateBarcodeInSameTenantIsRejected() {
+        ProductCreateRequest request = validRequest();
+        given(productRepository.existsByTenantIdAndBarcode(TENANT_ID, request.barcode())).willReturn(true);
+
+        assertThatThrownBy(() -> service.create(request))
+                .isInstanceOfSatisfying(BusinessException.class, exception -> {
+                    assertThat(exception.getStatus()).isEqualTo(HttpStatus.CONFLICT);
+                    assertThat(exception.getCode()).isEqualTo("PRODUCT_BARCODE_CONFLICT");
+                });
+        verify(productRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void blankBarcodeIsPersistedAsNull() {
+        allowValidCreation();
+
+        service.create(requestWithIdentity("SKU-001", "   "));
+
+        assertThat(savedProduct().getBarcode()).isNull();
+    }
+
+    @Test
+    void skuIsTrimmedBeforeUniquenessCheckAndPersistence() {
+        allowValidCreation();
+
+        service.create(requestWithIdentity("  SKU-001  ", null));
+
+        verify(productRepository).existsByTenantIdAndSku(TENANT_ID, "SKU-001");
+        assertThat(savedProduct().getSku()).isEqualTo("SKU-001");
+    }
+
+    @Test
     void categoryFromAnotherTenantIsRejected() {
         ProductCreateRequest request = validRequest();
-        given(categoryRepository.existsByIdAndTenantId(request.categoryId(), TENANT_ID)).willReturn(false);
+        given(categoryRepository.existsByIdAndTenantIdAndStatus(
+                        request.categoryId(), TENANT_ID, CategoryStatus.active))
+                .willReturn(false);
 
-        assertNotFound(() -> service.create(request));
+        assertNotFound(() -> service.create(request), "CATEGORY_NOT_FOUND");
         verify(productRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void missingCategoryIsRejected() {
+        ProductCreateRequest request = validRequest();
+        given(categoryRepository.existsByIdAndTenantIdAndStatus(
+                        request.categoryId(), TENANT_ID, CategoryStatus.active))
+                .willReturn(false);
+
+        assertNotFound(() -> service.create(request), "CATEGORY_NOT_FOUND");
+    }
+
+    @Test
+    void archivedCategoryIsRejected() {
+        ProductCreateRequest request = validRequest();
+        given(categoryRepository.existsByIdAndTenantIdAndStatus(
+                        request.categoryId(), TENANT_ID, CategoryStatus.active))
+                .willReturn(false);
+
+        assertNotFound(() -> service.create(request), "CATEGORY_NOT_FOUND");
     }
 
     @Test
     void baseUnitFromAnotherTenantIsRejected() {
         ProductCreateRequest request = validRequest();
-        given(categoryRepository.existsByIdAndTenantId(request.categoryId(), TENANT_ID)).willReturn(true);
-        given(unitRepository.existsByIdAndTenantId(request.baseUnitId(), TENANT_ID)).willReturn(false);
+        given(categoryRepository.existsByIdAndTenantIdAndStatus(
+                        request.categoryId(), TENANT_ID, CategoryStatus.active))
+                .willReturn(true);
+        given(unitRepository.existsByIdAndTenantIdAndStatus(
+                        request.baseUnitId(), TENANT_ID, UnitStatus.active))
+                .willReturn(false);
 
-        assertNotFound(() -> service.create(request));
+        assertNotFound(() -> service.create(request), "UNIT_NOT_FOUND");
         verify(productRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void missingUnitIsRejected() {
+        ProductCreateRequest request = validRequest();
+        given(categoryRepository.existsByIdAndTenantIdAndStatus(
+                        request.categoryId(), TENANT_ID, CategoryStatus.active))
+                .willReturn(true);
+        given(unitRepository.existsByIdAndTenantIdAndStatus(
+                        request.baseUnitId(), TENANT_ID, UnitStatus.active))
+                .willReturn(false);
+
+        assertNotFound(() -> service.create(request), "UNIT_NOT_FOUND");
+    }
+
+    @Test
+    void archivedUnitIsRejected() {
+        ProductCreateRequest request = validRequest();
+        given(categoryRepository.existsByIdAndTenantIdAndStatus(
+                        request.categoryId(), TENANT_ID, CategoryStatus.active))
+                .willReturn(true);
+        given(unitRepository.existsByIdAndTenantIdAndStatus(
+                        request.baseUnitId(), TENANT_ID, UnitStatus.active))
+                .willReturn(false);
+
+        assertNotFound(() -> service.create(request), "UNIT_NOT_FOUND");
     }
 
     @Test
     void optionalInventoryUnitFromAnotherTenantIsRejected() {
         ProductCreateRequest request = validRequest();
-        given(categoryRepository.existsByIdAndTenantId(request.categoryId(), TENANT_ID)).willReturn(true);
-        given(unitRepository.existsByIdAndTenantId(request.baseUnitId(), TENANT_ID)).willReturn(true);
-        given(unitRepository.existsByIdAndTenantId(request.inventoryUnitId(), TENANT_ID)).willReturn(false);
+        given(categoryRepository.existsByIdAndTenantIdAndStatus(
+                        request.categoryId(), TENANT_ID, CategoryStatus.active))
+                .willReturn(true);
+        given(unitRepository.existsByIdAndTenantIdAndStatus(
+                        request.baseUnitId(), TENANT_ID, UnitStatus.active))
+                .willReturn(true);
+        given(unitRepository.existsByIdAndTenantIdAndStatus(
+                        request.inventoryUnitId(), TENANT_ID, UnitStatus.active))
+                .willReturn(false);
 
-        assertNotFound(() -> service.create(request));
+        assertNotFound(() -> service.create(request), "UNIT_NOT_FOUND");
         verify(productRepository, never()).saveAndFlush(any());
     }
 
     @Test
     void saleUnitFromAnotherTenantIsRejected() {
         ProductCreateRequest request = requestWithInventoryUnit(null);
-        given(categoryRepository.existsByIdAndTenantId(request.categoryId(), TENANT_ID)).willReturn(true);
-        given(unitRepository.existsByIdAndTenantId(request.baseUnitId(), TENANT_ID)).willReturn(true);
-        given(unitRepository.existsByIdAndTenantId(request.saleUnitId(), TENANT_ID)).willReturn(false);
+        given(categoryRepository.existsByIdAndTenantIdAndStatus(
+                        request.categoryId(), TENANT_ID, CategoryStatus.active))
+                .willReturn(true);
+        given(unitRepository.existsByIdAndTenantIdAndStatus(
+                        request.baseUnitId(), TENANT_ID, UnitStatus.active))
+                .willReturn(true);
+        given(unitRepository.existsByIdAndTenantIdAndStatus(
+                        request.saleUnitId(), TENANT_ID, UnitStatus.active))
+                .willReturn(false);
 
-        assertNotFound(() -> service.create(request));
+        assertNotFound(() -> service.create(request), "UNIT_NOT_FOUND");
         verify(productRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void activeReferencesAndNullOptionalUnitsAreAccepted() {
+        allowValidCreation();
+
+        service.create(requestWithUnits(null, null));
+
+        Product saved = savedProduct();
+        assertThat(saved.getInventoryUnitId()).isNull();
+        assertThat(saved.getSaleUnitId()).isNull();
+    }
+
+    @Test
+    void activeCategoryAndUnitsAreAccepted() {
+        allowValidCreation();
+
+        service.create(validRequest());
+
+        verify(productRepository).saveAndFlush(any(Product.class));
     }
 
     @Test
@@ -190,8 +308,12 @@ class ProductServiceTest {
     }
 
     private void allowValidCreation() {
-        given(categoryRepository.existsByIdAndTenantId(any(UUID.class), any(UUID.class))).willReturn(true);
-        given(unitRepository.existsByIdAndTenantId(any(UUID.class), any(UUID.class))).willReturn(true);
+        given(categoryRepository.existsByIdAndTenantIdAndStatus(
+                        any(UUID.class), any(UUID.class), any(CategoryStatus.class)))
+                .willReturn(true);
+        given(unitRepository.existsByIdAndTenantIdAndStatus(
+                        any(UUID.class), any(UUID.class), any(UnitStatus.class)))
+                .willReturn(true);
         given(productRepository.saveAndFlush(any(Product.class))).willAnswer(invocation -> invocation.getArgument(0));
     }
 
@@ -201,10 +323,12 @@ class ProductServiceTest {
         return captor.getValue();
     }
 
-    private static void assertNotFound(Runnable operation) {
+    private static void assertNotFound(Runnable operation, String code) {
         assertThatThrownBy(operation::run)
-                .isInstanceOfSatisfying(BusinessException.class,
-                        exception -> assertThat(exception.getStatus()).isEqualTo(HttpStatus.NOT_FOUND));
+                .isInstanceOfSatisfying(BusinessException.class, exception -> {
+                    assertThat(exception.getStatus()).isEqualTo(HttpStatus.NOT_FOUND);
+                    assertThat(exception.getCode()).isEqualTo(code);
+                });
     }
 
     private static ProductCreateRequest validRequest() {
@@ -212,9 +336,22 @@ class ProductServiceTest {
     }
 
     private static ProductCreateRequest requestWithInventoryUnit(UUID inventoryUnitId) {
+        return requestWithUnits(inventoryUnitId, UUID.randomUUID());
+    }
+
+    private static ProductCreateRequest requestWithUnits(UUID inventoryUnitId, UUID saleUnitId) {
+        return request("SKU-001", "123456789", inventoryUnitId, saleUnitId);
+    }
+
+    private static ProductCreateRequest requestWithIdentity(String sku, String barcode) {
+        return request(sku, barcode, UUID.randomUUID(), UUID.randomUUID());
+    }
+
+    private static ProductCreateRequest request(
+            String sku, String barcode, UUID inventoryUnitId, UUID saleUnitId) {
         return new ProductCreateRequest(
-                "SKU-001",
-                "123456789",
+                sku,
+                barcode,
                 "Producto",
                 "Descripcion",
                 "Marca",
@@ -222,10 +359,10 @@ class ProductServiceTest {
                 UUID.randomUUID(),
                 UUID.randomUUID(),
                 inventoryUnitId,
-                UUID.randomUUID(),
+                saleUnitId,
                 new BigDecimal("25.50"),
                 ProductStatus.published,
-                new ProductTrackingDto(true, true, true, false),
+                new ProductTrackingDto(true, true, false, false),
                 new ProductChannelsDto(true, true, false));
     }
 }

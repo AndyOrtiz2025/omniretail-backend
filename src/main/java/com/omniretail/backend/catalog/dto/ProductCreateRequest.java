@@ -24,7 +24,7 @@ public record ProductCreateRequest(
         @NotNull UUID categoryId,
         @NotNull UUID baseUnitId,
         UUID inventoryUnitId,
-        @NotNull UUID saleUnitId,
+        UUID saleUnitId,
         @NotNull @DecimalMin("0.00") @DecimalMax("9999999.99") @Digits(integer = 7, fraction = 2)
                 BigDecimal salePrice,
         @NotNull ProductStatus status,
@@ -32,11 +32,11 @@ public record ProductCreateRequest(
         @NotNull @Valid ProductChannelsDto channels) {
 
     @JsonIgnore
-    @AssertTrue(message = "Lotes y fecha de vencimiento deben estar activados o desactivados juntos.")
+    @AssertTrue(message = "El control por fecha de vencimiento requiere que el control por lote este activado.")
     public boolean isLotExpirationConfigurationValid() {
-        return tracking == null
-                || tracking.lot() == null
-                || tracking.expiration() == null
-                || tracking.lot().equals(tracking.expiration());
+        if (tracking == null) {
+            return true;
+        }
+        return !Boolean.TRUE.equals(tracking.expiration()) || Boolean.TRUE.equals(tracking.lot());
     }
 }
