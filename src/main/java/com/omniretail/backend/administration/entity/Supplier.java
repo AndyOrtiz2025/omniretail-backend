@@ -55,9 +55,8 @@ public class Supplier extends TenantScopedEntity {
     @Column(name = "notes")
     private String notes;
 
-    @Builder.Default
     @Column(name = "lead_time_days")
-    private Integer leadTimeDays = 0;
+    private Integer leadTimeDays;
 
     @NotNull
     @Builder.Default

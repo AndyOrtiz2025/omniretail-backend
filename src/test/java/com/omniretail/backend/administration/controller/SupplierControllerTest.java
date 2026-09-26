@@ -160,6 +160,85 @@ class SupplierControllerTest {
     }
 
     @Test
+    void createSupplierWithRepeatedCfTaxIdAllowed() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+
+        String bodyOne = """
+                {"name":"Cliente Final Uno","taxId":"CF"}
+                """;
+
+        mockMvc.perform(post(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(bodyOne))
+                .andExpect(status().isCreated());
+
+        String bodyTwo = """
+                {"name":"Cliente Final Dos","taxId":"c/f"}
+                """;
+
+        mockMvc.perform(post(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(bodyTwo))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.taxId").value("c/f"));
+    }
+
+    @Test
+    void createSupplierWithEquivalentTaxIdFormatConflicts() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+
+        String bodyOne = """
+                {"name":"Proveedor Nit Uno","taxId":"1234567-K"}
+                """;
+
+        mockMvc.perform(post(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(bodyOne))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.taxId").value("1234567-K"));
+
+        String bodyTwo = """
+                {"name":"Proveedor Nit Dos","taxId":"1234567k"}
+                """;
+
+        mockMvc.perform(post(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(bodyTwo))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SUPPLIER_TAX_ID_EXISTS"));
+    }
+
+    @Test
+    void createSupplierReusesArchivedSupplierWithSameName() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        Supplier archived = persistSupplier(tenant, "Proveedor Reciclado", "1111111-1", SupplierStatus.archived);
+
+        String body = """
+                {"name":"Proveedor Reciclado","taxId":"1111111-1","phone":"22334455"}
+                """;
+
+        mockMvc.perform(post(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.id").value(archived.getId().toString()))
+                .andExpect(jsonPath("$.status").value("active"))
+                .andExpect(jsonPath("$.phone").value("22334455"));
+
+        mockMvc.perform(get(BASE_URL).header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalItems").value(1));
+    }
+
+    @Test
     void sameNameAndTaxIdAllowedAcrossTenants() throws Exception {
         Tenant tenantA = persistTenant();
         Tenant tenantB = persistTenant();

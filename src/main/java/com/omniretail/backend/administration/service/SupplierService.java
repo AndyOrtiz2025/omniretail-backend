@@ -53,14 +53,38 @@ public class SupplierService {
         UUID tenantId = currentUser.require().tenantId();
 
         String name = request.name().trim();
-        if (supplierRepository.existsByTenantIdAndNameIgnoreCase(tenantId, name)) {
+        Supplier nameMatch =
+                supplierRepository.findByTenantIdAndNameIgnoreCase(tenantId, name).orElse(null);
+        if (nameMatch != null && nameMatch.getStatus() != SupplierStatus.archived) {
             throw BusinessException.conflict("SUPPLIER_NAME_EXISTS", "Ya existe un proveedor con el nombre " + name);
         }
 
         String taxId = normalize(request.taxId());
-        if (taxId != null && supplierRepository.existsByTenantIdAndTaxIdIgnoreCase(tenantId, taxId)) {
-            throw BusinessException.conflict(
-                    "SUPPLIER_TAX_ID_EXISTS", "Ya existe un proveedor con la identificación tributaria " + taxId);
+        String taxIdKey = normalizeTaxIdKey(taxId);
+        Supplier taxIdMatch = null;
+        if (taxIdKey != null) {
+            taxIdMatch = supplierRepository.findByTenantIdAndNormalizedTaxId(tenantId, taxIdKey).orElse(null);
+            if (taxIdMatch != null && taxIdMatch.getStatus() != SupplierStatus.archived) {
+                throw BusinessException.conflict(
+                        "SUPPLIER_TAX_ID_EXISTS", "Ya existe un proveedor con la identificación tributaria " + taxId);
+            }
+        }
+
+        Supplier archivedMatch = taxIdMatch != null
+                ? taxIdMatch
+                : (nameMatch != null && nameMatch.getStatus() == SupplierStatus.archived ? nameMatch : null);
+
+        if (archivedMatch != null) {
+            archivedMatch.setName(name);
+            archivedMatch.setLegalName(normalize(request.legalName()));
+            archivedMatch.setTaxId(taxId);
+            archivedMatch.setEmail(normalizeEmail(request.email()));
+            archivedMatch.setPhone(normalize(request.phone()));
+            archivedMatch.setAddress(normalize(request.address()));
+            archivedMatch.setNotes(normalize(request.notes()));
+            archivedMatch.setStatus(request.status() != null ? request.status() : SupplierStatus.active);
+            Supplier reactivated = supplierRepository.save(archivedMatch);
+            return SupplierResponse.from(reactivated);
         }
 
         Supplier supplier = Supplier.builder()
@@ -91,9 +115,10 @@ public class SupplierService {
         }
 
         String taxId = normalize(request.taxId());
-        if (taxId != null
-                && !taxId.equalsIgnoreCase(supplier.getTaxId())
-                && supplierRepository.existsByTenantIdAndTaxIdIgnoreCaseAndIdNot(tenantId, taxId, id)) {
+        String taxIdKey = normalizeTaxIdKey(taxId);
+        if (taxIdKey != null
+                && !taxIdKey.equals(normalizeTaxIdKey(supplier.getTaxId()))
+                && supplierRepository.findByTenantIdAndNormalizedTaxIdAndIdNot(tenantId, taxIdKey, id).isPresent()) {
             throw BusinessException.conflict(
                     "SUPPLIER_TAX_ID_EXISTS", "Ya existe un proveedor con la identificación tributaria " + taxId);
         }
@@ -122,6 +147,15 @@ public class SupplierService {
 
     private static String normalize(String value) {
         return value != null && !value.isBlank() ? value.trim() : null;
+    }
+
+    // Clave solo para comparar duplicados (mayusculas, sin guiones/espacios); CF o vacio nunca es duplicado.
+    private static String normalizeTaxIdKey(String taxId) {
+        if (taxId == null) {
+            return null;
+        }
+        String cleaned = taxId.trim().toUpperCase().replaceAll("[\\s/-]", "");
+        return !cleaned.isEmpty() && !cleaned.equals("CF") ? cleaned : null;
     }
 
     private static String normalizeEmail(String value) {

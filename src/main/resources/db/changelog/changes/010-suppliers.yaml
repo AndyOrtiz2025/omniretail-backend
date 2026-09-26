@@ -47,7 +47,6 @@ databaseChangeLog:
               - column:
                   name: lead_time_days
                   type: INT
-                  defaultValueNumeric: 0
               - column:
                   name: status
                   type: VARCHAR(20)
@@ -70,15 +69,13 @@ databaseChangeLog:
             sql: "ALTER TABLE suppliers ADD CONSTRAINT chk_suppliers_status CHECK (status IN ('active', 'inactive', 'archived'))"
         - createIndex:
             tableName: suppliers
-            indexName: idx_suppliers_tenant_id
-            columns:
-              - column:
-                  name: tenant_id
-        - createIndex:
-            tableName: suppliers
             indexName: idx_suppliers_tenant_status
             columns:
               - column:
                   name: tenant_id
               - column:
                   name: status
+        - sql:
+            sql: "CREATE UNIQUE INDEX uk_suppliers_tenant_name ON suppliers (tenant_id, lower(name))"
+        - sql:
+            sql: "CREATE UNIQUE INDEX uk_suppliers_tenant_tax_id ON suppliers (tenant_id, upper(regexp_replace(tax_id, '[\\s/-]', '', 'g'))) WHERE tax_id IS NOT NULL AND upper(regexp_replace(tax_id, '[\\s/-]', '', 'g')) <> 'CF'"
