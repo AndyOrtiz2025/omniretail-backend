@@ -15,6 +15,11 @@ public interface ProductRepository extends JpaRepository<Product, UUID> {
 
     List<Product> findByTenantIdAndStatus(UUID tenantId, ProductStatus status);
 
+    List<Product> findByTenantIdAndStatusAndChannelEcommerceTrue(UUID tenantId, ProductStatus status);
+
+    Optional<Product> findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
+            UUID tenantId, UUID id, ProductStatus status);
+
     List<Product> findByTenantIdAndCategoryId(UUID tenantId, UUID categoryId);
 
     boolean existsByTenantIdAndSku(UUID tenantId, String sku);
