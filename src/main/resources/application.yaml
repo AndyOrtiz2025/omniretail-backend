@@ -4,6 +4,11 @@ spring:
   application:
     name: omniretail-backend
 
+  data:
+    web:
+      pageable:
+        one-indexed-parameters: true
+
   # Lee el `.env` de la raiz del proyecto si existe (mismo archivo que usa docker compose).
   config:
     import: optional:file:.env[.properties]

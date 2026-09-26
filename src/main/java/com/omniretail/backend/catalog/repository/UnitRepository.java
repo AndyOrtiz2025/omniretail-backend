@@ -15,5 +15,9 @@ public interface UnitRepository extends JpaRepository<Unit, UUID> {
 
     List<Unit> findByTenantId(UUID tenantId);
 
+    boolean existsByIdAndTenantId(UUID id, UUID tenantId);
+
+    boolean existsByIdAndTenantIdAndStatus(UUID id, UUID tenantId, UnitStatus status);
+
     boolean existsByTenantIdAndCode(UUID tenantId, String code);
 }
