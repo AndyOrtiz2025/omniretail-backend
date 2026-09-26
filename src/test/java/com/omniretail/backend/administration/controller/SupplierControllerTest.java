@@ -218,7 +218,7 @@ class SupplierControllerTest {
     void createSupplierReusesArchivedSupplierWithSameName() throws Exception {
         Tenant tenant = persistTenant();
         String token = tokenFor(tenant);
-        Supplier archived = persistSupplier(tenant, "Proveedor Reciclado", "1111111-1", SupplierStatus.archived);
+        persistSupplier(tenant, "Proveedor Reciclado", "1111111-1", SupplierStatus.archived);
 
         String body = """
                 {"name":"Proveedor Reciclado","taxId":"1111111-1","phone":"22334455"}
@@ -228,14 +228,8 @@ class SupplierControllerTest {
                         .header("Authorization", bearer(token))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.id").value(archived.getId().toString()))
-                .andExpect(jsonPath("$.status").value("active"))
-                .andExpect(jsonPath("$.phone").value("22334455"));
-
-        mockMvc.perform(get(BASE_URL).header("Authorization", bearer(token)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.totalItems").value(1));
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SUPPLIER_NAME_EXISTS"));
     }
 
     @Test

@@ -53,38 +53,16 @@ public class SupplierService {
         UUID tenantId = currentUser.require().tenantId();
 
         String name = request.name().trim();
-        Supplier nameMatch =
-                supplierRepository.findByTenantIdAndNameIgnoreCase(tenantId, name).orElse(null);
-        if (nameMatch != null && nameMatch.getStatus() != SupplierStatus.archived) {
+        if (supplierRepository.findByTenantIdAndNameIgnoreCase(tenantId, name).isPresent()) {
             throw BusinessException.conflict("SUPPLIER_NAME_EXISTS", "Ya existe un proveedor con el nombre " + name);
         }
 
         String taxId = normalize(request.taxId());
         String taxIdKey = normalizeTaxIdKey(taxId);
-        Supplier taxIdMatch = null;
-        if (taxIdKey != null) {
-            taxIdMatch = supplierRepository.findByTenantIdAndNormalizedTaxId(tenantId, taxIdKey).orElse(null);
-            if (taxIdMatch != null && taxIdMatch.getStatus() != SupplierStatus.archived) {
-                throw BusinessException.conflict(
-                        "SUPPLIER_TAX_ID_EXISTS", "Ya existe un proveedor con la identificación tributaria " + taxId);
-            }
-        }
-
-        Supplier archivedMatch = taxIdMatch != null
-                ? taxIdMatch
-                : (nameMatch != null && nameMatch.getStatus() == SupplierStatus.archived ? nameMatch : null);
-
-        if (archivedMatch != null) {
-            archivedMatch.setName(name);
-            archivedMatch.setLegalName(normalize(request.legalName()));
-            archivedMatch.setTaxId(taxId);
-            archivedMatch.setEmail(normalizeEmail(request.email()));
-            archivedMatch.setPhone(normalize(request.phone()));
-            archivedMatch.setAddress(normalize(request.address()));
-            archivedMatch.setNotes(normalize(request.notes()));
-            archivedMatch.setStatus(request.status() != null ? request.status() : SupplierStatus.active);
-            Supplier reactivated = supplierRepository.save(archivedMatch);
-            return SupplierResponse.from(reactivated);
+        if (taxIdKey != null
+                && supplierRepository.findByTenantIdAndNormalizedTaxId(tenantId, taxIdKey).isPresent()) {
+            throw BusinessException.conflict(
+                    "SUPPLIER_TAX_ID_EXISTS", "Ya existe un proveedor con la identificación tributaria " + taxId);
         }
 
         Supplier supplier = Supplier.builder()
