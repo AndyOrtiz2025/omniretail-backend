@@ -23,6 +23,10 @@ public class BusinessException extends RuntimeException {
         return new BusinessException(HttpStatus.NOT_FOUND, "NOT_FOUND", message);
     }
 
+    public static BusinessException badRequest(String message) {
+        return new BusinessException(HttpStatus.BAD_REQUEST, "BAD_REQUEST", message);
+    }
+
     public static BusinessException conflict(String code, String message) {
         return new BusinessException(HttpStatus.CONFLICT, code, message);
     }

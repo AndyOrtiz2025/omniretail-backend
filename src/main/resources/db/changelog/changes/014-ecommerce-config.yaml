@@ -1,0 +1,132 @@
+databaseChangeLog:
+  - changeSet:
+      id: 014-ecommerce-config
+      author: joga17000
+      changes:
+        - createTable:
+            tableName: ecommerce_configs
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    unique: true
+                    uniqueConstraintName: uk_ecommerce_config_tenant
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_ecommerce_config_tenant
+              - column:
+                  name: enabled
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: store_name
+                  type: VARCHAR(120)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: logo_url
+                  type: VARCHAR(500)
+              - column:
+                  name: contact_phone
+                  type: VARCHAR(20)
+              - column:
+                  name: contact_email
+                  type: VARCHAR(254)
+              - column:
+                  name: require_account_for_checkout
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+                  constraints:
+                    nullable: false
+              - column:
+                  name: guest_tracking_enabled
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: allowed_delivery_methods
+                  type: varchar(30)[]
+              - column:
+                  name: allowed_payment_methods
+                  type: varchar(30)[]
+              - column:
+                  name: default_branch_id
+                  type: UUID
+                  constraints:
+                    referencedTableName: branches
+                    referencedColumnNames: id
+                    foreignKeyName: fk_ecommerce_config_default_branch
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - createIndex:
+            tableName: ecommerce_configs
+            indexName: idx_ecommerce_config_tenant_id
+            columns:
+              - column:
+                  name: tenant_id
+        - createTable:
+            tableName: hero_banner_configs
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    unique: true
+                    uniqueConstraintName: uk_hero_banner_config_tenant
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_hero_banner_config_tenant
+              - column:
+                  name: slides
+                  type: JSONB
+                  defaultValueComputed: "'[]'::jsonb"
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - createIndex:
+            tableName: hero_banner_configs
+            indexName: idx_hero_banner_config_tenant_id
+            columns:
+              - column:
+                  name: tenant_id
