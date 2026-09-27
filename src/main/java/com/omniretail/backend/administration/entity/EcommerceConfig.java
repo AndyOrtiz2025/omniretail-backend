@@ -54,11 +54,11 @@ public class EcommerceConfig extends TenantScopedEntity {
     private boolean guestTrackingEnabled;
 
     @JdbcTypeCode(SqlTypes.ARRAY)
-    @Column(name = "allowed_delivery_methods", columnDefinition = "varchar(30)[]")
+    @Column(name = "allowed_delivery_methods", columnDefinition = "text[]")
     private List<String> allowedDeliveryMethods;
 
     @JdbcTypeCode(SqlTypes.ARRAY)
-    @Column(name = "allowed_payment_methods", columnDefinition = "varchar(30)[]")
+    @Column(name = "allowed_payment_methods", columnDefinition = "text[]")
     private List<String> allowedPaymentMethods;
 
     @Column(name = "default_branch_id")
