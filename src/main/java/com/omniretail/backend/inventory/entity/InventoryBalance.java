@@ -42,4 +42,13 @@ public class InventoryBalance extends TenantScopedEntity {
     @Builder.Default
     @Column(name = "reserved_quantity", nullable = false, precision = 12, scale = 3)
     private BigDecimal reservedQuantity = BigDecimal.ZERO;
+
+    public void deduct(BigDecimal quantity) {
+        BigDecimal resultingQuantity = this.quantity.subtract(quantity);
+        if (resultingQuantity.compareTo(reservedQuantity) < 0) {
+            throw new IllegalStateException(
+                    "La cantidad física no puede ser menor que la cantidad reservada.");
+        }
+        this.quantity = resultingQuantity;
+    }
 }

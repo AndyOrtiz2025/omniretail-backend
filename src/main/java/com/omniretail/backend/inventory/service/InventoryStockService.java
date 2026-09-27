@@ -1,0 +1,99 @@
+package com.omniretail.backend.inventory.service;
+
+import com.omniretail.backend.inventory.dto.DeductStockCommand;
+import com.omniretail.backend.inventory.entity.InventoryBalance;
+import com.omniretail.backend.inventory.entity.InventoryMovement;
+import com.omniretail.backend.inventory.entity.InventoryMovementType;
+import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
+import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
+import com.omniretail.backend.shared.exception.BusinessException;
+import java.math.BigDecimal;
+import java.util.UUID;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+@RequiredArgsConstructor
+public class InventoryStockService {
+
+    private static final String GENERIC_DEDUCTION_REASON = "Deducción de inventario";
+    private static final String INSUFFICIENT_STOCK_CODE = "INSUFFICIENT_STOCK";
+    private static final String INSUFFICIENT_STOCK_MESSAGE = "Stock insuficiente.";
+
+    private final InventoryBalanceRepository inventoryBalanceRepository;
+    private final InventoryMovementRepository inventoryMovementRepository;
+
+    @Transactional
+    public InventoryMovement deductStock(
+            UUID tenantId, UUID branchId, UUID productId, BigDecimal qty) {
+        return doDeductStock(new DeductStockCommand(
+                tenantId,
+                branchId,
+                productId,
+                qty,
+                GENERIC_DEDUCTION_REASON,
+                null,
+                null,
+                null));
+    }
+
+    @Transactional
+    public InventoryMovement deductStock(DeductStockCommand command) {
+        if (command == null) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "INVALID_STOCK_COMMAND",
+                    "Los datos de la deducción son requeridos.");
+        }
+        return doDeductStock(command);
+    }
+
+    private InventoryMovement doDeductStock(DeductStockCommand command) {
+        validateQuantity(command.qty());
+
+        InventoryBalance balance = inventoryBalanceRepository
+                .findByTenantIdAndBranchIdAndProductIdAndLocationIdIsNull(
+                        command.tenantId(), command.branchId(), command.productId())
+                .orElseThrow(InventoryStockService::insufficientStock);
+
+        BigDecimal availableQuantity =
+                balance.getQuantity().subtract(balance.getReservedQuantity());
+        if (command.qty().compareTo(availableQuantity) > 0) {
+            throw insufficientStock();
+        }
+
+        BigDecimal quantityBefore = balance.getQuantity();
+        balance.deduct(command.qty());
+
+        return inventoryMovementRepository.save(InventoryMovement.builder()
+                .tenantId(command.tenantId())
+                .branchId(command.branchId())
+                .productId(command.productId())
+                .type(InventoryMovementType.out)
+                .reason(command.reason())
+                .quantity(command.qty())
+                .quantityBefore(quantityBefore)
+                .quantityAfter(balance.getQuantity())
+                .fromLocationId(balance.getLocationId())
+                .toLocationId(null)
+                .referenceType(command.referenceType())
+                .referenceId(command.referenceId())
+                .performedByUserId(command.performedByUserId())
+                .build());
+    }
+
+    private static void validateQuantity(BigDecimal quantity) {
+        if (quantity == null || quantity.signum() <= 0) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "INVALID_STOCK_QUANTITY",
+                    "La cantidad debe ser mayor que cero.");
+        }
+    }
+
+    private static BusinessException insufficientStock() {
+        return BusinessException.conflict(INSUFFICIENT_STOCK_CODE, INSUFFICIENT_STOCK_MESSAGE);
+    }
+}
