@@ -1,0 +1,14 @@
+package com.omniretail.backend.ecommerce.repository;
+
+import com.omniretail.backend.ecommerce.entity.Order;
+import com.omniretail.backend.ecommerce.entity.OrderStatus;
+import java.util.List;
+import java.util.UUID;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+public interface OrderRepository extends JpaRepository<Order, UUID> {
+
+    List<Order> findByTenantIdAndStatusNot(UUID tenantId, OrderStatus status);
+
+    List<Order> findByTenantIdAndCustomerIdAndStatusNot(UUID tenantId, UUID customerId, OrderStatus status);
+}
