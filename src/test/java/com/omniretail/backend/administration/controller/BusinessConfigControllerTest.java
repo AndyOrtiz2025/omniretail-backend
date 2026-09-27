@@ -91,7 +91,7 @@ class BusinessConfigControllerTest {
 
         String body =
                 """
-                {"preset":"custom","supportsInventory":true,"defaultProductTracking":{"stock":true,"lot":false,"expiration":false,"serial":false}}
+                {"preset":"custom","supportsInventory":true,"supportsLots":false,"supportsExpiration":false,"supportsSerials":false,"supportsMultipleLocations":false,"supportsUnitsAndPackaging":false,"supportsProductAttributes":false,"supportsKits":false,"supportsServices":false,"defaultProductTracking":{"stock":true,"lot":false,"expiration":false,"serial":false}}
                 """;
 
         mockMvc.perform(put(BASE_URL)
@@ -197,7 +197,7 @@ class BusinessConfigControllerTest {
 
         String body =
                 """
-                {"preset":"custom","supportsInventory":false,"supportsServices":true,"defaultProductTracking":{"stock":true,"lot":false,"expiration":false,"serial":false}}
+                {"preset":"custom","supportsInventory":false,"supportsLots":false,"supportsExpiration":false,"supportsSerials":false,"supportsMultipleLocations":false,"supportsUnitsAndPackaging":false,"supportsProductAttributes":false,"supportsKits":false,"supportsServices":true,"defaultProductTracking":{"stock":true,"lot":false,"expiration":false,"serial":false}}
                 """;
 
         mockMvc.perform(put(BASE_URL)
@@ -216,7 +216,7 @@ class BusinessConfigControllerTest {
 
         String body =
                 """
-                {"preset":"custom","supportsInventory":false,"supportsUnitsAndPackaging":true,"supportsServices":true,"defaultProductTracking":{"stock":false,"lot":false,"expiration":false,"serial":false}}
+                {"preset":"custom","supportsInventory":false,"supportsLots":false,"supportsExpiration":false,"supportsSerials":false,"supportsMultipleLocations":false,"supportsUnitsAndPackaging":true,"supportsProductAttributes":false,"supportsKits":false,"supportsServices":true,"defaultProductTracking":{"stock":false,"lot":false,"expiration":false,"serial":false}}
                 """;
 
         mockMvc.perform(put(BASE_URL)
@@ -236,25 +236,29 @@ class BusinessConfigControllerTest {
 
         String lotWithoutCapability =
                 """
-                {"preset":"custom","supportsInventory":true,"supportsLots":false,"supportsExpiration":false,"supportsSerials":false,"defaultProductTracking":{"stock":true,"lot":true,"expiration":false,"serial":false}}
+                {"preset":"custom","supportsInventory":true,"supportsLots":false,"supportsExpiration":false,"supportsSerials":false,"supportsMultipleLocations":false,"supportsUnitsAndPackaging":false,"supportsProductAttributes":false,"supportsKits":false,"supportsServices":false,"defaultProductTracking":{"stock":true,"lot":true,"expiration":false,"serial":false}}
                 """;
 
         mockMvc.perform(put(BASE_URL)
                         .header("Authorization", bearer(token))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(lotWithoutCapability))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message")
+                        .value("La trazabilidad por defecto requiere activar sus capacidades relacionadas."));
 
         String serialWithoutCapability =
                 """
-                {"preset":"custom","supportsInventory":true,"supportsLots":false,"supportsExpiration":false,"supportsSerials":false,"defaultProductTracking":{"stock":true,"lot":false,"expiration":false,"serial":true}}
+                {"preset":"custom","supportsInventory":true,"supportsLots":false,"supportsExpiration":false,"supportsSerials":false,"supportsMultipleLocations":false,"supportsUnitsAndPackaging":false,"supportsProductAttributes":false,"supportsKits":false,"supportsServices":false,"defaultProductTracking":{"stock":true,"lot":false,"expiration":false,"serial":true}}
                 """;
 
         mockMvc.perform(put(BASE_URL)
                         .header("Authorization", bearer(token))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(serialWithoutCapability))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message")
+                        .value("La trazabilidad por defecto requiere activar sus capacidades relacionadas."));
     }
 
     @Test
@@ -266,7 +270,7 @@ class BusinessConfigControllerTest {
 
         String lotsBody =
                 """
-                {"preset":"custom","supportsInventory":true,"supportsLots":true,"supportsExpiration":false,"supportsSerials":false,"defaultProductTracking":{"stock":true,"lot":false,"expiration":false,"serial":false}}
+                {"preset":"custom","supportsInventory":true,"supportsLots":true,"supportsExpiration":false,"supportsSerials":false,"supportsMultipleLocations":false,"supportsUnitsAndPackaging":false,"supportsProductAttributes":false,"supportsKits":false,"supportsServices":false,"defaultProductTracking":{"stock":true,"lot":false,"expiration":false,"serial":false}}
                 """;
 
         mockMvc.perform(put(BASE_URL)
@@ -280,7 +284,7 @@ class BusinessConfigControllerTest {
 
         String serialsBody =
                 """
-                {"preset":"custom","supportsInventory":true,"supportsLots":false,"supportsExpiration":false,"supportsSerials":true,"defaultProductTracking":{"stock":true,"lot":false,"expiration":false,"serial":false}}
+                {"preset":"custom","supportsInventory":true,"supportsLots":false,"supportsExpiration":false,"supportsSerials":true,"supportsMultipleLocations":false,"supportsUnitsAndPackaging":false,"supportsProductAttributes":false,"supportsKits":false,"supportsServices":false,"defaultProductTracking":{"stock":true,"lot":false,"expiration":false,"serial":false}}
                 """;
 
         mockMvc.perform(put(BASE_URL)
@@ -298,7 +302,7 @@ class BusinessConfigControllerTest {
 
         String lotsBody =
                 """
-                {"preset":"custom","supportsInventory":true,"supportsLots":true,"supportsExpiration":false,"supportsSerials":false,"defaultProductTracking":{"stock":true,"lot":false,"expiration":false,"serial":false}}
+                {"preset":"custom","supportsInventory":true,"supportsLots":true,"supportsExpiration":false,"supportsSerials":false,"supportsMultipleLocations":false,"supportsUnitsAndPackaging":false,"supportsProductAttributes":false,"supportsKits":false,"supportsServices":false,"defaultProductTracking":{"stock":true,"lot":false,"expiration":false,"serial":false}}
                 """;
 
         mockMvc.perform(put(BASE_URL)
@@ -327,7 +331,7 @@ class BusinessConfigControllerTest {
 
         String body =
                 """
-                {"preset":"custom","supportsInventory":true,"supportsLots":false,"supportsExpiration":false,"supportsSerials":true,"supportsKits":true,"defaultProductTracking":{"stock":true,"lot":false,"expiration":false,"serial":true}}
+                {"preset":"custom","supportsInventory":true,"supportsLots":false,"supportsExpiration":false,"supportsSerials":true,"supportsMultipleLocations":false,"supportsUnitsAndPackaging":false,"supportsProductAttributes":false,"supportsKits":true,"supportsServices":false,"defaultProductTracking":{"stock":true,"lot":false,"expiration":false,"serial":true}}
                 """;
 
         mockMvc.perform(put(BASE_URL)
