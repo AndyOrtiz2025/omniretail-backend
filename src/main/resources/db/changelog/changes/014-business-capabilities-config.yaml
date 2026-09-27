@@ -85,7 +85,7 @@ databaseChangeLog:
                     nullable: false
               - column:
                   name: allowed_pos_payment_methods
-                  type: varchar(20)[]
+                  type: TEXT[]
               - column:
                   name: track_stock
                   type: BOOLEAN

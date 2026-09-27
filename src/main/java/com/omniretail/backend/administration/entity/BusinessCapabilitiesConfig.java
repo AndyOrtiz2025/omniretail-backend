@@ -58,7 +58,7 @@ public class BusinessCapabilitiesConfig extends TenantScopedEntity {
     private boolean supportsServices;
 
     @JdbcTypeCode(SqlTypes.ARRAY)
-    @Column(name = "allowed_pos_payment_methods", columnDefinition = "varchar(20)[]")
+    @Column(name = "allowed_pos_payment_methods", columnDefinition = "text[]")
     private List<String> allowedPosPaymentMethods;
 
     @Column(name = "track_stock", nullable = false)
