@@ -5,7 +5,15 @@ import com.omniretail.backend.auth.dto.LoginRequest;
 import com.omniretail.backend.auth.dto.LoginResponse;
 import com.omniretail.backend.auth.service.AuthService;
 import com.omniretail.backend.auth.service.CurrentSessionService;
+import com.omniretail.backend.shared.exception.ApiError;
 import com.omniretail.backend.shared.security.CurrentUser;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.security.SecurityRequirements;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -20,6 +28,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/auth")
 @RequiredArgsConstructor
+@Tag(name = "Autenticación", description = "Inicio y cierre de sesión, y sesión actual.")
 public class AuthController {
 
     private final AuthService authService;
@@ -27,17 +36,69 @@ public class AuthController {
     private final CurrentUser currentUser;
 
     @PostMapping("/login")
+    @SecurityRequirements
+    @Operation(
+            summary = "Iniciar sesión",
+            description = """
+                    Inicia sesión de un empleado o de un cliente y devuelve el token JWT de la sesión.
+
+                    - Empleados: sesión de 8 horas; `rememberMe` se ignora.
+                    - Clientes: requieren el `tenantSlug` de la tienda. La sesión dura 2 horas, o 30 días con `rememberMe`.
+                    - Tras 5 intentos fallidos la cuenta se bloquea 15 minutos.
+
+                    El mensaje de error es siempre genérico: no revela si el correo existe ni si la cuenta está bloqueada.""")
+    @ApiResponses({
+        @ApiResponse(
+                responseCode = "200",
+                description = "Sesión iniciada.",
+                content = @Content(mediaType = "application/json", schema = @Schema(implementation = LoginResponse.class))),
+        @ApiResponse(
+                responseCode = "400",
+                description = "Datos inválidos (`VALIDATION_ERROR`) o cuerpo de la solicitud ilegible (`REQUEST_ERROR`).",
+                content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
+        @ApiResponse(
+                responseCode = "401",
+                description = "No fue posible iniciar sesión (`INVALID_CREDENTIALS`). Mismo mensaje para correo "
+                        + "inexistente, contraseña incorrecta o cuenta bloqueada o inactiva.",
+                content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
+    })
     public LoginResponse login(@Valid @RequestBody LoginRequest request) {
         return authService.login(request);
     }
 
     @PostMapping("/logout")
     @ResponseStatus(HttpStatus.NO_CONTENT)
+    @Operation(
+            summary = "Cerrar sesión",
+            description = "Revoca la sesión del token actual. Desde ese momento el token deja de ser válido en "
+                    + "cualquier endpoint.")
+    @ApiResponses({
+        @ApiResponse(responseCode = "204", description = "Sesión cerrada."),
+        @ApiResponse(
+                responseCode = "401",
+                description = "Sin token, token inválido o vencido, o sesión ya revocada. Responde sin cuerpo.")
+    })
     public void logout() {
         authService.logout(currentUser.require().sessionId());
     }
 
     @GetMapping("/me")
+    @Operation(
+            summary = "Obtener la sesión actual",
+            description = "Reconstruye la sesión del token: datos del usuario (incluidas sus sucursales permitidas), "
+                    + "tienda, rol con sus permisos y datos de la sesión. Para clientes sin rol activo, `role` es `null`.")
+    @ApiResponses({
+        @ApiResponse(
+                responseCode = "200",
+                description = "Sesión actual.",
+                content = @Content(
+                        mediaType = "application/json", schema = @Schema(implementation = CurrentSessionResponse.class))),
+        @ApiResponse(
+                responseCode = "401",
+                description = "Sin token, token inválido o vencido, o sesión revocada (sin cuerpo); o usuario "
+                        + "inactivo, tienda inactiva o empleado sin rol activo (`UNAUTHENTICATED`).",
+                content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
+    })
     public CurrentSessionResponse me() {
         return currentSessionService.resolve(currentUser.require());
     }
