@@ -197,6 +197,55 @@ class AuthMeTest {
         me(token).andExpect(status().isUnauthorized());
     }
 
+    @Test
+    void snapshotIncludesCompleteTenantRoleUserAndSessionData() throws Exception {
+        Tenant tenant = tenant(TenantStatus.active);
+        Role role = Role.builder()
+                .name("Rol sistema " + UUID.randomUUID())
+                .description("Rol con acceso completo")
+                .isSystem(true)
+                .status(RoleStatus.active)
+                .permissions(List.of("x.y"))
+                .build();
+        role.setTenantId(tenant.getId());
+        role = roleRepository.save(role);
+        User user = user(tenant, UserType.employee, UserStatus.active, role);
+        Session session = sessionRepository.save(Session.builder()
+                .userId(user.getId())
+                .deviceLabel("Caja 1")
+                .expiresAt(Instant.now().plus(1, ChronoUnit.HOURS).truncatedTo(ChronoUnit.SECONDS))
+                .build());
+
+        me(jwtService.generateToken(user, session))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.tenant.status").value("active"))
+                .andExpect(jsonPath("$.tenant.defaultCurrency").value("GTQ"))
+                .andExpect(jsonPath("$.tenant.timezone").value("America/Guatemala"))
+                .andExpect(jsonPath("$.tenant.legalName").doesNotExist())
+                .andExpect(jsonPath("$.tenant.createdAt").isNotEmpty())
+                .andExpect(jsonPath("$.tenant.updatedAt").isNotEmpty())
+                .andExpect(jsonPath("$.role.isSystem").value(true))
+                .andExpect(jsonPath("$.role.system").doesNotExist())
+                .andExpect(jsonPath("$.role.tenantId").value(tenant.getId().toString()))
+                .andExpect(jsonPath("$.role.description").value("Rol con acceso completo"))
+                .andExpect(jsonPath("$.role.createdAt").isNotEmpty())
+                .andExpect(jsonPath("$.user.createdAt").isNotEmpty())
+                .andExpect(jsonPath("$.user.updatedAt").isNotEmpty())
+                .andExpect(jsonPath("$.session.createdAt").isNotEmpty())
+                .andExpect(jsonPath("$.session.deviceLabel").value("Caja 1"))
+                .andExpect(jsonPath("$.user.passwordHash").doesNotExist());
+    }
+
+    @Test
+    void roleIsSystemDefaultsToFalse() throws Exception {
+        Tenant tenant = tenant(TenantStatus.active);
+        User user = user(tenant, UserType.employee, UserStatus.active, role(tenant, RoleStatus.active, "x.y"));
+
+        me(tokenFor(user))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.role.isSystem").value(false));
+    }
+
     private ResultActions me(String token) throws Exception {
         return mockMvc.perform(get(ME).header("Authorization", "Bearer " + token));
     }
