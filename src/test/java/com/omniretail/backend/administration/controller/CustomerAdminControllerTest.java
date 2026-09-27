@@ -92,7 +92,7 @@ class CustomerAdminControllerTest {
         Fixture fixture = createFixture(tenant.getId());
 
         UUID customerA = insertCustomer(tenant.getId(), "CUST-001", "Ana Martínez", "ana@example.com", "active");
-        UUID customerB = insertCustomer(tenant.getId(), "CUST-002", "Bernardo López", "bernardo@example.com", "active");
+        insertCustomer(tenant.getId(), "CUST-002", "Bernardo López", "bernardo@example.com", "active");
 
         // Cliente A: 1 pedido con 2 productos (martillo x 2, clavos x 5)
         UUID orderId = insertOrder(tenant.getId(), fixture.branchId(), customerA, "ORD-1001", "confirmed");
@@ -372,8 +372,8 @@ class CustomerAdminControllerTest {
     private void insertSaleItem(UUID saleId, UUID productId, String sku, String name, BigDecimal quantity) {
         jdbcTemplate.update(
                 """
-                INSERT INTO sale_items (id, sale_id, product_id, sku_snapshot, name_snapshot, quantity, unit_price, discount, tax, total)
-                VALUES (?, ?, ?, ?, ?, ?, 50.00, 0.00, 0.00, 50.00)
+                INSERT INTO sale_items (id, sale_id, product_id, sku_snapshot, name_snapshot, quantity, unit_price, discount, subtotal)
+                VALUES (?, ?, ?, ?, ?, ?, 50.00, 0.00, 50.00)
                 """,
                 UUID.randomUUID(), saleId, productId, sku, name, quantity);
     }
