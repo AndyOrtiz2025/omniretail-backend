@@ -5,12 +5,14 @@ import com.omniretail.backend.administration.dto.HeroBannerSlideDto;
 import com.omniretail.backend.administration.dto.SaveHeroBannerConfigRequest;
 import com.omniretail.backend.administration.entity.HeroBannerConfig;
 import com.omniretail.backend.administration.repository.HeroBannerConfigRepository;
+import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.CurrentUser;
 import com.omniretail.backend.shared.security.SaasCapability;
 import com.omniretail.backend.shared.security.TenantCapabilityGuard;
 import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.core.type.TypeReference;
@@ -22,8 +24,6 @@ import tools.jackson.databind.json.JsonMapper;
 public class HeroBannerConfigService {
 
     private static final TypeReference<List<HeroBannerSlideDto>> SLIDES_TYPE = new TypeReference<>() {};
-    private static final HeroBannerSlideDto EMPTY_SLIDE = new HeroBannerSlideDto("", "", null);
-    private static final List<HeroBannerSlideDto> DEFAULT_SLIDES = List.of(EMPTY_SLIDE, EMPTY_SLIDE, EMPTY_SLIDE);
 
     private final HeroBannerConfigRepository configRepository;
     private final TenantCapabilityGuard tenantCapabilityGuard;
@@ -37,7 +37,10 @@ public class HeroBannerConfigService {
         List<HeroBannerSlideDto> slides = configRepository
                 .findByTenantId(tenantId)
                 .map(config -> jsonMapper.readValue(config.getSlides(), SLIDES_TYPE))
-                .orElse(DEFAULT_SLIDES);
+                .orElseThrow(() -> new BusinessException(
+                        HttpStatus.NOT_FOUND,
+                        "HERO_BANNER_NOT_FOUND",
+                        "No hay un carrusel configurado para el negocio actual."));
         return new HeroBannerConfigResponse(slides);
     }
 

@@ -5,10 +5,8 @@ import com.omniretail.backend.administration.dto.SaveEcommerceConfigRequest;
 import com.omniretail.backend.administration.entity.Branch;
 import com.omniretail.backend.administration.entity.BranchStatus;
 import com.omniretail.backend.administration.entity.EcommerceConfig;
-import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.repository.BranchRepository;
 import com.omniretail.backend.administration.repository.EcommerceConfigRepository;
-import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.CurrentUser;
 import com.omniretail.backend.shared.security.SaasCapability;
@@ -16,6 +14,7 @@ import com.omniretail.backend.shared.security.TenantCapabilityGuard;
 import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,13 +23,12 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class EcommerceConfigService {
 
-    // Politica fija de Web/App (ecommerceConfig.validation.ts): se fuerza sin importar lo que traiga el payload.
+    // Política fija de Web/App (ecommerceConfig.validation.ts): se fuerza sin importar lo que traiga el payload.
     private static final List<String> FIXED_DELIVERY_METHODS = List.of("home_delivery");
     private static final List<String> FIXED_PAYMENT_METHODS = List.of("card");
 
     private final EcommerceConfigRepository configRepository;
     private final BranchRepository branchRepository;
-    private final TenantRepository tenantRepository;
     private final TenantCapabilityGuard tenantCapabilityGuard;
     private final CurrentUser currentUser;
 
@@ -41,7 +39,10 @@ public class EcommerceConfigService {
         return configRepository
                 .findByTenantId(tenantId)
                 .map(EcommerceConfigResponse::from)
-                .orElseGet(() -> defaultConfig(tenantId));
+                .orElseThrow(() -> new BusinessException(
+                        HttpStatus.NOT_FOUND,
+                        "ECOMMERCE_CONFIG_NOT_FOUND",
+                        "No se encontró la configuración de e-commerce del negocio."));
     }
 
     public EcommerceConfigResponse saveConfig(SaveEcommerceConfigRequest request) {
@@ -85,23 +86,8 @@ public class EcommerceConfigService {
         }
     }
 
-    private EcommerceConfigResponse defaultConfig(UUID tenantId) {
-        String storeName = tenantRepository.findById(tenantId).map(Tenant::getName).orElse("");
-        return new EcommerceConfigResponse(
-                tenantId,
-                false,
-                storeName,
-                null,
-                null,
-                null,
-                true,
-                false,
-                FIXED_DELIVERY_METHODS,
-                FIXED_PAYMENT_METHODS,
-                null);
-    }
-
-    // Mismo formato que normalizeGuatemalaPhone del frontend: "+502 0000-0000".
+    // Misma regla que isValidGuatemalaPhone del frontend (solo cuentan los dígitos, 502 opcional, 8 dígitos)
+    // y mismo formato que normalizeGuatemalaPhone: "+502 0000-0000".
     private static String normalizePhone(String value) {
         String normalized = normalize(value);
         if (normalized == null) {
@@ -110,6 +96,9 @@ public class EcommerceConfigService {
         String digits = normalized.replaceAll("\\D", "");
         if (digits.length() == 11 && digits.startsWith("502")) {
             digits = digits.substring(3);
+        }
+        if (digits.length() != 8) {
+            throw BusinessException.badRequest("El teléfono público debe tener 8 dígitos.");
         }
         return "+502 " + digits.substring(0, 4) + "-" + digits.substring(4);
     }

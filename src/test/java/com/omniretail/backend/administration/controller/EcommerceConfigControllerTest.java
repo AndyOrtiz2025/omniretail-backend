@@ -132,26 +132,47 @@ class EcommerceConfigControllerTest {
     }
 
     @Test
-    void getReturnsDefaultsForNewTenant() throws Exception {
+    void getWithoutConfigReturnsNotFound() throws Exception {
         Tenant tenant = persistTenant();
         String token = tokenFor(tenant);
 
         mockMvc.perform(get(ECOMMERCE_URL).header("Authorization", bearer(token)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.enabled").value(false))
-                .andExpect(jsonPath("$.storeName").value(tenant.getName()))
-                .andExpect(jsonPath("$.requireAccountForCheckout").value(true))
-                .andExpect(jsonPath("$.guestTrackingEnabled").value(false))
-                .andExpect(jsonPath("$.allowedDeliveryMethods[0]").value("home_delivery"))
-                .andExpect(jsonPath("$.allowedPaymentMethods[0]").value("card"))
-                .andExpect(jsonPath("$.defaultBranchId").value(nullValue()));
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("ECOMMERCE_CONFIG_NOT_FOUND"))
+                .andExpect(jsonPath("$.message").value("No se encontró la configuración de e-commerce del negocio."));
 
         mockMvc.perform(get(HERO_URL).header("Authorization", bearer(token)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("HERO_BANNER_NOT_FOUND"))
+                .andExpect(jsonPath("$.message").value("No hay un carrusel configurado para el negocio actual."));
+    }
+
+    @Test
+    void phoneFollowsSameRuleAsFrontend() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+
+        // Solo cuentan los dígitos: prefijo 502 opcional y cualquier separador.
+        mockMvc.perform(put(ECOMMERCE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(ecommerceBodyWithPhone("(502) 1234 5678")))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.slides.length()").value(3))
-                .andExpect(jsonPath("$.slides[0].title").value(""))
-                .andExpect(jsonPath("$.slides[0].description").value(""))
-                .andExpect(jsonPath("$.slides[0].imageUrl").value(nullValue()));
+                .andExpect(jsonPath("$.contactPhone").value("+502 1234-5678"));
+
+        mockMvc.perform(put(ECOMMERCE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(ecommerceBodyWithPhone("9876.5432")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.contactPhone").value("+502 9876-5432"));
+
+        mockMvc.perform(put(ECOMMERCE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(ecommerceBodyWithPhone("2222-333")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("El teléfono público debe tener 8 dígitos."));
     }
 
     @Test
@@ -297,7 +318,7 @@ class EcommerceConfigControllerTest {
 
         String body =
                 """
-                {"slides":[{"title":"  Ofertas  ","description":"Hasta 50%","imageUrl":"https://cdn.example.com/1.png"},{"title":"Nuevos","description":"Recien llegados","imageUrl":""},{"title":"Envios","description":"A todo el pais"}]}
+                {"slides":[{"title":"  Ofertas  ","description":"Hasta 50%","imageUrl":"https://cdn.example.com/1.png"},{"title":"Nuevos","description":"Recién llegados","imageUrl":""},{"title":"Envíos","description":"A todo el país"}]}
                 """;
 
         mockMvc.perform(put(HERO_URL)
@@ -314,7 +335,7 @@ class EcommerceConfigControllerTest {
                 .andExpect(jsonPath("$.slides.length()").value(3))
                 .andExpect(jsonPath("$.slides[0].title").value("Ofertas"))
                 .andExpect(jsonPath("$.slides[0].imageUrl").value("https://cdn.example.com/1.png"))
-                .andExpect(jsonPath("$.slides[2].description").value("A todo el pais"));
+                .andExpect(jsonPath("$.slides[2].description").value("A todo el país"));
     }
 
     @Test
@@ -337,16 +358,14 @@ class EcommerceConfigControllerTest {
                         .content(slidesBody(3)))
                 .andExpect(status().isOk());
 
+        // Tenant B no ve la configuración de A: para B todavía no existe.
         mockMvc.perform(get(ECOMMERCE_URL).header("Authorization", bearer(tokenB)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.tenantId").value(tenantB.getId().toString()))
-                .andExpect(jsonPath("$.enabled").value(false))
-                .andExpect(jsonPath("$.storeName").value(tenantB.getName()))
-                .andExpect(jsonPath("$.defaultBranchId").value(nullValue()));
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("ECOMMERCE_CONFIG_NOT_FOUND"));
 
         mockMvc.perform(get(HERO_URL).header("Authorization", bearer(tokenB)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.slides[0].title").value(""));
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("HERO_BANNER_NOT_FOUND"));
 
         // Tenant B no puede apuntar a una sucursal de A ni pisar la config de A.
         mockMvc.perform(put(ECOMMERCE_URL)
@@ -370,6 +389,13 @@ class EcommerceConfigControllerTest {
         mockMvc.perform(get(HERO_URL).header("Authorization", bearer(tokenA)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.slides[0].title").value("Slide 1"));
+    }
+
+    private static String ecommerceBodyWithPhone(String contactPhone) {
+        return """
+                {"enabled":false,"storeName":"Tienda","contactPhone":"%s","requireAccountForCheckout":false,"guestTrackingEnabled":true}
+                """
+                .formatted(contactPhone);
     }
 
     private static String ecommerceBody(boolean enabled, UUID defaultBranchId) {
