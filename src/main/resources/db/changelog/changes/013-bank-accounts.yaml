@@ -1,6 +1,6 @@
 databaseChangeLog:
   - changeSet:
-      id: 012-bank-accounts
+      id: 013-bank-accounts
       author: joga17000
       changes:
         - createTable:
