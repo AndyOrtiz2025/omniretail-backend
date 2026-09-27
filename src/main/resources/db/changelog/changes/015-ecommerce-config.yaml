@@ -1,6 +1,6 @@
 databaseChangeLog:
   - changeSet:
-      id: 014-ecommerce-config
+      id: 015-ecommerce-config
       author: joga17000
       changes:
         - createTable:
