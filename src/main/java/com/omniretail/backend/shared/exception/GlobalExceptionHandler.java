@@ -17,6 +17,7 @@ import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 @Slf4j
 @RestControllerAdvice
@@ -42,6 +43,17 @@ public class GlobalExceptionHandler {
                 HttpStatus.BAD_REQUEST,
                 "REQUEST_ERROR",
                 "El cuerpo de la solicitud contiene datos invalidos.",
+                request,
+                null);
+    }
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ApiError> handleArgumentTypeMismatch(
+            MethodArgumentTypeMismatchException ex, HttpServletRequest request) {
+        return build(
+                HttpStatus.BAD_REQUEST,
+                "REQUEST_ERROR",
+                HttpStatus.BAD_REQUEST.getReasonPhrase(),
                 request,
                 null);
     }
