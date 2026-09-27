@@ -56,12 +56,6 @@ databaseChangeLog:
                   constraints:
                     nullable: false
               - column:
-                  name: allowed_delivery_methods
-                  type: varchar(30)[]
-              - column:
-                  name: allowed_payment_methods
-                  type: varchar(30)[]
-              - column:
                   name: default_branch_id
                   type: UUID
                   constraints:
@@ -80,6 +74,11 @@ databaseChangeLog:
                   defaultValueComputed: now()
                   constraints:
                     nullable: false
+        # Liquibase convierte "varchar(30)[]" en "VARCHAR[](30)", que PostgreSQL rechaza; se agregan con SQL directo.
+        - sql:
+            sql: "ALTER TABLE ecommerce_configs ADD COLUMN allowed_delivery_methods VARCHAR(30)[]"
+        - sql:
+            sql: "ALTER TABLE ecommerce_configs ADD COLUMN allowed_payment_methods VARCHAR(30)[]"
         - createIndex:
             tableName: ecommerce_configs
             indexName: idx_ecommerce_config_tenant_id
