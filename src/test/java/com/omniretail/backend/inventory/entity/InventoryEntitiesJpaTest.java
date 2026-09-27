@@ -47,6 +47,20 @@ class InventoryEntitiesJpaTest {
     }
 
     @Test
+    void deductionCannotReducePhysicalQuantityBelowReservedQuantity() {
+        InventoryBalance balance = InventoryBalance.builder()
+                .quantity(new BigDecimal("10.000"))
+                .reservedQuantity(new BigDecimal("8.000"))
+                .build();
+
+        assertThatThrownBy(() -> balance.deduct(new BigDecimal("3.000")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("La cantidad física no puede ser menor que la cantidad reservada.");
+        assertThat(balance.getQuantity()).isEqualByComparingTo("10.000");
+        assertThat(balance.getReservedQuantity()).isEqualByComparingTo("8.000");
+    }
+
+    @Test
     void rejectsNegativeQuantity() {
         Fixture fixture = createFixture();
         InventoryBalance balance = balance(fixture, fixture.firstBranchId(), "-0.001", "0.000");
