@@ -38,7 +38,7 @@ public class ProductService {
     @Transactional
     public ProductDto create(ProductCreateRequest request) {
         UUID tenantId = currentUser.require().tenantId();
-        String sku = request.sku().trim();
+        String sku = normalizeSku(request.sku());
         String barcode = normalizeBarcode(request.barcode());
         validateSkuIsAvailable(tenantId, sku);
         validateBarcodeIsAvailable(tenantId, barcode);
@@ -87,6 +87,10 @@ public class ProductService {
             return null;
         }
         return barcode.trim();
+    }
+
+    private String normalizeSku(String sku) {
+        return sku.trim().replaceAll("\\s+", "-").toUpperCase();
     }
 
     private void validateCatalogReferences(UUID tenantId, ProductCreateRequest request) {

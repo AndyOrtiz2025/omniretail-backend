@@ -163,10 +163,10 @@ class ProductServiceTest {
     }
 
     @Test
-    void skuIsTrimmedBeforeUniquenessCheckAndPersistence() {
+    void skuIsNormalizedBeforeUniquenessCheckAndPersistence() {
         allowValidCreation();
 
-        service.create(requestWithIdentity("  SKU-001  ", null));
+        service.create(requestWithIdentity("  sku 001  ", null));
 
         verify(productRepository).existsByTenantIdAndSku(TENANT_ID, "SKU-001");
         assertThat(savedProduct().getSku()).isEqualTo("SKU-001");
