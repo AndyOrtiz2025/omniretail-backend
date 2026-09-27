@@ -27,4 +27,15 @@ public interface SaleItemRepository extends JpaRepository<SaleItem, UUID> {
               AND sale.customerId IS NOT NULL
             """)
     List<SaleItem> findActiveItemsByTenantId(@Param("tenantId") UUID tenantId);
+
+    @Query("""
+            SELECT item
+            FROM SaleItem item, Sale sale
+            WHERE item.saleId = sale.id
+              AND sale.tenantId = :tenantId
+              AND sale.status <> com.omniretail.backend.pos.entity.SaleStatus.cancelled
+              AND sale.customerId = :customerId
+            """)
+    List<SaleItem> findActiveItemsByTenantIdAndCustomerId(
+            @Param("tenantId") UUID tenantId, @Param("customerId") UUID customerId);
 }

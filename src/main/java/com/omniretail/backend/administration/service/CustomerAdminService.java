@@ -18,9 +18,11 @@ import com.omniretail.backend.pos.repository.SaleRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.CurrentUser;
 import java.math.BigDecimal;
+import java.text.Collator;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -34,6 +36,9 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class CustomerAdminService {
 
+    // Orden alfabético del español (Á junto a A, Ñ después de N), equivalente a localeCompare del frontend.
+    private static final Locale SPANISH = Locale.of("es");
+
     private final CustomerRepository customerRepository;
     private final OrderRepository orderRepository;
     private final OrderItemRepository orderItemRepository;
@@ -46,10 +51,20 @@ public class CustomerAdminService {
         List<Customer> customers = status != null
                 ? customerRepository.findByTenantIdAndStatus(tenantId, status)
                 : customerRepository.findByTenantId(tenantId);
+        if (customers.isEmpty()) {
+            return List.of();
+        }
 
-        return enrichCustomers(tenantId, customers);
+        return enrichCustomers(
+                customers,
+                orderRepository.findByTenantIdAndStatusNot(tenantId, OrderStatus.cancelled),
+                orderItemRepository.findActiveItemsByTenantId(tenantId),
+                saleRepository.findByTenantIdAndStatusNot(tenantId, SaleStatus.cancelled),
+                saleItemRepository.findActiveItemsByTenantId(tenantId));
     }
 
+    // Solo carga las compras de este cliente: la regla anti-duplicados compara pedidos del mismo cliente,
+    // así que el resultado es idéntico al del listado.
     public CustomerAdminResponse getCustomerById(UUID id) {
         UUID tenantId = currentUser.require().tenantId();
         Customer customer = customerRepository
@@ -57,20 +72,21 @@ public class CustomerAdminService {
                 .orElseThrow(() -> new BusinessException(
                         HttpStatus.NOT_FOUND, "CUSTOMER_NOT_FOUND", "Cliente no encontrado."));
 
-        List<CustomerAdminResponse> enriched = enrichCustomers(tenantId, List.of(customer));
-        return enriched.getFirst();
+        return enrichCustomers(
+                        List.of(customer),
+                        orderRepository.findByTenantIdAndCustomerIdAndStatusNot(tenantId, id, OrderStatus.cancelled),
+                        orderItemRepository.findActiveItemsByTenantIdAndCustomerId(tenantId, id),
+                        saleRepository.findByTenantIdAndCustomerIdAndStatusNot(tenantId, id, SaleStatus.cancelled),
+                        saleItemRepository.findActiveItemsByTenantIdAndCustomerId(tenantId, id))
+                .getFirst();
     }
 
-    private List<CustomerAdminResponse> enrichCustomers(UUID tenantId, List<Customer> customers) {
-        if (customers.isEmpty()) {
-            return List.of();
-        }
-
-        List<Order> orders = orderRepository.findByTenantIdAndStatusNot(tenantId, OrderStatus.cancelled);
-        List<Sale> sales = saleRepository.findByTenantIdAndStatusNot(tenantId, SaleStatus.cancelled);
-        List<OrderItem> orderItems = orderItemRepository.findActiveItemsByTenantId(tenantId);
-        List<SaleItem> saleItems = saleItemRepository.findActiveItemsByTenantId(tenantId);
-
+    private static List<CustomerAdminResponse> enrichCustomers(
+            List<Customer> customers,
+            List<Order> orders,
+            List<OrderItem> orderItems,
+            List<Sale> sales,
+            List<SaleItem> saleItems) {
         Map<UUID, List<OrderItem>> orderItemsByOrderId = orderItems.stream()
                 .collect(Collectors.groupingBy(OrderItem::getOrderId));
         Map<UUID, List<SaleItem>> saleItemsBySaleId = saleItems.stream()
@@ -110,21 +126,24 @@ public class CustomerAdminService {
             }
         }
 
+        Collator collator = Collator.getInstance(SPANISH);
         return customers.stream()
                 .map(customer -> {
                     Map<String, BigDecimal> products = productQuantities.get(customer.getId());
                     List<CustomerProductPurchaseDto> topProducts = products != null
                             ? products.entrySet().stream()
                                     .map(entry -> new CustomerProductPurchaseDto(entry.getKey(), entry.getValue()))
-                                    .sorted(Comparator.comparing(CustomerProductPurchaseDto::totalQuantity).reversed()
-                                            .thenComparing(CustomerProductPurchaseDto::productName, String.CASE_INSENSITIVE_ORDER))
+                                    .sorted(Comparator.comparing(CustomerProductPurchaseDto::totalQuantity)
+                                            .reversed()
+                                            .thenComparing(CustomerProductPurchaseDto::productName, collator))
                                     .toList()
                             : List.of();
                     long purchases = purchaseCounts.getOrDefault(customer.getId(), 0L);
                     return CustomerAdminResponse.of(customer, purchases, topProducts);
                 })
-                .sorted(Comparator.comparingLong(CustomerAdminResponse::purchaseCount).reversed()
-                        .thenComparing(CustomerAdminResponse::name, String.CASE_INSENSITIVE_ORDER))
+                .sorted(Comparator.comparingLong(CustomerAdminResponse::purchaseCount)
+                        .reversed()
+                        .thenComparing(CustomerAdminResponse::name, collator))
                 .toList();
     }
 }

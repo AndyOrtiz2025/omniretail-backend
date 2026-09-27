@@ -14,9 +14,10 @@ public interface OrderItemRepository extends JpaRepository<OrderItem, UUID> {
             FROM OrderItem item, Order o
             WHERE item.orderId = o.id
               AND o.tenantId = :tenantId
-              AND item.orderId = :orderId
+              AND o.status <> com.omniretail.backend.ecommerce.entity.OrderStatus.cancelled
+              AND o.customerId IS NOT NULL
             """)
-    List<OrderItem> findByTenantIdAndOrderId(@Param("tenantId") UUID tenantId, @Param("orderId") UUID orderId);
+    List<OrderItem> findActiveItemsByTenantId(@Param("tenantId") UUID tenantId);
 
     @Query("""
             SELECT item
@@ -24,7 +25,8 @@ public interface OrderItemRepository extends JpaRepository<OrderItem, UUID> {
             WHERE item.orderId = o.id
               AND o.tenantId = :tenantId
               AND o.status <> com.omniretail.backend.ecommerce.entity.OrderStatus.cancelled
-              AND o.customerId IS NOT NULL
+              AND o.customerId = :customerId
             """)
-    List<OrderItem> findActiveItemsByTenantId(@Param("tenantId") UUID tenantId);
+    List<OrderItem> findActiveItemsByTenantIdAndCustomerId(
+            @Param("tenantId") UUID tenantId, @Param("customerId") UUID customerId);
 }

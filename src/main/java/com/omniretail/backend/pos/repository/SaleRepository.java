@@ -17,9 +17,7 @@ public interface SaleRepository extends JpaRepository<Sale, UUID> {
 
     List<Sale> findByTenantIdAndBranchIdOrderByCreatedAtDescIdDesc(UUID tenantId, UUID branchId);
 
-    List<Sale> findByTenantId(UUID tenantId);
-
-    List<Sale> findByTenantIdAndCustomerId(UUID tenantId, UUID customerId);
-
     List<Sale> findByTenantIdAndStatusNot(UUID tenantId, SaleStatus status);
+
+    List<Sale> findByTenantIdAndCustomerIdAndStatusNot(UUID tenantId, UUID customerId, SaleStatus status);
 }

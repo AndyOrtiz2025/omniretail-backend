@@ -1,6 +1,5 @@
 package com.omniretail.backend.administration.controller;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -92,36 +91,36 @@ class CustomerAdminControllerTest {
         String token = tokenFor(tenant, List.of("admin.customers.read"));
         Fixture fixture = createFixture(tenant.getId());
 
-        UUID customerA = insertCustomer(tenant.getId(), "CUST-001", "Ana Martinez", "ana@example.com", "active");
-        UUID customerB = insertCustomer(tenant.getId(), "CUST-002", "Bernardo Lopez", "bernardo@example.com", "active");
+        UUID customerA = insertCustomer(tenant.getId(), "CUST-001", "Ana Martínez", "ana@example.com", "active");
+        UUID customerB = insertCustomer(tenant.getId(), "CUST-002", "Bernardo López", "bernardo@example.com", "active");
 
-        // Customer A: 1 Order with 2 products ("Martillo" x 2.0, "Clavos" x 5.0)
+        // Cliente A: 1 pedido con 2 productos (martillo x 2, clavos x 5)
         UUID orderId = insertOrder(tenant.getId(), fixture.branchId(), customerA, "ORD-1001", "confirmed");
-        insertOrderItem(orderId, fixture.product1Id(), "SKU-MARTILLO", "Martillo 16oz", new BigDecimal("2.000"));
-        insertOrderItem(orderId, fixture.product2Id(), "SKU-CLAVOS", "Clavos 2in", new BigDecimal("5.000"));
+        insertOrderItem(orderId, fixture.product1Id(), "SKU-MARTILLO", "Martillo 16 oz", new BigDecimal("2.000"));
+        insertOrderItem(orderId, fixture.product2Id(), "SKU-CLAVOS", "Clavos 2 pulgadas", new BigDecimal("5.000"));
 
-        // Customer A: 1 Direct Sale with 1 product ("Martillo" x 1.0)
+        // Cliente A: 1 venta directa con 1 producto (martillo x 1)
         UUID saleId = insertSale(tenant.getId(), fixture.branchId(), fixture.cashShiftId(), fixture.userId(),
                 customerA, null, "V-1001", "completed");
-        insertSaleItem(saleId, fixture.product1Id(), "SKU-MARTILLO", "Martillo 16oz", new BigDecimal("1.000"));
+        insertSaleItem(saleId, fixture.product1Id(), "SKU-MARTILLO", "Martillo 16 oz", new BigDecimal("1.000"));
 
-        // Customer B has 0 purchases
+        // Cliente B: sin compras
 
         mockMvc.perform(get(BASE_URL).header("Authorization", bearer(token)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(2))
-                // Customer A is first because purchaseCount = 2
+                // Cliente A va primero porque purchaseCount = 2
                 .andExpect(jsonPath("$[0].code").value("CUST-001"))
-                .andExpect(jsonPath("$[0].name").value("Ana Martinez"))
+                .andExpect(jsonPath("$[0].name").value("Ana Martínez"))
                 .andExpect(jsonPath("$[0].purchaseCount").value(2))
                 .andExpect(jsonPath("$[0].topProducts.length()").value(2))
-                .andExpect(jsonPath("$[0].topProducts[0].productName").value("Clavos 2in"))
+                .andExpect(jsonPath("$[0].topProducts[0].productName").value("Clavos 2 pulgadas"))
                 .andExpect(jsonPath("$[0].topProducts[0].totalQuantity").value(5.0))
-                .andExpect(jsonPath("$[0].topProducts[1].productName").value("Martillo 16oz"))
+                .andExpect(jsonPath("$[0].topProducts[1].productName").value("Martillo 16 oz"))
                 .andExpect(jsonPath("$[0].topProducts[1].totalQuantity").value(3.0))
-                // Customer B is second with purchaseCount = 0
+                // Cliente B va segundo con purchaseCount = 0
                 .andExpect(jsonPath("$[1].code").value("CUST-002"))
-                .andExpect(jsonPath("$[1].name").value("Bernardo Lopez"))
+                .andExpect(jsonPath("$[1].name").value("Bernardo López"))
                 .andExpect(jsonPath("$[1].purchaseCount").value(0))
                 .andExpect(jsonPath("$[1].topProducts.length()").value(0));
     }
@@ -171,22 +170,100 @@ class CustomerAdminControllerTest {
         String token = tokenFor(tenant, List.of("admin.customers.read"));
         Fixture fixture = createFixture(tenant.getId());
 
-        UUID customer = insertCustomer(tenant.getId(), "CUST-LINK", "Lucia Link", "lucia@example.com", "active");
+        UUID customer = insertCustomer(tenant.getId(), "CUST-LINK", "Lucía Hernández", "lucia@example.com", "active");
 
         UUID orderId = insertOrder(tenant.getId(), fixture.branchId(), customer, "ORD-LINK", "confirmed");
-        insertOrderItem(orderId, fixture.product1Id(), "SKU-1", "Producto Link", new BigDecimal("2.000"));
+        insertOrderItem(orderId, fixture.product1Id(), "SKU-1", "Taladro percutor", new BigDecimal("2.000"));
 
-        // Sale linked to the order for the same customer
+        // Venta generada desde el pedido, del mismo cliente
         UUID saleId = insertSale(tenant.getId(), fixture.branchId(), fixture.cashShiftId(), fixture.userId(),
                 customer, orderId, "SALE-LINK", "completed");
-        insertSaleItem(saleId, fixture.product1Id(), "SKU-1", "Producto Link", new BigDecimal("2.000"));
+        insertSaleItem(saleId, fixture.product1Id(), "SKU-1", "Taladro percutor", new BigDecimal("2.000"));
 
         mockMvc.perform(get(BASE_URL).header("Authorization", bearer(token)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(1))
                 .andExpect(jsonPath("$[0].code").value("CUST-LINK"))
-                .andExpect(jsonPath("$[0].purchaseCount").value(1)) // 1, not 2
+                .andExpect(jsonPath("$[0].purchaseCount").value(1)) // 1, no 2
                 .andExpect(jsonPath("$[0].topProducts[0].totalQuantity").value(2.0));
+    }
+
+    @Test
+    void customersWithSamePurchaseCountAreSortedBySpanishAlphabeticalOrder() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant, List.of("admin.customers.read"));
+
+        insertCustomer(tenant.getId(), "CUST-Z", "Zoila Pérez", "zoila@example.com", "active");
+        insertCustomer(tenant.getId(), "CUST-O", "Óscar Ramírez", "oscar@example.com", "active");
+        insertCustomer(tenant.getId(), "CUST-NY", "Ñusta Mamani", "nusta@example.com", "active");
+        insertCustomer(tenant.getId(), "CUST-N", "Nora Castillo", "nora@example.com", "active");
+        insertCustomer(tenant.getId(), "CUST-B", "Bruno Díaz", "bruno@example.com", "active");
+        insertCustomer(tenant.getId(), "CUST-A", "Álvaro Gómez", "alvaro@example.com", "active");
+
+        // Á va junto a la A y la Ñ después de la N, no al final como en el orden por código Unicode.
+        mockMvc.perform(get(BASE_URL).header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(6))
+                .andExpect(jsonPath("$[0].name").value("Álvaro Gómez"))
+                .andExpect(jsonPath("$[1].name").value("Bruno Díaz"))
+                .andExpect(jsonPath("$[2].name").value("Nora Castillo"))
+                .andExpect(jsonPath("$[3].name").value("Ñusta Mamani"))
+                .andExpect(jsonPath("$[4].name").value("Óscar Ramírez"))
+                .andExpect(jsonPath("$[5].name").value("Zoila Pérez"));
+    }
+
+    @Test
+    void topProductsWithSameQuantityAreSortedBySpanishAlphabeticalOrder() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant, List.of("admin.customers.read"));
+        Fixture fixture = createFixture(tenant.getId());
+
+        UUID customer = insertCustomer(tenant.getId(), "CUST-PIN", "María Muñoz", "maria@example.com", "active");
+        UUID orderId = insertOrder(tenant.getId(), fixture.branchId(), customer, "ORD-PIN", "confirmed");
+        insertOrderItem(orderId, fixture.product1Id(), "SKU-PIN", "Pintura látex", new BigDecimal("1.000"));
+        insertOrderItem(orderId, fixture.product1Id(), "SKU-OLE", "Óleo azul", new BigDecimal("1.000"));
+        insertOrderItem(orderId, fixture.product2Id(), "SKU-BRO", "Brocha 2 pulgadas", new BigDecimal("1.000"));
+
+        mockMvc.perform(get(BASE_URL + "/" + customer).header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.topProducts.length()").value(3))
+                .andExpect(jsonPath("$.topProducts[0].productName").value("Brocha 2 pulgadas"))
+                .andExpect(jsonPath("$.topProducts[1].productName").value("Óleo azul"))
+                .andExpect(jsonPath("$.topProducts[2].productName").value("Pintura látex"));
+    }
+
+    @Test
+    void getCustomerByIdCountsOnlyItsOwnPurchasesWithoutDuplicatingLinkedSales() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant, List.of("admin.customers.read"));
+        Fixture fixture = createFixture(tenant.getId());
+
+        UUID customerA = insertCustomer(tenant.getId(), "CUST-A", "Andrés Solís", "andres@example.com", "active");
+        UUID customerB = insertCustomer(tenant.getId(), "CUST-B", "Begoña Ruiz", "begona@example.com", "active");
+
+        // Cliente A: 1 pedido, la venta generada desde ese pedido y 1 venta directa -> 2 compras
+        UUID orderA = insertOrder(tenant.getId(), fixture.branchId(), customerA, "ORD-A", "confirmed");
+        insertOrderItem(orderA, fixture.product1Id(), "SKU-1", "Martillo 16 oz", new BigDecimal("2.000"));
+        UUID linkedSale = insertSale(tenant.getId(), fixture.branchId(), fixture.cashShiftId(), fixture.userId(),
+                customerA, orderA, "V-A-1", "completed");
+        insertSaleItem(linkedSale, fixture.product1Id(), "SKU-1", "Martillo 16 oz", new BigDecimal("2.000"));
+        UUID directSale = insertSale(tenant.getId(), fixture.branchId(), fixture.cashShiftId(), fixture.userId(),
+                customerA, null, "V-A-2", "completed");
+        insertSaleItem(directSale, fixture.product2Id(), "SKU-2", "Clavos 2 pulgadas", new BigDecimal("1.000"));
+
+        // Cliente B: sus compras no deben aparecer en el detalle de A
+        UUID orderB = insertOrder(tenant.getId(), fixture.branchId(), customerB, "ORD-B", "confirmed");
+        insertOrderItem(orderB, fixture.product2Id(), "SKU-2", "Clavos 2 pulgadas", new BigDecimal("50.000"));
+
+        mockMvc.perform(get(BASE_URL + "/" + customerA).header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.name").value("Andrés Solís"))
+                .andExpect(jsonPath("$.purchaseCount").value(2))
+                .andExpect(jsonPath("$.topProducts.length()").value(2))
+                .andExpect(jsonPath("$.topProducts[0].productName").value("Martillo 16 oz"))
+                .andExpect(jsonPath("$.topProducts[0].totalQuantity").value(2.0))
+                .andExpect(jsonPath("$.topProducts[1].productName").value("Clavos 2 pulgadas"))
+                .andExpect(jsonPath("$.topProducts[1].totalQuantity").value(1.0));
     }
 
     @Test
@@ -212,13 +289,13 @@ class CustomerAdminControllerTest {
     void getCustomerByIdSuccess() throws Exception {
         Tenant tenant = persistTenant();
         String token = tokenFor(tenant, List.of("admin.customers.read"));
-        UUID customerId = insertCustomer(tenant.getId(), "CUST-SINGLE", "Solo Uno", "solo@example.com", "active");
+        UUID customerId = insertCustomer(tenant.getId(), "CUST-SINGLE", "José Pérez", "solo@example.com", "active");
 
         mockMvc.perform(get(BASE_URL + "/" + customerId).header("Authorization", bearer(token)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(customerId.toString()))
                 .andExpect(jsonPath("$.code").value("CUST-SINGLE"))
-                .andExpect(jsonPath("$.name").value("Solo Uno"))
+                .andExpect(jsonPath("$.name").value("José Pérez"))
                 .andExpect(jsonPath("$.purchaseCount").value(0))
                 .andExpect(jsonPath("$.topProducts").isArray());
     }
@@ -238,14 +315,14 @@ class CustomerAdminControllerTest {
         Tenant tenantA = persistTenant();
         Tenant tenantB = persistTenant();
         String tokenA = tokenFor(tenantA, List.of("admin.customers.read"));
-        UUID customerB = insertCustomer(tenantB.getId(), "CUST-B", "De Otro", "otro@example.com", "active");
+        UUID customerB = insertCustomer(tenantB.getId(), "CUST-B", "Cliente de otra tienda", "otro@example.com", "active");
 
         mockMvc.perform(get(BASE_URL + "/" + customerB).header("Authorization", bearer(tokenA)))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("CUSTOMER_NOT_FOUND"));
     }
 
-    // --- Helpers ---
+    // --- Utilidades ---
 
     private UUID insertCustomer(UUID tenantId, String code, String name, String email, String status) {
         UUID id = UUID.randomUUID();
@@ -323,7 +400,7 @@ class CustomerAdminControllerTest {
                 INSERT INTO categories (id, tenant_id, name, slug, status)
                 VALUES (?, ?, ?, ?, 'active')
                 """,
-                categoryId, tenantId, "Cat " + suffix, "cat-" + suffix);
+                categoryId, tenantId, "Categoría " + suffix, "cat-" + suffix);
 
         jdbcTemplate.update(
                 """
@@ -335,21 +412,21 @@ class CustomerAdminControllerTest {
         jdbcTemplate.update(
                 """
                 INSERT INTO products (id, tenant_id, sku, name, category_id, base_unit_id)
-                VALUES (?, ?, ?, 'Martillo 16oz', ?, ?)
+                VALUES (?, ?, ?, 'Martillo 16 oz', ?, ?)
                 """,
                 product1Id, tenantId, "SKU-1-" + suffix, categoryId, unitId);
 
         jdbcTemplate.update(
                 """
                 INSERT INTO products (id, tenant_id, sku, name, category_id, base_unit_id)
-                VALUES (?, ?, ?, 'Clavos 2in', ?, ?)
+                VALUES (?, ?, ?, 'Clavos 2 pulgadas', ?, ?)
                 """,
                 product2Id, tenantId, "SKU-2-" + suffix, categoryId, unitId);
 
         jdbcTemplate.update(
                 """
                 INSERT INTO users (id, tenant_id, name, email, type, status, branch_id)
-                VALUES (?, ?, 'User Cashier', ?, 'employee', 'active', ?)
+                VALUES (?, ?, 'Cajero Prueba', ?, 'employee', 'active', ?)
                 """,
                 userId, tenantId, "cashier-" + suffix + "@omniretail.local", branchId);
 
@@ -384,7 +461,7 @@ class CustomerAdminControllerTest {
         actorRole = roleRepository.save(actorRole);
 
         User user = User.builder()
-                .name("Empleado Test")
+                .name("Empleado Prueba")
                 .email("test-" + UUID.randomUUID() + "@omniretail.local")
                 .type(UserType.employee)
                 .roleId(actorRole.getId())
