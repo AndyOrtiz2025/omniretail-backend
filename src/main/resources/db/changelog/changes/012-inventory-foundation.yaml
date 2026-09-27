@@ -1,0 +1,194 @@
+databaseChangeLog:
+  - changeSet:
+      id: 012-inventory-foundation
+      author: rique
+      changes:
+        - createTable:
+            tableName: inventory_balances
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_inventory_balances_tenant
+              - column:
+                  name: branch_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: branches
+                    referencedColumnNames: id
+                    foreignKeyName: fk_inventory_balances_branch
+              - column:
+                  name: product_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: products
+                    referencedColumnNames: id
+                    foreignKeyName: fk_inventory_balances_product
+              - column:
+                  name: location_id
+                  type: UUID
+              - column:
+                  name: quantity
+                  type: NUMERIC(12,3)
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: reserved_quantity
+                  type: NUMERIC(12,3)
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - sql:
+            sql: "ALTER TABLE inventory_balances ADD CONSTRAINT ck_inventory_balances_qty CHECK (quantity >= 0 AND reserved_quantity >= 0 AND reserved_quantity <= quantity)"
+        - sql:
+            sql: "ALTER TABLE inventory_balances ADD CONSTRAINT uk_inventory_balances_logical UNIQUE NULLS NOT DISTINCT (tenant_id, branch_id, product_id, location_id)"
+        - createIndex:
+            tableName: inventory_balances
+            indexName: idx_inventory_balances_tenant_branch
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: branch_id
+        - createIndex:
+            tableName: inventory_balances
+            indexName: idx_inventory_balances_tenant_product
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: product_id
+        - createTable:
+            tableName: inventory_movements
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_inventory_movements_tenant
+              - column:
+                  name: branch_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: branches
+                    referencedColumnNames: id
+                    foreignKeyName: fk_inventory_movements_branch
+              - column:
+                  name: product_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: products
+                    referencedColumnNames: id
+                    foreignKeyName: fk_inventory_movements_product
+              - column:
+                  name: type
+                  type: VARCHAR(10)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: reason
+                  type: VARCHAR(200)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: quantity
+                  type: NUMERIC(12,3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: quantity_before
+                  type: NUMERIC(12,3)
+              - column:
+                  name: quantity_after
+                  type: NUMERIC(12,3)
+              - column:
+                  name: from_location_id
+                  type: UUID
+              - column:
+                  name: to_location_id
+                  type: UUID
+              - column:
+                  name: reference_type
+                  type: VARCHAR(50)
+              - column:
+                  name: reference_id
+                  type: UUID
+              - column:
+                  name: performed_by_user_id
+                  type: UUID
+                  constraints:
+                    referencedTableName: users
+                    referencedColumnNames: id
+                    foreignKeyName: fk_inventory_movements_performed_by_user
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - sql:
+            sql: "ALTER TABLE inventory_movements ADD CONSTRAINT ck_inventory_movements_type CHECK (type IN ('in', 'out', 'transfer'))"
+        - sql:
+            sql: "ALTER TABLE inventory_movements ADD CONSTRAINT ck_inventory_movements_qty CHECK (quantity > 0)"
+        - createIndex:
+            tableName: inventory_movements
+            indexName: idx_inventory_movements_tenant_branch
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: branch_id
+        - createIndex:
+            tableName: inventory_movements
+            indexName: idx_inventory_movements_tenant_product
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: product_id
+        - createIndex:
+            tableName: inventory_movements
+            indexName: idx_inventory_movements_reference
+            columns:
+              - column:
+                  name: reference_type
+              - column:
+                  name: reference_id
