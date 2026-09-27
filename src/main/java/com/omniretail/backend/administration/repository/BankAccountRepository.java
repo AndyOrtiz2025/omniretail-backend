@@ -19,7 +19,7 @@ public interface BankAccountRepository extends JpaRepository<BankAccount, UUID> 
 
     List<BankAccount> findByTenantIdAndStatus(UUID tenantId, BankAccountStatus status);
 
-    boolean existsByTenantIdAndAliasIgnoreCase(UUID tenantId, String alias);
+    boolean existsByTenantIdAndAccountNumber(UUID tenantId, String accountNumber);
 
-    boolean existsByTenantIdAndAliasIgnoreCaseAndIdNot(UUID tenantId, String alias, UUID id);
+    boolean existsByTenantIdAndAccountNumberAndIdNot(UUID tenantId, String accountNumber, UUID id);
 }

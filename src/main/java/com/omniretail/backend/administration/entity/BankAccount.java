@@ -9,6 +9,7 @@ import jakarta.persistence.Table;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import lombok.AllArgsConstructor;
@@ -63,9 +64,11 @@ public class BankAccount extends TenantScopedEntity {
     @Column(name = "alias", nullable = false)
     private String alias;
 
+    @NotNull
+    @Builder.Default
     @JdbcTypeCode(SqlTypes.ARRAY)
-    @Column(name = "branch_ids", columnDefinition = "uuid[]")
-    private List<UUID> branchIds;
+    @Column(name = "branch_ids", columnDefinition = "uuid[]", nullable = false)
+    private List<UUID> branchIds = new ArrayList<>();
 
     @Size(max = 300)
     @Column(name = "transfer_instructions")

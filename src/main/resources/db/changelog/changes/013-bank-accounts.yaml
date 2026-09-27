@@ -59,6 +59,9 @@ databaseChangeLog:
               - column:
                   name: branch_ids
                   type: uuid[]
+                  defaultValueComputed: "'{}'::uuid[]"
+                  constraints:
+                    nullable: false
               - column:
                   name: transfer_instructions
                   type: VARCHAR(300)
@@ -86,12 +89,10 @@ databaseChangeLog:
             sql: "ALTER TABLE bank_accounts ADD CONSTRAINT chk_bank_accounts_currency CHECK (currency IN ('GTQ', 'USD'))"
         - sql:
             sql: "ALTER TABLE bank_accounts ADD CONSTRAINT chk_bank_accounts_status CHECK (status IN ('active', 'inactive', 'archived'))"
-        - createIndex:
+        - addUniqueConstraint:
             tableName: bank_accounts
-            indexName: idx_bank_accounts_tenant_id
-            columns:
-              - column:
-                  name: tenant_id
+            columnNames: tenant_id, account_number
+            constraintName: uk_bank_accounts_tenant_account_number
         - createIndex:
             tableName: bank_accounts
             indexName: idx_bank_accounts_tenant_status

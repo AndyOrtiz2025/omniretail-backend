@@ -5,12 +5,18 @@ import com.omniretail.backend.administration.dto.CreateBankAccountRequest;
 import com.omniretail.backend.administration.dto.UpdateBankAccountRequest;
 import com.omniretail.backend.administration.entity.BankAccount;
 import com.omniretail.backend.administration.entity.BankAccountStatus;
+import com.omniretail.backend.administration.entity.Branch;
+import com.omniretail.backend.administration.entity.BranchStatus;
 import com.omniretail.backend.administration.repository.BankAccountRepository;
 import com.omniretail.backend.administration.repository.BranchRepository;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.CurrentUser;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -55,14 +61,13 @@ public class BankAccountService {
     public BankAccountResponse createBankAccount(CreateBankAccountRequest request) {
         UUID tenantId = currentUser.require().tenantId();
 
-        String alias = request.alias().trim();
-        if (bankAccountRepository.existsByTenantIdAndAliasIgnoreCase(tenantId, alias)) {
-            throw BusinessException.conflict(
-                    "BANK_ACCOUNT_ALIAS_EXISTS", "Ya existe una cuenta bancaria con el alias " + alias);
+        String accountNumber = normalizeAccountNumber(request.accountNumber());
+        if (bankAccountRepository.existsByTenantIdAndAccountNumber(tenantId, accountNumber)) {
+            throw accountNumberExists();
         }
 
-        String accountNumber = normalizeAccountNumber(request.accountNumber());
-        ensureBranchesBelongToTenant(tenantId, request.branchIds());
+        List<UUID> branchIds = normalizeBranchIds(request.branchIds());
+        ensureActiveBranches(tenantId, branchIds, Set.of());
 
         BankAccount bankAccount = BankAccount.builder()
                 .bankName(request.bankName().trim())
@@ -71,8 +76,8 @@ public class BankAccountService {
                 .accountNumberMasked(mask(accountNumber))
                 .accountType(request.accountType())
                 .currency(request.currency())
-                .alias(alias)
-                .branchIds(request.branchIds())
+                .alias(request.alias().trim())
+                .branchIds(branchIds)
                 .transferInstructions(normalize(request.transferInstructions()))
                 .status(request.status() != null ? request.status() : BankAccountStatus.active)
                 .build();
@@ -88,17 +93,16 @@ public class BankAccountService {
                 .orElseThrow(() -> new BusinessException(
                         HttpStatus.NOT_FOUND, "BANK_ACCOUNT_NOT_FOUND", "Cuenta bancaria no encontrada."));
 
-        String alias = request.alias().trim();
-        if (!alias.equalsIgnoreCase(bankAccount.getAlias())
-                && bankAccountRepository.existsByTenantIdAndAliasIgnoreCaseAndIdNot(tenantId, alias, id)) {
-            throw BusinessException.conflict(
-                    "BANK_ACCOUNT_ALIAS_EXISTS", "Ya existe una cuenta bancaria con el alias " + alias);
-        }
-
-        ensureBranchesBelongToTenant(tenantId, request.branchIds());
+        List<UUID> branchIds = normalizeBranchIds(request.branchIds());
+        Set<UUID> previousBranchIds =
+                bankAccount.getBranchIds() != null ? new HashSet<>(bankAccount.getBranchIds()) : Set.of();
+        ensureActiveBranches(tenantId, branchIds, previousBranchIds);
 
         if (request.accountNumber() != null && !request.accountNumber().isBlank()) {
             String accountNumber = normalizeAccountNumber(request.accountNumber());
+            if (bankAccountRepository.existsByTenantIdAndAccountNumberAndIdNot(tenantId, accountNumber, id)) {
+                throw accountNumberExists();
+            }
             bankAccount.setAccountNumber(accountNumber);
             bankAccount.setAccountNumberMasked(mask(accountNumber));
         }
@@ -107,8 +111,8 @@ public class BankAccountService {
         bankAccount.setHolderName(request.holderName().trim());
         bankAccount.setAccountType(request.accountType());
         bankAccount.setCurrency(request.currency());
-        bankAccount.setAlias(alias);
-        bankAccount.setBranchIds(request.branchIds());
+        bankAccount.setAlias(request.alias().trim());
+        bankAccount.setBranchIds(branchIds);
         bankAccount.setTransferInstructions(normalize(request.transferInstructions()));
         bankAccount.setStatus(request.status());
 
@@ -126,16 +130,32 @@ public class BankAccountService {
         bankAccountRepository.save(bankAccount);
     }
 
-    private void ensureBranchesBelongToTenant(UUID tenantId, List<UUID> branchIds) {
-        if (branchIds == null) {
-            return;
-        }
+    /**
+     * Sucursales ya asignadas a la cuenta se conservan aunque hoy estén inactivas
+     * (ensureBankAccountBranchIds en el frontend); las nuevas deben existir en el tenant y estar
+     * activas.
+     */
+    private void ensureActiveBranches(UUID tenantId, List<UUID> branchIds, Set<UUID> alreadyAssigned) {
         for (UUID branchId : branchIds) {
-            branchRepository
+            Branch branch = branchRepository
                     .findByTenantIdAndId(tenantId, branchId)
                     .orElseThrow(() -> new BusinessException(
                             HttpStatus.NOT_FOUND, "BRANCH_NOT_FOUND", "La sucursal asignada no existe."));
+            if (!alreadyAssigned.contains(branchId) && branch.getStatus() != BranchStatus.active) {
+                throw BusinessException.conflict("BRANCH_INACTIVE", "La sucursal asignada no está activa.");
+            }
         }
+    }
+
+    /** branchIds nunca queda en null: el frontend siempre espera una lista, sin duplicados. */
+    private static List<UUID> normalizeBranchIds(List<UUID> branchIds) {
+        return branchIds != null ? new ArrayList<>(new LinkedHashSet<>(branchIds)) : new ArrayList<>();
+    }
+
+    /** Incluye cuentas archivadas: se reactivan editándolas, no creando una nueva. */
+    private static BusinessException accountNumberExists() {
+        return BusinessException.conflict(
+                "BANK_ACCOUNT_NUMBER_EXISTS", "Ya existe una cuenta bancaria con ese número de cuenta.");
     }
 
     private static String normalizeAccountNumber(String accountNumber) {

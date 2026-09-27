@@ -114,7 +114,7 @@ class BankAccountControllerTest {
     }
 
     @Test
-    void createBankAccountDuplicateAliasConflict() throws Exception {
+    void createBankAccountSameAliasAllowed() throws Exception {
         Tenant tenant = persistTenant();
         String token = tokenFor(tenant);
 
@@ -131,15 +131,171 @@ class BankAccountControllerTest {
 
         String secondBody =
                 """
-                {"bankName":"Banco G&T","holderName":"Titular Dos","accountNumber":"33334444","accountType":"savings","currency":"GTQ","alias":"CUENTA UNO"}
+                {"bankName":"Banco G&T","holderName":"Titular Dos","accountNumber":"33334444","accountType":"savings","currency":"GTQ","alias":"Cuenta Uno"}
                 """;
 
         mockMvc.perform(post(BASE_URL)
                         .header("Authorization", bearer(token))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(secondBody))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.alias").value("Cuenta Uno"));
+    }
+
+    @Test
+    void createBankAccountDuplicateNumberWithDifferentFormatConflict() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        persistBankAccount(tenant, "Cuenta Existente", "12345678", BankAccountStatus.active);
+
+        String body =
+                """
+                {"bankName":"Banco G&T","holderName":"Titular","accountNumber":"1234-5678","accountType":"savings","currency":"GTQ","alias":"Cuenta Nueva"}
+                """;
+
+        mockMvc.perform(post(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.code").value("BANK_ACCOUNT_ALIAS_EXISTS"));
+                .andExpect(jsonPath("$.code").value("BANK_ACCOUNT_NUMBER_EXISTS"));
+    }
+
+    @Test
+    void createBankAccountWithNumberOfArchivedAccountConflict() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        persistBankAccount(tenant, "Cuenta Archivada", "12345678", BankAccountStatus.archived);
+
+        String body =
+                """
+                {"bankName":"Banco Industrial","holderName":"Titular","accountNumber":"1234 5678","accountType":"monetary","currency":"GTQ","alias":"Cuenta Nueva"}
+                """;
+
+        mockMvc.perform(post(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("BANK_ACCOUNT_NUMBER_EXISTS"));
+    }
+
+    @Test
+    void updateBankAccountWithNumberOfAnotherAccountConflict() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        persistBankAccount(tenant, "Cuenta Uno", "12345678", BankAccountStatus.active);
+        BankAccount second = persistBankAccount(tenant, "Cuenta Dos", "87654321", BankAccountStatus.active);
+
+        String updateBody =
+                """
+                {"bankName":"Banco Industrial","holderName":"Titular","accountNumber":"1234-5678","accountType":"monetary","currency":"GTQ","alias":"Cuenta Dos","status":"active"}
+                """;
+
+        mockMvc.perform(put(BASE_URL + "/" + second.getId())
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(updateBody))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("BANK_ACCOUNT_NUMBER_EXISTS"));
+    }
+
+    @Test
+    void updateBankAccountWithOwnNumberInDifferentFormatSucceeds() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        BankAccount bankAccount = persistBankAccount(tenant, "Cuenta Uno", "12345678", BankAccountStatus.active);
+
+        String updateBody =
+                """
+                {"bankName":"Banco Industrial","holderName":"Titular","accountNumber":"1234-5678","accountType":"monetary","currency":"GTQ","alias":"Cuenta Uno","status":"active"}
+                """;
+
+        mockMvc.perform(put(BASE_URL + "/" + bankAccount.getId())
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(updateBody))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accountNumber").value("12345678"));
+    }
+
+    @Test
+    void createBankAccountWithoutBranchIdsReturnsEmptyListAndDeduplicates() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        Branch branch = persistBranch(tenant, "Sucursal Centro", BranchStatus.active);
+
+        String withoutBranches =
+                """
+                {"bankName":"Banco Industrial","holderName":"Titular","accountNumber":"11112222","accountType":"monetary","currency":"GTQ","alias":"Sin Sucursales"}
+                """;
+
+        mockMvc.perform(post(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(withoutBranches))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.branchIds").isArray())
+                .andExpect(jsonPath("$.branchIds.length()").value(0));
+
+        String withDuplicates =
+                """
+                {"bankName":"Banco Industrial","holderName":"Titular","accountNumber":"33334444","accountType":"monetary","currency":"GTQ","alias":"Con Duplicados","branchIds":["%s","%s"]}
+                """
+                        .formatted(branch.getId(), branch.getId());
+
+        mockMvc.perform(post(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(withDuplicates))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.branchIds.length()").value(1))
+                .andExpect(jsonPath("$.branchIds[0]").value(branch.getId().toString()));
+    }
+
+    @Test
+    void createBankAccountWithInactiveBranchConflict() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        Branch inactiveBranch = persistBranch(tenant, "Sucursal Cerrada", BranchStatus.inactive);
+
+        String body =
+                """
+                {"bankName":"Banco Industrial","holderName":"Titular","accountNumber":"11112222","accountType":"monetary","currency":"GTQ","alias":"Cuenta","branchIds":["%s"]}
+                """
+                        .formatted(inactiveBranch.getId());
+
+        mockMvc.perform(post(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("BRANCH_INACTIVE"));
+    }
+
+    @Test
+    void updateBankAccountKeepsAlreadyAssignedInactiveBranch() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        Branch branch = persistBranch(tenant, "Sucursal Que Cierra", BranchStatus.active);
+        BankAccount bankAccount = persistBankAccount(tenant, "Cuenta", "11112222", BankAccountStatus.active);
+        bankAccount.setBranchIds(List.of(branch.getId()));
+        bankAccountRepository.save(bankAccount);
+        branch.setStatus(BranchStatus.inactive);
+        branchRepository.save(branch);
+
+        String updateBody =
+                """
+                {"bankName":"Banco Industrial","holderName":"Titular","accountType":"monetary","currency":"GTQ","alias":"Cuenta","branchIds":["%s"],"status":"active"}
+                """
+                        .formatted(branch.getId());
+
+        mockMvc.perform(put(BASE_URL + "/" + bankAccount.getId())
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(updateBody))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.branchIds[0]").value(branch.getId().toString()));
     }
 
     @Test
@@ -179,7 +335,7 @@ class BankAccountControllerTest {
         Tenant tenant = persistTenant();
         Tenant otherTenant = persistTenant();
         String token = tokenFor(tenant);
-        Branch foreignBranch = persistBranch(otherTenant, "Sucursal Ajena");
+        Branch foreignBranch = persistBranch(otherTenant, "Sucursal Ajena", BranchStatus.active);
 
         String body =
                 """
@@ -335,12 +491,12 @@ class BankAccountControllerTest {
         return "*".repeat(accountNumber.length() - 4) + accountNumber.substring(accountNumber.length() - 4);
     }
 
-    private Branch persistBranch(Tenant tenant, String name) {
+    private Branch persistBranch(Tenant tenant, String name, BranchStatus status) {
         Branch branch = Branch.builder()
                 .code("BR-" + UUID.randomUUID().toString().substring(0, 8))
                 .name(name)
                 .type(BranchType.store)
-                .status(BranchStatus.active)
+                .status(status)
                 .build();
         branch.setTenantId(tenant.getId());
         return branchRepository.save(branch);
