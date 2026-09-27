@@ -1,0 +1,13 @@
+# tenant_id ya tiene índice único en ambas tablas (uk_ecommerce_config_tenant y uk_hero_banner_config_tenant);
+# estos índices duplicaban ese trabajo. Se borran en un changeset nuevo para no alterar el checksum de 015.
+databaseChangeLog:
+  - changeSet:
+      id: 016-drop-redundant-ecommerce-config-indexes
+      author: joga17000
+      changes:
+        - dropIndex:
+            tableName: ecommerce_configs
+            indexName: idx_ecommerce_config_tenant_id
+        - dropIndex:
+            tableName: hero_banner_configs
+            indexName: idx_hero_banner_config_tenant_id
