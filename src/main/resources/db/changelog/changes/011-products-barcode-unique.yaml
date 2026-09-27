@@ -1,0 +1,14 @@
+databaseChangeLog:
+  - changeSet:
+      id: 011-products-barcode-unique
+      author: omniretail
+      changes:
+        - sql:
+            sql: |
+              CREATE UNIQUE INDEX uk_products_tenant_barcode
+              ON products (tenant_id, barcode)
+              WHERE barcode IS NOT NULL;
+      rollback:
+        - sql:
+            sql: |
+              DROP INDEX IF EXISTS uk_products_tenant_barcode;
