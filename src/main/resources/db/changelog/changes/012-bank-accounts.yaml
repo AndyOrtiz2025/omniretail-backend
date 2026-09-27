@@ -1,0 +1,102 @@
+databaseChangeLog:
+  - changeSet:
+      id: 012-bank-accounts
+      author: joga17000
+      changes:
+        - createTable:
+            tableName: bank_accounts
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_bank_accounts_tenant
+              - column:
+                  name: bank_name
+                  type: VARCHAR(80)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: holder_name
+                  type: VARCHAR(120)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: account_number
+                  type: VARCHAR(24)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: account_number_masked
+                  type: VARCHAR(24)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: account_type
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: currency
+                  type: VARCHAR(3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: alias
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: branch_ids
+                  type: uuid[]
+              - column:
+                  name: transfer_instructions
+                  type: VARCHAR(300)
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  defaultValue: active
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - sql:
+            sql: "ALTER TABLE bank_accounts ADD CONSTRAINT chk_bank_accounts_type CHECK (account_type IN ('monetary', 'savings'))"
+        - sql:
+            sql: "ALTER TABLE bank_accounts ADD CONSTRAINT chk_bank_accounts_currency CHECK (currency IN ('GTQ', 'USD'))"
+        - sql:
+            sql: "ALTER TABLE bank_accounts ADD CONSTRAINT chk_bank_accounts_status CHECK (status IN ('active', 'inactive', 'archived'))"
+        - createIndex:
+            tableName: bank_accounts
+            indexName: idx_bank_accounts_tenant_id
+            columns:
+              - column:
+                  name: tenant_id
+        - createIndex:
+            tableName: bank_accounts
+            indexName: idx_bank_accounts_tenant_status
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: status
