@@ -10,10 +10,10 @@ import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.CurrentUser;
 import com.omniretail.backend.shared.security.SaasCapability;
 import com.omniretail.backend.shared.security.TenantCapabilityGuard;
-import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -22,9 +22,12 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class BusinessConfigService {
 
-    private static final List<String> DEFAULT_PAYMENT_METHODS = List.of("cash", "card", "transfer");
+    private static final String INVENTORY_CAPABILITIES_REQUIRE_INVENTORY =
+            "Las capacidades de inventario no pueden permanecer activas sin control de inventario.";
     private static final String TRACKING_REQUIRES_CAPABILITY =
             "La trazabilidad por defecto requiere activar sus capacidades relacionadas.";
+    private static final String CAPABILITY_NOT_IN_PLAN =
+            "Tu plan actual no incluye esta funcionalidad. Actualiza tu plan para habilitarla.";
 
     // Mismos valores que business-defaults.ts del frontend; si la config no coincide, el preset pasa a custom.
     private static final Map<BusinessPreset, Capabilities> PRESET_DEFAULTS = Map.of(
@@ -51,13 +54,16 @@ public class BusinessConfigService {
         return configRepository
                 .findByTenantId(tenantId)
                 .map(BusinessConfigResponse::from)
-                .orElseGet(() -> defaultConfig(tenantId));
+                .orElseThrow(() -> new BusinessException(
+                        HttpStatus.NOT_FOUND,
+                        "BUSINESS_CONFIG_NOT_FOUND",
+                        "La configuración del negocio no está disponible."));
     }
 
     public BusinessConfigResponse saveConfig(SaveBusinessConfigRequest request) {
         UUID tenantId = currentUser.require().tenantId();
-        Capabilities requested = coherent(Capabilities.from(request));
-        ensureTrackingMatchesCapabilities(requested);
+        Capabilities requested = Capabilities.from(request);
+        ensureCoherent(requested);
 
         BusinessCapabilitiesConfig current = configRepository.findByTenantId(tenantId).orElse(null);
         ensureEntitledForNewlyEnabled(tenantId, current, requested);
@@ -86,22 +92,19 @@ public class BusinessConfigService {
         return BusinessConfigResponse.from(configRepository.save(config));
     }
 
-    private static Capabilities coherent(Capabilities requested) {
-        if (requested.inventory()) {
-            return requested;
+    // Mismas reglas y prioridad que validateBusinessConfigDto del frontend. No se corrige en silencio:
+    // la correccion automatica solo la hace el formulario antes de enviar.
+    private static void ensureCoherent(Capabilities requested) {
+        boolean hasInventoryCapabilities =
+                requested.lots() || requested.expiration() || requested.serials() || requested.multipleLocations();
+        if (!requested.inventory() && hasInventoryCapabilities) {
+            throw BusinessException.badRequest(INVENTORY_CAPABILITIES_REQUIRE_INVENTORY);
         }
-        return new Capabilities(
-                false, false, false, false, false,
-                requested.unitsAndPackaging(),
-                requested.productAttributes(),
-                requested.kits(),
-                requested.services(),
-                new ProductTrackingDto(false, false, false, false));
-    }
 
-    private static void ensureTrackingMatchesCapabilities(Capabilities requested) {
         ProductTrackingDto tracking = requested.tracking();
-        if ((tracking.lot() && !requested.lots())
+        boolean hasTracking = tracking.stock() || tracking.lot() || tracking.expiration() || tracking.serial();
+        if ((!requested.inventory() && hasTracking)
+                || (tracking.lot() && !requested.lots())
                 || (tracking.expiration() && !requested.expiration())
                 || (tracking.serial() && !requested.serials())) {
             throw BusinessException.badRequest(TRACKING_REQUIRES_CAPABILITY);
@@ -113,16 +116,20 @@ public class BusinessConfigService {
             UUID tenantId, BusinessCapabilitiesConfig current, Capabilities requested) {
         boolean hasCurrent = current != null;
         if (requested.lots() && !(hasCurrent && current.isSupportsLots())) {
-            tenantCapabilityGuard.ensureTenantCapability(tenantId, SaasCapability.traceabilityLots);
+            tenantCapabilityGuard.ensureTenantCapability(
+                    tenantId, SaasCapability.traceabilityLots, CAPABILITY_NOT_IN_PLAN);
         }
         if (requested.expiration() && !(hasCurrent && current.isSupportsExpiration())) {
-            tenantCapabilityGuard.ensureTenantCapability(tenantId, SaasCapability.traceabilityExpiration);
+            tenantCapabilityGuard.ensureTenantCapability(
+                    tenantId, SaasCapability.traceabilityExpiration, CAPABILITY_NOT_IN_PLAN);
         }
         if (requested.serials() && !(hasCurrent && current.isSupportsSerials())) {
-            tenantCapabilityGuard.ensureTenantCapability(tenantId, SaasCapability.traceabilitySerials);
+            tenantCapabilityGuard.ensureTenantCapability(
+                    tenantId, SaasCapability.traceabilitySerials, CAPABILITY_NOT_IN_PLAN);
         }
         if (requested.kits() && !(hasCurrent && current.isSupportsKits())) {
-            tenantCapabilityGuard.ensureTenantCapability(tenantId, SaasCapability.catalogKits);
+            tenantCapabilityGuard.ensureTenantCapability(
+                    tenantId, SaasCapability.catalogKits, CAPABILITY_NOT_IN_PLAN);
         }
     }
 
@@ -131,15 +138,6 @@ public class BusinessConfigService {
             return BusinessPreset.custom;
         }
         return requested.equals(PRESET_DEFAULTS.get(preset)) ? preset : BusinessPreset.custom;
-    }
-
-    private static BusinessConfigResponse defaultConfig(UUID tenantId) {
-        return new BusinessConfigResponse(
-                tenantId,
-                BusinessPreset.custom,
-                true, false, false, false, false, false, false, false, false,
-                DEFAULT_PAYMENT_METHODS,
-                new ProductTrackingDto(false, false, false, false));
     }
 
     private record Capabilities(

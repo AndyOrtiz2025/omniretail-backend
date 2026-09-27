@@ -19,7 +19,7 @@ public class BusinessConfigController {
 
     private final BusinessConfigService businessConfigService;
 
-    @RequirePermission("admin.business_config.manage")
+    // Sin permiso: POS, inventario, recepcion y catalogo leen esta configuracion (igual que el frontend).
     @GetMapping
     public BusinessConfigResponse get() {
         return businessConfigService.getConfig();

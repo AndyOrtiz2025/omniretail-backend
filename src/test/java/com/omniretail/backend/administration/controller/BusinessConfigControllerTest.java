@@ -8,11 +8,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.omniretail.backend.TestcontainersConfiguration;
+import com.omniretail.backend.administration.entity.BusinessCapabilitiesConfig;
+import com.omniretail.backend.administration.entity.BusinessPreset;
 import com.omniretail.backend.administration.entity.Role;
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.entity.User;
 import com.omniretail.backend.administration.entity.UserType;
+import com.omniretail.backend.administration.repository.BusinessCapabilitiesConfigRepository;
 import com.omniretail.backend.administration.repository.RoleRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.administration.repository.UserRepository;
@@ -64,6 +67,9 @@ class BusinessConfigControllerTest {
     @Autowired
     private SessionRepository sessionRepository;
 
+    @Autowired
+    private BusinessCapabilitiesConfigRepository configRepository;
+
     @MockitoBean
     private TenantEntitlementResolver entitlementResolver;
 
@@ -79,29 +85,44 @@ class BusinessConfigControllerTest {
     }
 
     @Test
-    void withoutPermissionReturnsForbidden() throws Exception {
+    void putWithoutPermissionReturnsForbidden() throws Exception {
         Tenant tenant = persistTenant();
         String token = tokenFor(tenant, List.of());
 
-        mockMvc.perform(get(BASE_URL).header("Authorization", bearer(token)))
+        String body =
+                """
+                {"preset":"custom","supportsInventory":true,"defaultProductTracking":{"stock":true,"lot":false,"expiration":false,"serial":false}}
+                """;
+
+        mockMvc.perform(put(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
     }
 
     @Test
-    void getReturnsDefaultsForNewTenant() throws Exception {
+    void getIsAllowedForAnyAuthenticatedUserOfTheTenant() throws Exception {
         Tenant tenant = persistTenant();
-        String token = tokenFor(tenant);
+        persistConfig(tenant);
+        String token = tokenFor(tenant, List.of("pos.sales.create"));
 
         mockMvc.perform(get(BASE_URL).header("Authorization", bearer(token)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.tenantId").value(tenant.getId().toString()))
-                .andExpect(jsonPath("$.preset").value("custom"))
-                .andExpect(jsonPath("$.supportsInventory").value(true))
-                .andExpect(jsonPath("$.supportsLots").value(false))
-                .andExpect(jsonPath("$.supportsSerials").value(false))
-                .andExpect(jsonPath("$.defaultProductTracking.stock").value(false))
-                .andExpect(jsonPath("$.defaultProductTracking.lot").value(false));
+                .andExpect(jsonPath("$.allowedPosPaymentMethods.length()").value(3));
+    }
+
+    @Test
+    void getWithoutConfigReturnsNotFound() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+
+        mockMvc.perform(get(BASE_URL).header("Authorization", bearer(token)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("BUSINESS_CONFIG_NOT_FOUND"))
+                .andExpect(jsonPath("$.message").value("La configuración del negocio no está disponible."));
     }
 
     @Test
@@ -151,7 +172,7 @@ class BusinessConfigControllerTest {
     }
 
     @Test
-    void disablingInventoryTurnsOffDependentCapabilitiesAndTracking() throws Exception {
+    void disablingInventoryWithDependentCapabilitiesReturnsBadRequest() throws Exception {
         Tenant tenant = persistTenant();
         String token = tokenFor(tenant);
 
@@ -164,18 +185,48 @@ class BusinessConfigControllerTest {
                         .header("Authorization", bearer(token))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message")
+                        .value("Las capacidades de inventario no pueden permanecer activas sin control de inventario."));
+    }
+
+    @Test
+    void disablingInventoryWithStockTrackingReturnsBadRequest() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+
+        String body =
+                """
+                {"preset":"custom","supportsInventory":false,"supportsServices":true,"defaultProductTracking":{"stock":true,"lot":false,"expiration":false,"serial":false}}
+                """;
+
+        mockMvc.perform(put(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message")
+                        .value("La trazabilidad por defecto requiere activar sus capacidades relacionadas."));
+    }
+
+    @Test
+    void disablingInventoryCoherentlyIsAllowed() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+
+        String body =
+                """
+                {"preset":"custom","supportsInventory":false,"supportsUnitsAndPackaging":true,"supportsServices":true,"defaultProductTracking":{"stock":false,"lot":false,"expiration":false,"serial":false}}
+                """;
+
+        mockMvc.perform(put(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.supportsInventory").value(false))
-                .andExpect(jsonPath("$.supportsLots").value(false))
-                .andExpect(jsonPath("$.supportsExpiration").value(false))
-                .andExpect(jsonPath("$.supportsSerials").value(false))
-                .andExpect(jsonPath("$.supportsMultipleLocations").value(false))
                 .andExpect(jsonPath("$.supportsUnitsAndPackaging").value(true))
-                .andExpect(jsonPath("$.supportsServices").value(true))
-                .andExpect(jsonPath("$.defaultProductTracking.stock").value(false))
-                .andExpect(jsonPath("$.defaultProductTracking.lot").value(false))
-                .andExpect(jsonPath("$.defaultProductTracking.expiration").value(false))
-                .andExpect(jsonPath("$.defaultProductTracking.serial").value(false));
+                .andExpect(jsonPath("$.defaultProductTracking.stock").value(false));
     }
 
     @Test
@@ -223,7 +274,9 @@ class BusinessConfigControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(lotsBody))
                 .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value("CAPABILITY_REQUIRED"));
+                .andExpect(jsonPath("$.code").value("CAPABILITY_REQUIRED"))
+                .andExpect(jsonPath("$.message")
+                        .value("Tu plan actual no incluye esta funcionalidad. Actualiza tu plan para habilitarla."));
 
         String serialsBody =
                 """
@@ -285,11 +338,19 @@ class BusinessConfigControllerTest {
                 .andExpect(jsonPath("$.supportsSerials").value(true));
 
         mockMvc.perform(get(BASE_URL).header("Authorization", bearer(tokenB)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.tenantId").value(tenantB.getId().toString()))
-                .andExpect(jsonPath("$.supportsSerials").value(false))
-                .andExpect(jsonPath("$.supportsKits").value(false))
-                .andExpect(jsonPath("$.defaultProductTracking.serial").value(false));
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("BUSINESS_CONFIG_NOT_FOUND"));
+    }
+
+    private BusinessCapabilitiesConfig persistConfig(Tenant tenant) {
+        BusinessCapabilitiesConfig config = BusinessCapabilitiesConfig.builder()
+                .preset(BusinessPreset.custom)
+                .supportsInventory(true)
+                .allowedPosPaymentMethods(List.of("cash", "card", "transfer"))
+                .trackStock(true)
+                .build();
+        config.setTenantId(tenant.getId());
+        return configRepository.save(config);
     }
 
     private Tenant persistTenant() {

@@ -1,6 +1,6 @@
 databaseChangeLog:
   - changeSet:
-      id: 013-business-capabilities-config
+      id: 014-business-capabilities-config
       author: joga17000
       changes:
         - createTable:
@@ -124,9 +124,3 @@ databaseChangeLog:
                     nullable: false
         - sql:
             sql: "ALTER TABLE business_capabilities_configs ADD CONSTRAINT chk_business_config_preset CHECK (preset IN ('hardware_store', 'pharmacy', 'grocery', 'services', 'custom'))"
-        - createIndex:
-            tableName: business_capabilities_configs
-            indexName: idx_business_config_tenant_id
-            columns:
-              - column:
-                  name: tenant_id
