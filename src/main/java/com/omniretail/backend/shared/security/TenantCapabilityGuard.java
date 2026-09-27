@@ -23,6 +23,14 @@ public class TenantCapabilityGuard {
 
     /** Lanza 403 si la suscripcion o el plan no estan activos, o si el plan no incluye la capacidad. */
     public void ensureTenantCapability(UUID tenantId, SaasCapability capability) {
+        ensureTenantCapability(tenantId, capability, "Esta función no está incluida en tu plan actual.");
+    }
+
+    /**
+     * Igual que {@link #ensureTenantCapability(UUID, SaasCapability)}, con el mensaje de
+     * CAPABILITY_REQUIRED propio del caso de uso.
+     */
+    public void ensureTenantCapability(UUID tenantId, SaasCapability capability, String capabilityRequiredMessage) {
         TenantEntitlements entitlements = entitlementResolver.resolve(tenantId);
         if (!entitlements.subscriptionActive()) {
             throw BusinessException.forbidden("SUBSCRIPTION_INACTIVE", "La suscripción del negocio no está activa.");
@@ -31,7 +39,7 @@ public class TenantCapabilityGuard {
             throw BusinessException.forbidden("PLAN_INACTIVE", "El plan del negocio no está activo.");
         }
         if (!entitlements.capabilities().contains(capability)) {
-            throw BusinessException.forbidden("CAPABILITY_REQUIRED", "Esta función no está incluida en tu plan actual.");
+            throw BusinessException.forbidden("CAPABILITY_REQUIRED", capabilityRequiredMessage);
         }
     }
 }
