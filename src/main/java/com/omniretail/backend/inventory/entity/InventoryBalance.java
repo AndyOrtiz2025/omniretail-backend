@@ -43,6 +43,10 @@ public class InventoryBalance extends TenantScopedEntity {
     @Column(name = "reserved_quantity", nullable = false, precision = 12, scale = 3)
     private BigDecimal reservedQuantity = BigDecimal.ZERO;
 
+    public void add(BigDecimal quantity) {
+        this.quantity = this.quantity.add(quantity);
+    }
+
     public void deduct(BigDecimal quantity) {
         BigDecimal resultingQuantity = this.quantity.subtract(quantity);
         if (resultingQuantity.compareTo(reservedQuantity) < 0) {

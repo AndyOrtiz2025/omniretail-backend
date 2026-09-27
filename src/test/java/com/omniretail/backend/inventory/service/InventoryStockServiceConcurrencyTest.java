@@ -3,6 +3,7 @@ package com.omniretail.backend.inventory.service;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.omniretail.backend.TestcontainersConfiguration;
+import com.omniretail.backend.inventory.dto.AddStockCommand;
 import com.omniretail.backend.shared.exception.BusinessException;
 import java.math.BigDecimal;
 import java.util.List;
@@ -29,6 +30,32 @@ class InventoryStockServiceConcurrencyTest {
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    @Test
+    void concurrentIncrementsCreateOneBalanceWithoutLostUpdate() throws Exception {
+        Fixture fixture = createFixtureWithoutBalance();
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+
+        try {
+            Future<Outcome> first = executor.submit(() -> incrementOnce(fixture, ready, start));
+            Future<Outcome> second = executor.submit(() -> incrementOnce(fixture, ready, start));
+
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            List<Outcome> outcomes = List.of(
+                    first.get(20, TimeUnit.SECONDS), second.get(20, TimeUnit.SECONDS));
+            assertThat(outcomes).allMatch(Outcome::succeeded);
+            assertThat(countBalances(fixture)).isOne();
+            assertThat(defaultBalanceQuantity(fixture)).isEqualByComparingTo("10.000");
+            assertThat(countMovements(fixture, "in")).isEqualTo(2);
+            assertThat(sumMovementQuantity(fixture, "in")).isEqualByComparingTo("10.000");
+        } finally {
+            executor.shutdownNow();
+        }
+    }
 
     @Test
     void concurrentDeductionsAllowExactlyOneOutMovement() throws Exception {
@@ -83,12 +110,53 @@ class InventoryStockServiceConcurrencyTest {
         }
     }
 
+    private Outcome incrementOnce(
+            Fixture fixture, CountDownLatch ready, CountDownLatch start) throws InterruptedException {
+        ready.countDown();
+        if (!start.await(10, TimeUnit.SECONDS)) {
+            throw new IllegalStateException("Los incrementos concurrentes no iniciaron a tiempo.");
+        }
+        try {
+            inventoryStockService.incrementStock(new AddStockCommand(
+                    fixture.tenantId(),
+                    fixture.branchId(),
+                    fixture.productId(),
+                    new BigDecimal("5.000"),
+                    "Conteo concurrente",
+                    "MANUAL_ADJUSTMENT",
+                    UUID.randomUUID(),
+                    null));
+            return new Outcome(true, null);
+        } catch (BusinessException exception) {
+            return new Outcome(false, exception.getCode());
+        }
+    }
+
     private long countMovements(Fixture fixture) {
+        return countMovements(fixture, "out");
+    }
+
+    private long countMovements(Fixture fixture, String type) {
         Long count = jdbcTemplate.queryForObject(
                 """
                 SELECT count(*)
                 FROM inventory_movements
-                WHERE tenant_id = ? AND branch_id = ? AND product_id = ? AND type = 'out'
+                WHERE tenant_id = ? AND branch_id = ? AND product_id = ? AND type = ?
+                """,
+                Long.class,
+                fixture.tenantId(),
+                fixture.branchId(),
+                fixture.productId(),
+                type);
+        return count == null ? 0 : count;
+    }
+
+    private long countBalances(Fixture fixture) {
+        Long count = jdbcTemplate.queryForObject(
+                """
+                SELECT count(*)
+                FROM inventory_balances
+                WHERE tenant_id = ? AND branch_id = ? AND product_id = ? AND location_id IS NULL
                 """,
                 Long.class,
                 fixture.tenantId(),
@@ -97,13 +165,48 @@ class InventoryStockServiceConcurrencyTest {
         return count == null ? 0 : count;
     }
 
+    private BigDecimal defaultBalanceQuantity(Fixture fixture) {
+        return jdbcTemplate.queryForObject(
+                """
+                SELECT quantity
+                FROM inventory_balances
+                WHERE tenant_id = ? AND branch_id = ? AND product_id = ? AND location_id IS NULL
+                """,
+                BigDecimal.class,
+                fixture.tenantId(),
+                fixture.branchId(),
+                fixture.productId());
+    }
+
+    private BigDecimal sumMovementQuantity(Fixture fixture, String type) {
+        return jdbcTemplate.queryForObject(
+                """
+                SELECT COALESCE(sum(quantity), 0)
+                FROM inventory_movements
+                WHERE tenant_id = ? AND branch_id = ? AND product_id = ? AND type = ?
+                """,
+                BigDecimal.class,
+                fixture.tenantId(),
+                fixture.branchId(),
+                fixture.productId(),
+                type);
+    }
+
     private Fixture createFixture() {
+        return createFixture(true);
+    }
+
+    private Fixture createFixtureWithoutBalance() {
+        return createFixture(false);
+    }
+
+    private Fixture createFixture(boolean withBalance) {
         UUID tenantId = UUID.randomUUID();
         UUID branchId = UUID.randomUUID();
         UUID categoryId = UUID.randomUUID();
         UUID unitId = UUID.randomUUID();
         UUID productId = UUID.randomUUID();
-        UUID balanceId = UUID.randomUUID();
+        UUID balanceId = withBalance ? UUID.randomUUID() : null;
         String suffix = UUID.randomUUID().toString();
 
         jdbcTemplate.update(
@@ -151,16 +254,18 @@ class InventoryStockServiceConcurrencyTest {
                 "Producto " + suffix,
                 categoryId,
                 unitId);
-        jdbcTemplate.update(
-                """
-                INSERT INTO inventory_balances
-                    (id, tenant_id, branch_id, product_id, location_id, quantity, reserved_quantity)
-                VALUES (?, ?, ?, ?, NULL, 1.000, 0.000)
-                """,
-                balanceId,
-                tenantId,
-                branchId,
-                productId);
+        if (withBalance) {
+            jdbcTemplate.update(
+                    """
+                    INSERT INTO inventory_balances
+                        (id, tenant_id, branch_id, product_id, location_id, quantity, reserved_quantity)
+                    VALUES (?, ?, ?, ?, NULL, 1.000, 0.000)
+                    """,
+                    balanceId,
+                    tenantId,
+                    branchId,
+                    productId);
+        }
 
         return new Fixture(tenantId, branchId, productId, balanceId);
     }

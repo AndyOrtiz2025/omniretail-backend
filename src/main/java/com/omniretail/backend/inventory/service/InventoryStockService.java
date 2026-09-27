@@ -1,5 +1,6 @@
 package com.omniretail.backend.inventory.service;
 
+import com.omniretail.backend.inventory.dto.AddStockCommand;
 import com.omniretail.backend.inventory.dto.DeductStockCommand;
 import com.omniretail.backend.inventory.entity.InventoryBalance;
 import com.omniretail.backend.inventory.entity.InventoryMovement;
@@ -48,6 +49,44 @@ public class InventoryStockService {
                     "Los datos de la deducción son requeridos.");
         }
         return doDeductStock(command);
+    }
+
+    @Transactional
+    public InventoryMovement incrementStock(AddStockCommand command) {
+        if (command == null) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "INVALID_STOCK_COMMAND",
+                    "Los datos del incremento son requeridos.");
+        }
+        validateQuantity(command.qty());
+
+        inventoryBalanceRepository.ensureDefaultLocationBalanceExists(
+                command.tenantId(), command.branchId(), command.productId());
+        InventoryBalance balance = inventoryBalanceRepository
+                .findByTenantIdAndBranchIdAndProductIdAndLocationIdIsNull(
+                        command.tenantId(), command.branchId(), command.productId())
+                .orElseThrow(() -> new IllegalStateException(
+                        "No se pudo inicializar el balance de inventario."));
+
+        BigDecimal quantityBefore = balance.getQuantity();
+        balance.add(command.qty());
+
+        return inventoryMovementRepository.save(InventoryMovement.builder()
+                .tenantId(command.tenantId())
+                .branchId(command.branchId())
+                .productId(command.productId())
+                .type(InventoryMovementType.in)
+                .reason(command.reason())
+                .quantity(command.qty())
+                .quantityBefore(quantityBefore)
+                .quantityAfter(balance.getQuantity())
+                .fromLocationId(null)
+                .toLocationId(balance.getLocationId())
+                .referenceType(command.referenceType())
+                .referenceId(command.referenceId())
+                .performedByUserId(command.performedByUserId())
+                .build());
     }
 
     private InventoryMovement doDeductStock(DeductStockCommand command) {

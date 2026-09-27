@@ -8,11 +8,24 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
 
 public interface InventoryBalanceRepository extends JpaRepository<InventoryBalance, UUID> {
 
     Page<InventoryBalance> findByTenantIdAndBranchId(
             UUID tenantId, UUID branchId, Pageable pageable);
+
+    @Modifying
+    @Query(
+            value = """
+                    INSERT INTO inventory_balances
+                        (tenant_id, branch_id, product_id, location_id, quantity, reserved_quantity)
+                    VALUES (:tenantId, :branchId, :productId, NULL, 0, 0)
+                    ON CONFLICT ON CONSTRAINT uk_inventory_balances_logical DO NOTHING
+                    """,
+            nativeQuery = true)
+    void ensureDefaultLocationBalanceExists(UUID tenantId, UUID branchId, UUID productId);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     Optional<InventoryBalance> findByTenantIdAndBranchIdAndProductIdAndLocationIdIsNull(

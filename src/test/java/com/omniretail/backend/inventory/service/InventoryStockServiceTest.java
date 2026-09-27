@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.omniretail.backend.TestcontainersConfiguration;
+import com.omniretail.backend.inventory.dto.AddStockCommand;
 import com.omniretail.backend.inventory.dto.DeductStockCommand;
 import com.omniretail.backend.inventory.entity.InventoryBalance;
 import com.omniretail.backend.inventory.entity.InventoryMovement;
@@ -37,6 +38,83 @@ class InventoryStockServiceTest {
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    @Test
+    void incrementStockIncreasesPhysicalQuantityAndCreatesInMovement() {
+        Fixture fixture = createFixture("10.000", "2.000");
+
+        InventoryMovement created = inventoryStockService.incrementStock(
+                addStockCommand(fixture, new BigDecimal("3.000"), "Conteo físico"));
+
+        InventoryBalance balance = inventoryBalanceRepository
+                .findById(fixture.balanceId())
+                .orElseThrow();
+        InventoryMovement movement = inventoryMovementRepository
+                .findById(created.getId())
+                .orElseThrow();
+        assertThat(balance.getQuantity()).isEqualByComparingTo("13.000");
+        assertThat(balance.getReservedQuantity()).isEqualByComparingTo("2.000");
+        assertThat(movement.getType()).isEqualTo(InventoryMovementType.in);
+        assertThat(movement.getQuantity()).isEqualByComparingTo("3.000");
+        assertThat(movement.getQuantityBefore()).isEqualByComparingTo("10.000");
+        assertThat(movement.getQuantityAfter()).isEqualByComparingTo("13.000");
+        assertThat(movement.getReason()).isEqualTo("Conteo físico");
+        assertThat(movement.getPerformedByUserId()).isEqualTo(fixture.userId());
+        assertThat(countMovements(fixture)).isOne();
+    }
+
+    @Test
+    void incrementStockCreatesMissingBalanceAndInMovement() {
+        Fixture fixture = createFixtureWithoutBalance();
+
+        InventoryMovement created = inventoryStockService.incrementStock(
+                addStockCommand(fixture, new BigDecimal("5.000"), "Inventario inicial"));
+
+        assertThat(countBalances(fixture)).isOne();
+        assertThat(defaultBalanceQuantity(fixture)).isEqualByComparingTo("5.000");
+        assertThat(defaultBalanceReservedQuantity(fixture)).isEqualByComparingTo("0.000");
+        InventoryMovement movement = inventoryMovementRepository
+                .findById(created.getId())
+                .orElseThrow();
+        assertThat(movement.getType()).isEqualTo(InventoryMovementType.in);
+        assertThat(movement.getQuantityBefore()).isEqualByComparingTo("0.000");
+        assertThat(movement.getQuantityAfter()).isEqualByComparingTo("5.000");
+        assertThat(countMovements(fixture)).isOne();
+    }
+
+    @Test
+    void incrementStockRejectsZeroQuantityBeforeCreatingBalance() {
+        Fixture fixture = createFixtureWithoutBalance();
+
+        assertInvalidQuantity(() -> inventoryStockService.incrementStock(
+                addStockCommand(fixture, BigDecimal.ZERO, "Ajuste inválido")));
+
+        assertThat(countBalances(fixture)).isZero();
+        assertThat(countMovements(fixture)).isZero();
+    }
+
+    @Test
+    void incrementStockRejectsNegativeQuantityBeforeCreatingBalance() {
+        Fixture fixture = createFixtureWithoutBalance();
+
+        assertInvalidQuantity(() -> inventoryStockService.incrementStock(
+                addStockCommand(fixture, new BigDecimal("-1.000"), "Ajuste inválido")));
+
+        assertThat(countBalances(fixture)).isZero();
+        assertThat(countMovements(fixture)).isZero();
+    }
+
+    @Test
+    void incrementStockRollsBackBalanceWhenMovementCannotBePersisted() {
+        Fixture fixture = createFixture("10.000", "2.000");
+
+        assertThatThrownBy(() -> inventoryStockService.incrementStock(
+                        addStockCommand(fixture, BigDecimal.ONE, null)))
+                .isInstanceOf(RuntimeException.class);
+
+        assertBalance(fixture, "10.000", "2.000");
+        assertThat(countMovements(fixture)).isZero();
+    }
 
     @Test
     void deductStockReducesPhysicalQuantityAndCreatesOutMovement() {
@@ -196,6 +274,59 @@ class InventoryStockServiceTest {
                 fixture.branchId(),
                 fixture.productId());
         return count == null ? 0 : count;
+    }
+
+    private long countBalances(Fixture fixture) {
+        Long count = jdbcTemplate.queryForObject(
+                """
+                SELECT count(*)
+                FROM inventory_balances
+                WHERE tenant_id = ? AND branch_id = ? AND product_id = ? AND location_id IS NULL
+                """,
+                Long.class,
+                fixture.tenantId(),
+                fixture.branchId(),
+                fixture.productId());
+        return count == null ? 0 : count;
+    }
+
+    private BigDecimal defaultBalanceQuantity(Fixture fixture) {
+        return jdbcTemplate.queryForObject(
+                """
+                SELECT quantity
+                FROM inventory_balances
+                WHERE tenant_id = ? AND branch_id = ? AND product_id = ? AND location_id IS NULL
+                """,
+                BigDecimal.class,
+                fixture.tenantId(),
+                fixture.branchId(),
+                fixture.productId());
+    }
+
+    private BigDecimal defaultBalanceReservedQuantity(Fixture fixture) {
+        return jdbcTemplate.queryForObject(
+                """
+                SELECT reserved_quantity
+                FROM inventory_balances
+                WHERE tenant_id = ? AND branch_id = ? AND product_id = ? AND location_id IS NULL
+                """,
+                BigDecimal.class,
+                fixture.tenantId(),
+                fixture.branchId(),
+                fixture.productId());
+    }
+
+    private static AddStockCommand addStockCommand(
+            Fixture fixture, BigDecimal quantity, String reason) {
+        return new AddStockCommand(
+                fixture.tenantId(),
+                fixture.branchId(),
+                fixture.productId(),
+                quantity,
+                reason,
+                "MANUAL_ADJUSTMENT",
+                UUID.randomUUID(),
+                fixture.userId());
     }
 
     private Fixture createFixture(String quantity, String reservedQuantity) {
