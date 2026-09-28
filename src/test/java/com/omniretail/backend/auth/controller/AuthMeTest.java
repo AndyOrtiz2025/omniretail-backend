@@ -30,6 +30,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
@@ -61,6 +62,9 @@ class AuthMeTest {
 
     @Autowired
     private JwtService jwtService;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     @Test
     void employeeWithActiveRoleGetsFullSnapshot() throws Exception {
@@ -127,12 +131,43 @@ class AuthMeTest {
     }
 
     @Test
-    void nullAllowedBranchIdsAreReturnedAsEmptyList() throws Exception {
+    void withoutBranchIdNullAllowedBranchIdsAreReturnedAsEmptyList() throws Exception {
         Tenant tenant = tenant(TenantStatus.active);
         User customer = user(tenant, UserType.customer, UserStatus.active, null);
 
         me(tokenFor(customer))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.user.allowedBranchIds").isArray())
+                .andExpect(jsonPath("$.user.allowedBranchIds").isEmpty());
+    }
+
+    @Test
+    void nullAllowedBranchIdsFallBackToBranchId() throws Exception {
+        Tenant tenant = tenant(TenantStatus.active);
+        UUID branchId = branch(tenant);
+        User employee = user(tenant, UserType.employee, UserStatus.active, role(tenant, RoleStatus.active, "x.y"));
+        employee.setBranchId(branchId);
+        employee.setAllowedBranchIds(null);
+        employee = userRepository.save(employee);
+
+        me(tokenFor(employee))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.user.branchId").value(branchId.toString()))
+                .andExpect(jsonPath("$.user.allowedBranchIds", contains(branchId.toString())));
+    }
+
+    @Test
+    void emptyAllowedBranchIdsAreRespectedWithoutFallback() throws Exception {
+        Tenant tenant = tenant(TenantStatus.active);
+        UUID branchId = branch(tenant);
+        User employee = user(tenant, UserType.employee, UserStatus.active, role(tenant, RoleStatus.active, "x.y"));
+        employee.setBranchId(branchId);
+        employee.setAllowedBranchIds(List.of());
+        employee = userRepository.save(employee);
+
+        me(tokenFor(employee))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.user.branchId").value(branchId.toString()))
                 .andExpect(jsonPath("$.user.allowedBranchIds").isArray())
                 .andExpect(jsonPath("$.user.allowedBranchIds").isEmpty());
     }
@@ -244,6 +279,17 @@ class AuthMeTest {
         me(tokenFor(user))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.role.isSystem").value(false));
+    }
+
+    /** users.branch_id tiene FK a branches: la sucursal tiene que existir. */
+    private UUID branch(Tenant tenant) {
+        UUID branchId = UUID.randomUUID();
+        String suffix = UUID.randomUUID().toString();
+        jdbcTemplate.update("""
+                INSERT INTO branches (id, tenant_id, code, name, type, status)
+                VALUES (?, ?, ?, ?, 'main', 'active')
+                """, branchId, tenant.getId(), "MAIN-" + suffix, "Principal " + suffix);
+        return branchId;
     }
 
     private ResultActions me(String token) throws Exception {

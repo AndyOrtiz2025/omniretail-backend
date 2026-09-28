@@ -2,6 +2,7 @@ package com.omniretail.backend.inventory.repository;
 
 import com.omniretail.backend.inventory.entity.InventoryBalance;
 import jakarta.persistence.LockModeType;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
@@ -30,4 +31,6 @@ public interface InventoryBalanceRepository extends JpaRepository<InventoryBalan
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     Optional<InventoryBalance> findByTenantIdAndBranchIdAndProductIdAndLocationIdIsNull(
             UUID tenantId, UUID branchId, UUID productId);
+
+    List<InventoryBalance> findByTenantId(UUID tenantId);
 }
