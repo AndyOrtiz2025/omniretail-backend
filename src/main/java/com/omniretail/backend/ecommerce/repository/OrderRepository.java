@@ -2,6 +2,7 @@ package com.omniretail.backend.ecommerce.repository;
 
 import com.omniretail.backend.ecommerce.entity.Order;
 import com.omniretail.backend.ecommerce.entity.OrderStatus;
+import com.omniretail.backend.ecommerce.entity.OrderSource;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -16,6 +17,9 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
 
     /** (tenant_id, tracking_token) es unico: uk_orders_tenant_tracking_token. */
     Optional<Order> findByTenantIdAndTrackingToken(UUID tenantId, String trackingToken);
+
+    Optional<Order> findByTenantIdAndSourceAndIdempotencyKey(
+            UUID tenantId, OrderSource source, String idempotencyKey);
 
     List<Order> findByTenantIdAndCustomerIdAndStatusNot(UUID tenantId, UUID customerId, OrderStatus status);
 
