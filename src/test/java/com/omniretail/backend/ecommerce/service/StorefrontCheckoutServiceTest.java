@@ -188,7 +188,6 @@ class StorefrontCheckoutServiceTest {
         when(orderRepository.save(any(Order.class))).thenReturn(savedOrder);
         com.omniretail.backend.ecommerce.entity.OrderItem savedItem =
                 mock(com.omniretail.backend.ecommerce.entity.OrderItem.class);
-        when(savedItem.getId()).thenReturn(UUID.randomUUID());
         when(savedItem.getInventoryQuantity()).thenReturn(BigDecimal.ONE);
         when(orderItemRepository.save(any())).thenReturn(savedItem);
 
@@ -234,12 +233,7 @@ class StorefrontCheckoutServiceTest {
             when(savedOrder.getStatus()).thenReturn(OrderStatus.confirmed);
             when(savedOrder.getDeliveryAddress()).thenReturn("{\"city\":\"Guatemala\"}");
             when(savedOrder.getTenantId()).thenReturn(tenantId);
-            when(savedOrder.getCustomerId()).thenReturn(customerId);
             when(orderRepository.save(any(Order.class))).thenReturn(savedOrder);
-            com.omniretail.backend.ecommerce.entity.OrderItem savedItem =
-                    mock(com.omniretail.backend.ecommerce.entity.OrderItem.class);
-            when(savedItem.getInventoryQuantity()).thenReturn(BigDecimal.ONE);
-            when(orderItemRepository.save(any())).thenReturn(savedItem);
             Payment payment = mock(Payment.class);
             when(payment.getStatus()).thenReturn(PaymentStatus.approved);
             when(paymentRepository.save(any(Payment.class))).thenReturn(payment);
@@ -265,8 +259,10 @@ class StorefrontCheckoutServiceTest {
         when(product.getName()).thenReturn("Martillo");
         when(product.getSalePrice()).thenReturn(new BigDecimal("20.00"));
         when(product.getTrackingStock()).thenReturn(trackingStock);
-        when(product.getProductType()).thenReturn(type);
-        when(product.getSaleUnitId()).thenReturn(null);
+        if (trackingStock) {
+            when(product.getProductType()).thenReturn(type);
+            when(product.getSaleUnitId()).thenReturn(null);
+        }
         return product;
     }
 
