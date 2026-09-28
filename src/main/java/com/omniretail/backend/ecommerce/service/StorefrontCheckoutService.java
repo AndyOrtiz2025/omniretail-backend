@@ -255,7 +255,7 @@ public class StorefrontCheckoutService {
     private BigDecimal inventoryQuantity(UUID tenantId, Product product, BigDecimal quantity) {
         if (!shouldReserve(product) || product.getSaleUnitId() == null
                 || product.getSaleUnitId().equals(product.getBaseUnitId())) return quantity;
-        return unitConversionRepository.findByTenantIdAndProductId(product.getId()).stream()
+        return unitConversionRepository.findByTenantIdAndProductId(tenantId, product.getId()).stream()
                         .filter(value -> value.getFromUnitId().equals(product.getSaleUnitId())
                                 && value.getToUnitId().equals(product.getBaseUnitId()))
                         .findFirst()
