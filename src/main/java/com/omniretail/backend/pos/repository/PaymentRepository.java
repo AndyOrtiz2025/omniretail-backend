@@ -13,4 +13,6 @@ public interface PaymentRepository extends JpaRepository<Payment, UUID> {
     List<Payment> findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(UUID tenantId, UUID saleId);
 
     List<Payment> findByTenantIdAndOrderIdOrderByCreatedAtAscIdAsc(UUID tenantId, UUID orderId);
+
+    List<Payment> findByTenantIdOrderByCreatedAtDesc(UUID tenantId);
 }
