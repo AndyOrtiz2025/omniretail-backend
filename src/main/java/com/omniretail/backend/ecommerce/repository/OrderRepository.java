@@ -18,4 +18,6 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     Optional<Order> findByTenantIdAndTrackingToken(UUID tenantId, String trackingToken);
 
     List<Order> findByTenantIdAndCustomerIdAndStatusNot(UUID tenantId, UUID customerId, OrderStatus status);
+
+    List<Order> findByTenantId(UUID tenantId);
 }
