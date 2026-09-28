@@ -14,4 +14,7 @@ public interface CustomerRepository extends JpaRepository<Customer, UUID> {
     List<Customer> findByTenantIdAndStatus(UUID tenantId, CustomerStatus status);
 
     Optional<Customer> findByTenantIdAndId(UUID tenantId, UUID id);
+
+    Optional<Customer> findByTenantIdAndUserIdAndStatus(
+            UUID tenantId, UUID userId, CustomerStatus status);
 }
