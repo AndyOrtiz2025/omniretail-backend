@@ -21,16 +21,26 @@ import java.util.UUID;
  */
 public record CurrentSessionResponse(UserView user, RoleView role, TenantView tenant, SessionView session) {
 
-    /** Mismos campos que User.ts del frontend. {@code allowedBranchIds} nunca es null. */
+    /**
+     * Mismos campos que User.ts del frontend. {@code allowedBranchIds} nunca es null y aplica el mismo
+     * respaldo que {@code BranchAccessResolver}: si nunca se asigno (null) se usa {@code branchId};
+     * una lista vacia significa "ninguna sucursal" a proposito y se respeta. El frontend
+     * (resolveUserAllowedBranchIds) trata una lista vacia como cero sucursales, sin respaldo.
+     */
     public record UserView(
             UUID id, String name, String email, String phone, UserType type, UserStatus status,
             UUID tenantId, UUID customerId, String employeeCode, UUID roleId, UUID branchId,
             List<UUID> allowedBranchIds, Instant createdAt, Instant updatedAt) {
 
         public static UserView from(User user) {
-            List<UUID> allowedBranchIds = user.getAllowedBranchIds() != null
-                    ? List.copyOf(user.getAllowedBranchIds())
-                    : List.of();
+            List<UUID> allowedBranchIds;
+            if (user.getAllowedBranchIds() != null) {
+                allowedBranchIds = List.copyOf(user.getAllowedBranchIds());
+            } else if (user.getBranchId() != null) {
+                allowedBranchIds = List.of(user.getBranchId());
+            } else {
+                allowedBranchIds = List.of();
+            }
             return new UserView(user.getId(), user.getName(), user.getEmail(), user.getPhone(), user.getType(),
                     user.getStatus(), user.getTenantId(), user.getCustomerId(), user.getEmployeeCode(),
                     user.getRoleId(), user.getBranchId(), allowedBranchIds, user.getCreatedAt(), user.getUpdatedAt());
