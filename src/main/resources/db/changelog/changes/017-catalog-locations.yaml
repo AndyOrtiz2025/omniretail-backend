@@ -1,0 +1,128 @@
+databaseChangeLog:
+  - changeSet:
+      id: 017-catalog-locations
+      author: joga17000
+      changes:
+        - createTable:
+            tableName: locations
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_locations_tenant
+              - column:
+                  name: branch_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: branches
+                    referencedColumnNames: id
+                    foreignKeyName: fk_locations_branch
+              - column:
+                  name: parent_id
+                  type: UUID
+                  constraints:
+                    nullable: true
+              - column:
+                  name: code
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: name
+                  type: VARCHAR(100)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: type
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: locations
+            baseColumnNames: parent_id
+            referencedTableName: locations
+            referencedColumnNames: id
+            constraintName: fk_locations_parent
+            onDelete: RESTRICT
+        - addUniqueConstraint:
+            tableName: locations
+            columnNames: tenant_id, branch_id, code
+            constraintName: uk_locations_tenant_branch_code
+        - createIndex:
+            tableName: locations
+            indexName: idx_locations_tenant_branch
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: branch_id
+        - createIndex:
+            tableName: locations
+            indexName: idx_locations_tenant_parent
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: parent_id
+        - createIndex:
+            tableName: locations
+            indexName: idx_locations_tenant_status
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: status
+        - sql:
+            sql: "ALTER TABLE locations ADD CONSTRAINT ck_locations_type CHECK (type IN ('warehouse', 'aisle', 'shelf', 'level'))"
+        - sql:
+            sql: "ALTER TABLE locations ADD CONSTRAINT ck_locations_status CHECK (status IN ('active', 'inactive', 'archived'))"
+        - addForeignKeyConstraint:
+            baseTableName: inventory_balances
+            baseColumnNames: location_id
+            referencedTableName: locations
+            referencedColumnNames: id
+            constraintName: fk_inventory_balances_location
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: inventory_movements
+            baseColumnNames: from_location_id
+            referencedTableName: locations
+            referencedColumnNames: id
+            constraintName: fk_inventory_movements_from_location
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: inventory_movements
+            baseColumnNames: to_location_id
+            referencedTableName: locations
+            referencedColumnNames: id
+            constraintName: fk_inventory_movements_to_location
+            onDelete: RESTRICT
