@@ -3,6 +3,7 @@ package com.omniretail.backend.inventory.repository;
 import com.omniretail.backend.inventory.entity.InventoryMovement;
 import com.omniretail.backend.inventory.entity.InventoryMovementType;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -30,4 +31,6 @@ public interface InventoryMovementRepository extends JpaRepository<InventoryMove
             @Param("from") Instant from,
             @Param("to") Instant to,
             Pageable pageable);
+
+    List<InventoryMovement> findByTenantIdOrderByCreatedAtDesc(UUID tenantId);
 }

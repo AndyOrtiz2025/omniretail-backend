@@ -22,4 +22,6 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
             UUID tenantId, OrderSource source, String idempotencyKey);
 
     List<Order> findByTenantIdAndCustomerIdAndStatusNot(UUID tenantId, UUID customerId, OrderStatus status);
+
+    List<Order> findByTenantId(UUID tenantId);
 }
