@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -88,17 +89,17 @@ class StorefrontCheckoutServiceTest {
         Tenant tenant = mock(Tenant.class);
         when(tenant.getId()).thenReturn(tenantId);
         when(tenant.getStatus()).thenReturn(TenantStatus.active);
-        when(tenant.getDefaultCurrency()).thenReturn("GTQ");
+        lenient().when(tenant.getDefaultCurrency()).thenReturn("GTQ");
         when(tenantRepository.findBySlug("ferreteria")).thenReturn(Optional.of(tenant));
         EcommerceConfig config = mock(EcommerceConfig.class);
         when(config.isEnabled()).thenReturn(true);
-        when(config.isGuestTrackingEnabled()).thenReturn(true);
+        lenient().when(config.isGuestTrackingEnabled()).thenReturn(true);
         when(config.getDefaultBranchId()).thenReturn(branchId);
         when(config.getAllowedDeliveryMethods()).thenReturn(List.of("home_delivery"));
         when(config.getAllowedPaymentMethods()).thenReturn(List.of("card"));
         when(ecommerceConfigRepository.findByTenantId(tenantId)).thenReturn(Optional.of(config));
         Branch branch = mock(Branch.class);
-        when(branch.getId()).thenReturn(branchId);
+        lenient().when(branch.getId()).thenReturn(branchId);
         when(branch.getStatus()).thenReturn(BranchStatus.active);
         when(branchRepository.findByTenantIdAndId(tenantId, branchId)).thenReturn(Optional.of(branch));
         when(orderRepository.findByTenantIdAndSourceAndIdempotencyKey(
@@ -126,10 +127,8 @@ class StorefrontCheckoutServiceTest {
         when(savedOrder.getStatus()).thenReturn(OrderStatus.confirmed);
         when(savedOrder.getDeliveryAddress()).thenReturn("{\"city\":\"Guatemala\"}");
         when(savedOrder.getTenantId()).thenReturn(tenantId);
-        when(savedOrder.getCustomerId()).thenReturn(null);
         when(orderRepository.save(any(Order.class))).thenReturn(savedOrder);
         com.omniretail.backend.ecommerce.entity.OrderItem savedItem = mock(com.omniretail.backend.ecommerce.entity.OrderItem.class);
-        when(savedItem.getId()).thenReturn(UUID.randomUUID());
         when(savedItem.getInventoryQuantity()).thenReturn(BigDecimal.ONE);
         when(orderItemRepository.save(any())).thenReturn(savedItem);
         Payment payment = mock(Payment.class);
@@ -214,8 +213,9 @@ class StorefrontCheckoutServiceTest {
     @Test
     void customerCheckoutDoesNotPersistGuestSnapshot() {
         UUID userId = UUID.randomUUID();
+        UUID customerId = UUID.randomUUID();
         Customer customer = mock(Customer.class);
-        when(customer.getId()).thenReturn(UUID.randomUUID());
+        when(customer.getId()).thenReturn(customerId);
         when(customerRepository.findByTenantIdAndUserIdAndStatus(any(), eq(userId), any()))
                 .thenReturn(Optional.of(customer));
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
@@ -234,11 +234,10 @@ class StorefrontCheckoutServiceTest {
             when(savedOrder.getStatus()).thenReturn(OrderStatus.confirmed);
             when(savedOrder.getDeliveryAddress()).thenReturn("{\"city\":\"Guatemala\"}");
             when(savedOrder.getTenantId()).thenReturn(tenantId);
-            when(savedOrder.getCustomerId()).thenReturn(customer.getId());
+            when(savedOrder.getCustomerId()).thenReturn(customerId);
             when(orderRepository.save(any(Order.class))).thenReturn(savedOrder);
             com.omniretail.backend.ecommerce.entity.OrderItem savedItem =
                     mock(com.omniretail.backend.ecommerce.entity.OrderItem.class);
-            when(savedItem.getId()).thenReturn(UUID.randomUUID());
             when(savedItem.getInventoryQuantity()).thenReturn(BigDecimal.ONE);
             when(orderItemRepository.save(any())).thenReturn(savedItem);
             Payment payment = mock(Payment.class);
@@ -250,7 +249,7 @@ class StorefrontCheckoutServiceTest {
 
             ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
             verify(orderRepository).save(orderCaptor.capture());
-            assertThat(orderCaptor.getValue().getCustomerId()).isEqualTo(customer.getId());
+            assertThat(orderCaptor.getValue().getCustomerId()).isEqualTo(customerId);
             assertThat(orderCaptor.getValue().getGuestCustomer()).isNull();
             verify(balanceRepository, never()).findByTenantIdAndBranchIdAndProductIdAndLocationIdIsNull(
                     any(), any(), any());
