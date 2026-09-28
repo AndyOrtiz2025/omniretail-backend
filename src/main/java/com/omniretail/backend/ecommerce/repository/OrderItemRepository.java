@@ -9,6 +9,8 @@ import org.springframework.data.repository.query.Param;
 
 public interface OrderItemRepository extends JpaRepository<OrderItem, UUID> {
 
+    List<OrderItem> findByOrderId(UUID orderId);
+
     @Query("""
             SELECT item
             FROM OrderItem item, Order o
