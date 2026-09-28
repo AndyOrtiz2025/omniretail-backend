@@ -11,6 +11,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 public interface InventoryBalanceRepository extends JpaRepository<InventoryBalance, UUID> {
 
@@ -33,4 +34,19 @@ public interface InventoryBalanceRepository extends JpaRepository<InventoryBalan
             UUID tenantId, UUID branchId, UUID productId);
 
     List<InventoryBalance> findByTenantId(UUID tenantId);
+
+    @Query(
+            value = """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM inventory_balances
+                        WHERE tenant_id = :tenantId
+                          AND location_id = :locationId
+                          AND (quantity > 0 OR reserved_quantity > 0)
+                    )
+                    """,
+            nativeQuery = true)
+    boolean existsPositiveStockByTenantIdAndLocationId(
+            @Param("tenantId") UUID tenantId,
+            @Param("locationId") UUID locationId);
 }

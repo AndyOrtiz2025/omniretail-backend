@@ -537,6 +537,26 @@ class InventoryMovementControllerTest {
         Fixture fixture = createFixture();
         UUID fromLocationId = UUID.randomUUID();
         UUID toLocationId = UUID.randomUUID();
+        jdbcTemplate.update(
+                """
+                INSERT INTO locations
+                    (id, tenant_id, branch_id, parent_id, code, name, type, status)
+                VALUES (?, ?, ?, NULL, 'MOV-FROM', 'Ubicación origen',
+                        'warehouse', 'active')
+                """,
+                fromLocationId,
+                fixture.tenantId(),
+                fixture.firstBranchId());
+        jdbcTemplate.update(
+                """
+                INSERT INTO locations
+                    (id, tenant_id, branch_id, parent_id, code, name, type, status)
+                VALUES (?, ?, ?, NULL, 'MOV-TO', 'Ubicación destino',
+                        'warehouse', 'active')
+                """,
+                toLocationId,
+                fixture.tenantId(),
+                fixture.firstBranchId());
         insertMovement(
                 fixture,
                 fixture.firstBranchId(),
