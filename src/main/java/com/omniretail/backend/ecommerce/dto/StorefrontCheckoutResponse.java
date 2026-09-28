@@ -4,6 +4,7 @@ import com.omniretail.backend.ecommerce.entity.OrderStatus;
 import com.omniretail.backend.pos.entity.PaymentStatus;
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 
 public record StorefrontCheckoutResponse(
         String orderNumber,
@@ -11,7 +12,12 @@ public record StorefrontCheckoutResponse(
         BigDecimal total,
         OrderStatus orderStatus,
         PaymentStatus paymentStatus,
+        boolean guestTrackingEnabled,
+        boolean hasInventoryReservations,
+        Map<String, Object> deliveryAddress,
+        boolean confirmationEmailSent,
         List<Item> items) {
 
-    public record Item(String sku, String name, BigDecimal quantity, BigDecimal subtotal) {}
+    public record Item(
+            String sku, String name, BigDecimal quantity, BigDecimal unitPrice, BigDecimal subtotal) {}
 }
