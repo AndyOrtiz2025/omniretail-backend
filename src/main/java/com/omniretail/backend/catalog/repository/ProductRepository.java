@@ -23,6 +23,8 @@ public interface ProductRepository extends JpaRepository<Product, UUID> {
 
     List<Product> findByTenantIdAndStatus(UUID tenantId, ProductStatus status);
 
+    List<Product> findByTenantIdAndStatusAndTrackingStockTrue(UUID tenantId, ProductStatus status);
+
     List<Product> findByTenantIdAndStatusAndChannelEcommerceTrue(UUID tenantId, ProductStatus status);
 
     Optional<Product> findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(

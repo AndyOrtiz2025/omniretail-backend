@@ -1,6 +1,7 @@
 package com.omniretail.backend.pos.repository;
 
 import com.omniretail.backend.pos.entity.SaleItem;
+import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -38,4 +39,6 @@ public interface SaleItemRepository extends JpaRepository<SaleItem, UUID> {
             """)
     List<SaleItem> findActiveItemsByTenantIdAndCustomerId(
             @Param("tenantId") UUID tenantId, @Param("customerId") UUID customerId);
+
+    List<SaleItem> findBySaleIdIn(Collection<UUID> saleIds);
 }
