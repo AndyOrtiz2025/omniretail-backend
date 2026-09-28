@@ -39,9 +39,6 @@ import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.SaasCapability;
 import com.omniretail.backend.shared.security.TenantCapabilityGuard;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.core.type.TypeReference;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -58,6 +55,8 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.json.JsonMapper;
 
 @Service
 @RequiredArgsConstructor
@@ -75,7 +74,7 @@ public class StorefrontCheckoutService {
     private final PaymentRepository paymentRepository;
     private final TenantCapabilityGuard capabilityGuard;
     private final UnitConversionRepository unitConversionRepository;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final JsonMapper jsonMapper;
 
     @Transactional
     public StorefrontCheckoutResponse checkout(
@@ -167,7 +166,8 @@ public class StorefrontCheckoutService {
                 .deliveryMethod(DeliveryMethod.home_delivery)
                 .transportMode(TransportMode.third_party)
                 .deliveryAddress(json(address(request)))
-                .notificationContact(json(Map.of("emailMode", "send", "email", request.email().trim())))
+                .notificationContact(json(Map.of(
+                        "emailMode", "send", "email", request.email().trim().toLowerCase())))
                 .subtotal(subtotal)
                 .discountTotal(BigDecimal.ZERO)
                 .shippingTotal(BigDecimal.ZERO)
@@ -191,10 +191,7 @@ public class StorefrontCheckoutService {
                         .orderId(savedOrder.getId())
                         .orderItemId(savedItem.getId())
                         .productId(product.getId())
-                        .allocations(json(List.of(Map.of(
-                                "balanceId", allocation.balanceId(),
-                                "reservedQuantity", allocation.quantity(),
-                                "consumedQuantity", BigDecimal.ZERO))))
+                        .allocations(json(List.of(allocationJson(allocation))))
                         .build();
                 reservation.setTenantId(tenantId);
                 reservationRepository.save(reservation);
@@ -245,11 +242,7 @@ public class StorefrontCheckoutService {
     }
 
     private String json(Object value) {
-        try {
-            return objectMapper.writeValueAsString(value);
-        } catch (JsonProcessingException exception) {
-            throw new IllegalStateException("No se pudo serializar la información del checkout.", exception);
-        }
+        return jsonMapper.writeValueAsString(value);
     }
 
     private BigDecimal inventoryQuantity(UUID tenantId, Product product, BigDecimal quantity) {
@@ -304,17 +297,34 @@ public class StorefrontCheckoutService {
         return new StorefrontCheckoutResponse(order.getOrderNumber(), order.getTrackingToken(), order.getTotal(),
                 order.getStatus(), payment.getStatus(), guestTrackingEnabled,
                 !reservationRepository.findByTenantIdAndOrderId(order.getTenantId(), order.getId()).isEmpty(),
-                readAddress(order.getDeliveryAddress()), false, items.stream()
+                confirmationAddress(readAddress(order.getDeliveryAddress())), false, items.stream()
                         .map(item -> new StorefrontCheckoutResponse.Item(item.getSkuSnapshot(), item.getNameSnapshot(), item.getQuantity(), item.getUnitPrice(), item.getSubtotal()))
                         .toList());
     }
 
     private Map<String, Object> readAddress(String value) {
-        try {
-            return objectMapper.readValue(value, new TypeReference<>() {});
-        } catch (JsonProcessingException exception) {
-            throw new IllegalStateException("No se pudo leer la dirección del pedido.", exception);
-        }
+        return jsonMapper.readValue(value, new TypeReference<>() {});
+    }
+
+    private static Map<String, Object> confirmationAddress(Map<String, Object> address) {
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("recipientName", address.get("recipientName"));
+        response.put("line1", address.get("line1"));
+        response.put("line2", address.get("line2"));
+        response.put("city", address.get("city"));
+        response.put("department", address.get("stateOrDepartment"));
+        response.put("phone", address.get("recipientPhone"));
+        return response;
+    }
+
+    private static Map<String, Object> allocationJson(ReservationAllocation allocation) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("id", UUID.randomUUID());
+        value.put("balanceId", allocation.balanceId());
+        value.put("locationId", null);
+        value.put("reservedQuantity", allocation.quantity());
+        value.put("consumedQuantity", BigDecimal.ZERO);
+        return value;
     }
 
     private record ReservationAllocation(UUID balanceId, BigDecimal quantity) {}

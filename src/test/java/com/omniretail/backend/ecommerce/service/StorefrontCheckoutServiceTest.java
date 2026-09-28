@@ -55,6 +55,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
+import tools.jackson.databind.json.JsonMapper;
 
 @ExtendWith(MockitoExtension.class)
 class StorefrontCheckoutServiceTest {
@@ -82,7 +83,8 @@ class StorefrontCheckoutServiceTest {
         service = new StorefrontCheckoutService(
                 tenantRepository, ecommerceConfigRepository, branchRepository, productRepository,
                 customerRepository, orderRepository, orderItemRepository, reservationRepository,
-                balanceRepository, paymentRepository, capabilityGuard, unitConversionRepository);
+                balanceRepository, paymentRepository, capabilityGuard, unitConversionRepository,
+                JsonMapper.builder().build());
         tenantId = UUID.randomUUID();
         branchId = UUID.randomUUID();
         productId = UUID.randomUUID();
@@ -125,7 +127,10 @@ class StorefrontCheckoutServiceTest {
         when(savedOrder.getTrackingToken()).thenReturn("tracking");
         when(savedOrder.getTotal()).thenReturn(new BigDecimal("20.00"));
         when(savedOrder.getStatus()).thenReturn(OrderStatus.confirmed);
-        when(savedOrder.getDeliveryAddress()).thenReturn("{\"city\":\"Guatemala\"}");
+        when(savedOrder.getDeliveryAddress()).thenReturn(
+                "{\"recipientName\":\"María López\",\"line1\":\"7a Avenida #1\","
+                        + "\"line2\":null,\"city\":\"Guatemala\","
+                        + "\"stateOrDepartment\":\"Guatemala\",\"recipientPhone\":\"55551234\"}");
         when(savedOrder.getTenantId()).thenReturn(tenantId);
         when(orderRepository.save(any(Order.class))).thenReturn(savedOrder);
         com.omniretail.backend.ecommerce.entity.OrderItem savedItem = mock(com.omniretail.backend.ecommerce.entity.OrderItem.class);
@@ -141,9 +146,13 @@ class StorefrontCheckoutServiceTest {
         assertThat(response.orderStatus()).isEqualTo(OrderStatus.confirmed);
         assertThat(response.paymentStatus()).isEqualTo(PaymentStatus.approved);
         assertThat(response.guestTrackingEnabled()).isTrue();
+        assertThat(response.deliveryAddress())
+                .containsEntry("department", "Guatemala")
+                .containsEntry("phone", "55551234");
         ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
         verify(orderRepository).save(orderCaptor.capture());
         assertThat(orderCaptor.getValue().getIdempotencyFingerprint()).isNotBlank();
+        assertThat(orderCaptor.getValue().getNotificationContact()).contains("maria@example.com");
         ArgumentCaptor<Payment> paymentCaptor = ArgumentCaptor.forClass(Payment.class);
         verify(paymentRepository).save(paymentCaptor.capture());
         assertThat(paymentCaptor.getValue().getStatus()).isEqualTo(PaymentStatus.approved);
@@ -151,7 +160,8 @@ class StorefrontCheckoutServiceTest {
                 ArgumentCaptor.forClass(com.omniretail.backend.ecommerce.entity.InventoryReservation.class);
         verify(reservationRepository).save(reservationCaptor.capture());
         assertThat(reservationCaptor.getValue().getAllocations())
-                .contains(balanceId.toString(), "\"reservedQuantity\":1", "\"consumedQuantity\":0");
+                .contains("\"id\"", balanceId.toString(), "\"locationId\":null",
+                        "\"reservedQuantity\":1", "\"consumedQuantity\":0");
     }
 
     @Test
