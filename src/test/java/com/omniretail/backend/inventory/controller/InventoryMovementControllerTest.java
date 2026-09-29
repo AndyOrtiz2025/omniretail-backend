@@ -11,6 +11,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.omniretail.backend.TestcontainersConfiguration;
 import com.omniretail.backend.administration.entity.User;
 import com.omniretail.backend.administration.entity.UserType;
+import com.omniretail.backend.administration.service.BranchAccessResolver;
+import com.omniretail.backend.administration.service.BranchAccessResolver.BranchAccess;
 import com.omniretail.backend.auth.entity.Session;
 import com.omniretail.backend.auth.service.JwtService;
 import com.omniretail.backend.auth.service.SessionService;
@@ -22,6 +24,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.EnumSet;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -65,6 +68,9 @@ class InventoryMovementControllerTest {
     @MockitoBean
     private TenantEntitlementResolver entitlementResolver;
 
+    @MockitoBean
+    private BranchAccessResolver branchAccessResolver;
+
     @BeforeEach
     void setUp() {
         given(sessionService.isActive(any(), any())).willReturn(true);
@@ -74,6 +80,8 @@ class InventoryMovementControllerTest {
         given(entitlementResolver.resolve(any(UUID.class)))
                 .willReturn(new TenantEntitlements(
                         true, true, EnumSet.allOf(SaasCapability.class)));
+        given(branchAccessResolver.resolve(any()))
+                .willReturn(new BranchAccess(true, Set.of()));
     }
 
     @Test
@@ -610,6 +618,50 @@ class InventoryMovementControllerTest {
                 .andExpect(jsonPath("$.items.length()").value(1))
                 .andExpect(jsonPath("$.totalItems").value(1))
                 .andExpect(jsonPath("$.totalPages").value(1));
+    }
+
+    @Test
+    void specifiedUnauthorizedBranchIsRejected() throws Exception {
+        Fixture fixture = createFixture();
+        given(branchAccessResolver.resolve(any()))
+                .willReturn(new BranchAccess(false, Set.of(fixture.firstBranchId())));
+
+        mockMvc.perform(get(MOVEMENTS)
+                        .header("Authorization", token(fixture))
+                        .param("branchId", fixture.secondBranchId().toString()))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("BRANCH_ACCESS_DENIED"));
+    }
+
+    @Test
+    void omittedBranchForRestrictedActorQueriesOnlyAllowedBranches() throws Exception {
+        Fixture fixture = createFixture();
+        UUID allowed = insertMovement(
+                fixture, fixture.firstBranchId(), fixture.firstProductId(), "in", BASE_TIME, null, null);
+        insertMovement(
+                fixture, fixture.secondBranchId(), fixture.firstProductId(), "in", BASE_TIME, null, null);
+        given(branchAccessResolver.resolve(any()))
+                .willReturn(new BranchAccess(false, Set.of(fixture.firstBranchId())));
+
+        mockMvc.perform(get(MOVEMENTS).header("Authorization", token(fixture)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].id").value(allowed.toString()))
+                .andExpect(jsonPath("$.totalItems").value(1));
+    }
+
+    @Test
+    void omittedBranchForActorWithoutBranchesReturnsEmptyPage() throws Exception {
+        Fixture fixture = createFixture();
+        insertMovement(
+                fixture, fixture.firstBranchId(), fixture.firstProductId(), "in", BASE_TIME, null, null);
+        given(branchAccessResolver.resolve(any()))
+                .willReturn(new BranchAccess(false, Set.of()));
+
+        mockMvc.perform(get(MOVEMENTS).header("Authorization", token(fixture)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items").isEmpty())
+                .andExpect(jsonPath("$.totalItems").value(0));
     }
 
     private void assertTypeFilter(String requestedType) throws Exception {

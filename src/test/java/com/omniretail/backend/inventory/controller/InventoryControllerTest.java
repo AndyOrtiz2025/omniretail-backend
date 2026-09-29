@@ -11,6 +11,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.omniretail.backend.TestcontainersConfiguration;
 import com.omniretail.backend.administration.entity.User;
 import com.omniretail.backend.administration.entity.UserType;
+import com.omniretail.backend.administration.service.BranchAccessResolver;
+import com.omniretail.backend.administration.service.BranchAccessResolver.BranchAccess;
 import com.omniretail.backend.auth.entity.Session;
 import com.omniretail.backend.auth.service.JwtService;
 import com.omniretail.backend.auth.service.SessionService;
@@ -21,6 +23,7 @@ import com.omniretail.backend.shared.security.TenantEntitlements;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.EnumSet;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -63,6 +66,9 @@ class InventoryControllerTest {
     @MockitoBean
     private TenantEntitlementResolver entitlementResolver;
 
+    @MockitoBean
+    private BranchAccessResolver branchAccessResolver;
+
     @BeforeEach
     void setUp() {
         given(sessionService.isActive(any(), any())).willReturn(true);
@@ -72,6 +78,8 @@ class InventoryControllerTest {
         given(entitlementResolver.resolve(any(UUID.class)))
                 .willReturn(new TenantEntitlements(
                         true, true, EnumSet.allOf(SaasCapability.class)));
+        given(branchAccessResolver.resolve(any()))
+                .willReturn(new BranchAccess(true, Set.of()));
     }
 
     @Test
@@ -135,6 +143,19 @@ class InventoryControllerTest {
                 .andExpect(jsonPath("$.items[?(@.id == '%s')]"
                                 .formatted(excludedId))
                         .isEmpty());
+    }
+
+    @Test
+    void sameTenantUnauthorizedBranchIsRejected() throws Exception {
+        Fixture fixture = createFixture();
+        given(branchAccessResolver.resolve(any()))
+                .willReturn(new BranchAccess(false, Set.of(fixture.firstBranchId())));
+
+        mockMvc.perform(get(BALANCES)
+                        .header("Authorization", token(fixture.tenantId()))
+                        .param("branchId", fixture.secondBranchId().toString()))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("BRANCH_ACCESS_DENIED"));
     }
 
     @Test
