@@ -64,7 +64,8 @@ class SaleReturnServiceTest {
         Sale sale = sale(SaleStatus.completed);
         when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
         when(saleItems.findByTenantIdAndSaleId(tenant, sale.getId())).thenReturn(List.of(item(new BigDecimal("2.000"))));
-        when(shifts.findByTenantIdAndId(tenant, shiftId)).thenReturn(Optional.of(shift(CashShiftStatus.open)));
+        when(shifts.findByTenantIdAndBranchIdAndUserIdAndStatus(tenant, branch, user, CashShiftStatus.open))
+                .thenReturn(Optional.of(shift(CashShiftStatus.open)));
         when(payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(tenant, sale.getId()))
                 .thenReturn(List.of(Payment.builder().method(PaymentMethod.cash).amount(new BigDecimal("20.00")).build()));
 
@@ -77,16 +78,17 @@ class SaleReturnServiceTest {
     }
 
     @Test
-    void createsFullReturnMarksSaleReturnedAndSkipsCashWhenShiftClosed() {
+    void rejectsCashRefundWhenNoOpenShiftForUser() {
         Sale sale = sale(SaleStatus.completed);
         when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
         when(saleItems.findByTenantIdAndSaleId(tenant, sale.getId())).thenReturn(List.of(item(BigDecimal.ONE)));
-        when(shifts.findByTenantIdAndId(tenant, shiftId)).thenReturn(Optional.of(shift(CashShiftStatus.closed)));
+        when(shifts.findByTenantIdAndBranchIdAndUserIdAndStatus(tenant, branch, user, CashShiftStatus.open))
+                .thenReturn(Optional.empty());
 
-        service.create(sale.getId(), request(BigDecimal.ONE));
+        assertThatThrownBy(() -> service.create(sale.getId(), request(BigDecimal.ONE)))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.getCode()).isEqualTo("NO_OPEN_CASH_SHIFT"));
 
-        assertThat(sale.getStatus()).isEqualTo(SaleStatus.returned);
-        verify(inventory).incrementStock(any());
         verifyNoInteractions(movements);
     }
 

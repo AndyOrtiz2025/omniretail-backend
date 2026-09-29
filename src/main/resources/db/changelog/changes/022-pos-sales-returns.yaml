@@ -1,6 +1,6 @@
 databaseChangeLog:
   - changeSet:
-      id: 021-pos-sales-returns
+      id: 022-pos-sales-returns
       author: mafer
       changes:
         - createTable:
@@ -123,3 +123,65 @@ databaseChangeLog:
                   name: tenant_id
               - column:
                   name: return_id
+        - addForeignKeyConstraint:
+            baseTableName: sale_returns
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_sale_returns_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: sale_returns
+            baseColumnNames: branch_id
+            referencedTableName: branches
+            referencedColumnNames: id
+            constraintName: fk_sale_returns_branch
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: sale_returns
+            baseColumnNames: sale_id
+            referencedTableName: sales
+            referencedColumnNames: id
+            constraintName: fk_sale_returns_sale
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: sale_returns
+            baseColumnNames: created_by_user_id
+            referencedTableName: users
+            referencedColumnNames: id
+            constraintName: fk_sale_returns_created_by_user
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: sale_return_items
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_sale_return_items_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: sale_return_items
+            baseColumnNames: return_id
+            referencedTableName: sale_returns
+            referencedColumnNames: id
+            constraintName: fk_sale_return_items_return
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: sale_return_items
+            baseColumnNames: sale_item_id
+            referencedTableName: sale_items
+            referencedColumnNames: id
+            constraintName: fk_sale_return_items_sale_item
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: sale_return_items
+            baseColumnNames: product_id
+            referencedTableName: products
+            referencedColumnNames: id
+            constraintName: fk_sale_return_items_product
+            onDelete: RESTRICT
+        - sql:
+            sql: "ALTER TABLE sale_returns ADD CONSTRAINT ck_sale_returns_refund_amount CHECK (refund_amount >= 0)"
+        - sql:
+            sql: "ALTER TABLE sale_return_items ADD CONSTRAINT ck_sale_return_items_quantity CHECK (quantity > 0)"
+        - sql:
+            sql: "ALTER TABLE sale_return_items ADD CONSTRAINT ck_sale_return_items_refund_amount CHECK (refund_amount >= 0)"

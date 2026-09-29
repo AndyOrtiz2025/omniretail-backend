@@ -1,8 +1,12 @@
 package com.omniretail.backend.pos.repository;
+
 import com.omniretail.backend.pos.entity.SaleReturn;
 import java.util.UUID;
-import org.springframework.data.domain.*;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+
 public interface SaleReturnRepository extends JpaRepository<SaleReturn, UUID> {
+
     Page<SaleReturn> findByTenantIdAndBranchId(UUID tenantId, UUID branchId, Pageable pageable);
 }
