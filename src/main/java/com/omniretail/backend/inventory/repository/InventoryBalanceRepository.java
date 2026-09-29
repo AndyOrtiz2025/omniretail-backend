@@ -29,9 +29,25 @@ public interface InventoryBalanceRepository extends JpaRepository<InventoryBalan
             nativeQuery = true)
     void ensureDefaultLocationBalanceExists(UUID tenantId, UUID branchId, UUID productId);
 
+    @Modifying
+    @Query(
+            value = """
+                    INSERT INTO inventory_balances
+                        (tenant_id, branch_id, product_id, location_id, quantity, reserved_quantity)
+                    VALUES (:tenantId, :branchId, :productId, :locationId, 0, 0)
+                    ON CONFLICT ON CONSTRAINT uk_inventory_balances_logical DO NOTHING
+                    """,
+            nativeQuery = true)
+    void ensureLocationBalanceExists(
+            UUID tenantId, UUID branchId, UUID productId, UUID locationId);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     Optional<InventoryBalance> findByTenantIdAndBranchIdAndProductIdAndLocationIdIsNull(
             UUID tenantId, UUID branchId, UUID productId);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    Optional<InventoryBalance> findByTenantIdAndBranchIdAndProductIdAndLocationId(
+            UUID tenantId, UUID branchId, UUID productId, UUID locationId);
 
     List<InventoryBalance> findByTenantId(UUID tenantId);
 

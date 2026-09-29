@@ -1,5 +1,8 @@
 package com.omniretail.backend.inventory.service;
 
+import com.omniretail.backend.catalog.entity.Location;
+import com.omniretail.backend.catalog.entity.LocationStatus;
+import com.omniretail.backend.catalog.repository.LocationRepository;
 import com.omniretail.backend.inventory.dto.AddStockCommand;
 import com.omniretail.backend.inventory.dto.DeductStockCommand;
 import com.omniretail.backend.inventory.entity.InventoryBalance;
@@ -25,6 +28,7 @@ public class InventoryStockService {
 
     private final InventoryBalanceRepository inventoryBalanceRepository;
     private final InventoryMovementRepository inventoryMovementRepository;
+    private final LocationRepository locationRepository;
 
     @Transactional
     public InventoryMovement deductStock(
@@ -72,6 +76,42 @@ public class InventoryStockService {
         BigDecimal quantityBefore = balance.getQuantity();
         balance.add(command.qty());
 
+        return saveInboundMovement(command, balance, quantityBefore);
+    }
+
+    @Transactional
+    public InventoryMovement incrementStockAtLocation(AddStockCommand command, UUID locationId) {
+        if (command == null) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "INVALID_STOCK_COMMAND",
+                    "Los datos del incremento son requeridos.");
+        }
+        if (locationId == null) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "INVALID_STOCK_LOCATION",
+                    "La ubicacion de inventario es requerida.");
+        }
+        validateQuantity(command.qty());
+        Location location = requireActiveLocation(command.tenantId(), command.branchId(), locationId);
+
+        inventoryBalanceRepository.ensureLocationBalanceExists(
+                command.tenantId(), command.branchId(), command.productId(), location.getId());
+        InventoryBalance balance = inventoryBalanceRepository
+                .findByTenantIdAndBranchIdAndProductIdAndLocationId(
+                        command.tenantId(), command.branchId(), command.productId(), location.getId())
+                .orElseThrow(() -> new IllegalStateException(
+                        "No se pudo inicializar el balance de inventario de la ubicacion."));
+
+        BigDecimal quantityBefore = balance.getQuantity();
+        balance.add(command.qty());
+
+        return saveInboundMovement(command, balance, quantityBefore);
+    }
+
+    private InventoryMovement saveInboundMovement(
+            AddStockCommand command, InventoryBalance balance, BigDecimal quantityBefore) {
         return inventoryMovementRepository.save(InventoryMovement.builder()
                 .tenantId(command.tenantId())
                 .branchId(command.branchId())
@@ -130,6 +170,26 @@ public class InventoryStockService {
                     "INVALID_STOCK_QUANTITY",
                     "La cantidad debe ser mayor que cero.");
         }
+    }
+
+    private Location requireActiveLocation(UUID tenantId, UUID branchId, UUID locationId) {
+        Location location = locationRepository
+                .findByTenantIdAndId(tenantId, locationId)
+                .orElseThrow(() -> new BusinessException(
+                        HttpStatus.NOT_FOUND, "LOCATION_NOT_FOUND", "Ubicacion no encontrada."));
+        if (!location.getBranchId().equals(branchId)) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "LOCATION_BRANCH_MISMATCH",
+                    "La ubicacion no pertenece a la sucursal indicada.");
+        }
+        if (location.getStatus() != LocationStatus.active) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "LOCATION_NOT_ACTIVE",
+                    "La ubicacion debe estar activa para recibir inventario.");
+        }
+        return location;
     }
 
     private static BusinessException insufficientStock() {
