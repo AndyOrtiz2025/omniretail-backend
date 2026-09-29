@@ -16,7 +16,12 @@ public record CreateSaleRequest(
         UUID customerId,
         @DecimalMin("0.00") BigDecimal taxTotal,
         @NotEmpty @Valid List<Item> items,
-        @NotEmpty @Valid List<PaymentLine> payments) {
+        @NotEmpty @Valid List<PaymentLine> payments,
+        @NotNull UUID confirmationId) {
+    public CreateSaleRequest(UUID branchId, UUID cashShiftId, UUID customerId, BigDecimal taxTotal,
+                             List<Item> items, List<PaymentLine> payments) {
+        this(branchId, cashShiftId, customerId, taxTotal, items, payments, UUID.randomUUID());
+    }
     public record Item(@NotNull UUID productId, @NotNull @DecimalMin(value = "0.001") BigDecimal quantity,
                        @DecimalMin("0.00") BigDecimal discount) {}
     public record PaymentLine(@NotNull PaymentMethod method, @NotNull @DecimalMin("0.00") BigDecimal amount,

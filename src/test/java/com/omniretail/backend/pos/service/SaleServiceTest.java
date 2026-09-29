@@ -9,6 +9,10 @@ import com.omniretail.backend.administration.service.BranchAccessResolver;
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.repository.TenantRepository;
+import com.omniretail.backend.administration.repository.BusinessCapabilitiesConfigRepository;
+import com.omniretail.backend.administration.repository.BankAccountRepository;
+import com.omniretail.backend.ecommerce.repository.CustomerRepository;
+import com.omniretail.backend.catalog.repository.UnitConversionRepository;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.inventory.service.InventoryStockService;
@@ -54,6 +58,10 @@ class SaleServiceTest {
     @Mock CashMovementRepository cashMovements;
     @Mock InventoryStockService inventory;
     @Mock DocumentCounterService counter;
+    @Mock BusinessCapabilitiesConfigRepository businessConfig;
+    @Mock BankAccountRepository bankAccounts;
+    @Mock CustomerRepository customers;
+    @Mock UnitConversionRepository conversions;
     @InjectMocks SaleService service;
 
     private final UUID tenant = UUID.randomUUID();
@@ -68,7 +76,7 @@ class SaleServiceTest {
         actor = new AuthenticatedUser(user, tenant, UserType.employee, UUID.randomUUID(), branch, UUID.randomUUID());
         when(currentUser.require()).thenReturn(actor);
         when(branchAccess.resolve(actor)).thenReturn(new BranchAccessResolver.BranchAccess(false, Set.of(branch)));
-        when(shifts.findByTenantIdAndBranchIdAndUserIdAndStatus(tenant, branch, user, CashShiftStatus.open))
+        when(shifts.findOwnedByIdForUpdate(tenant, user, shiftId))
                 .thenReturn(Optional.of(shift()));
         lenient().when(counter.nextPosSaleNumber(tenant)).thenReturn("POS-001");
         lenient().when(tenants.findById(tenant)).thenReturn(Optional.of(Tenant.builder()
@@ -115,7 +123,7 @@ class SaleServiceTest {
 
     @Test
     void rejectsShiftNotOwnedByCashier() {
-        when(shifts.findByTenantIdAndBranchIdAndUserIdAndStatus(tenant, branch, user, CashShiftStatus.open))
+        when(shifts.findOwnedByIdForUpdate(tenant, user, shiftId))
                 .thenReturn(Optional.empty());
         assertThatThrownBy(() -> service.create(request(new BigDecimal("20.00"), BigDecimal.ONE)))
                 .isInstanceOfSatisfying(BusinessException.class,
