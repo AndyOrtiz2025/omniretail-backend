@@ -1,6 +1,9 @@
 package com.omniretail.backend.pos.service;
 
 import com.omniretail.backend.administration.entity.Tenant;
+import com.omniretail.backend.administration.entity.BankAccountStatus;
+import com.omniretail.backend.administration.repository.BankAccountRepository;
+import com.omniretail.backend.administration.repository.BusinessCapabilitiesConfigRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.administration.service.BranchAccessResolver;
 import com.omniretail.backend.catalog.entity.Product;
@@ -57,6 +60,8 @@ public class SaleService {
     private final CashShiftRepository shifts;
     private final ProductRepository products;
     private final TenantRepository tenants;
+    private final BusinessCapabilitiesConfigRepository businessConfig;
+    private final BankAccountRepository bankAccounts;
     private final SaleRepository sales;
     private final SaleItemRepository items;
     private final PaymentRepository payments;
@@ -70,9 +75,16 @@ public class SaleService {
         if (!branchAccess.resolve(actor).allows(request.branchId())) {
             throw notFound("BRANCH_NOT_FOUND", "Sucursal no encontrada.");
         }
-        var shift = shifts.findByTenantIdAndBranchIdAndUserIdAndStatus(
-                        actor.tenantId(), request.branchId(), actor.userId(), CashShiftStatus.open)
-                .filter(found -> found.getId().equals(request.cashShiftId()))
+        if (request.confirmationId() != null) {
+            var existing = sales.findByTenantIdAndConfirmationId(actor.tenantId(), request.confirmationId());
+            if (existing.isPresent()) {
+                return SaleResponse.from(existing.get());
+            }
+        }
+        var shift = shifts.findOwnedByIdForUpdate(
+                        actor.tenantId(), actor.userId(), request.cashShiftId())
+                .filter(found -> found.getBranchId().equals(request.branchId())
+                        && found.getStatus() == CashShiftStatus.open)
                 .orElseThrow(() -> notFound("CASH_SHIFT_NOT_FOUND", "Turno de caja no encontrado."));
         Tenant tenant = tenants.findById(actor.tenantId())
                 .orElseThrow(() -> notFound("TENANT_NOT_FOUND", "Negocio no encontrado."));
@@ -97,6 +109,7 @@ public class SaleService {
         }
         BigDecimal tax = request.taxTotal() == null ? BigDecimal.ZERO : request.taxTotal().setScale(2, RoundingMode.HALF_UP);
         BigDecimal total = subtotal.add(tax).setScale(2, RoundingMode.HALF_UP);
+        validatePayments(actor, request);
         BigDecimal paid = request.payments().stream().map(CreateSaleRequest.PaymentLine::amount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(2, RoundingMode.HALF_UP);
         if (paid.compareTo(total) != 0) {
@@ -104,7 +117,9 @@ public class SaleService {
         }
         Sale sale = Sale.builder().branchId(request.branchId()).cashShiftId(shift.getId())
                 .createdByUserId(actor.userId()).number(counter.nextPosSaleNumber(actor.tenantId()))
-                .customerId(request.customerId()).subtotal(subtotal).discountTotal(discount).taxTotal(tax).total(total).build();
+                .customerId(request.customerId()).confirmationId(request.confirmationId())
+                .confirmationFingerprint(fingerprint(request)).subtotal(subtotal)
+                .discountTotal(discount).taxTotal(tax).total(total).build();
         sale.setTenantId(actor.tenantId());
         sale = sales.saveAndFlush(sale);
         for (int index = 0; index < request.items().size(); index++) {
@@ -211,5 +226,52 @@ public class SaleService {
 
     private static BusinessException notFound(String code, String message) {
         return new BusinessException(HttpStatus.NOT_FOUND, code, message);
+    }
+
+    private void validatePayments(AuthenticatedUser actor, CreateSaleRequest request) {
+        var config = businessConfig.findByTenantId(actor.tenantId()).orElse(null);
+        for (CreateSaleRequest.PaymentLine payment : request.payments()) {
+            if (config != null && config.getAllowedPosPaymentMethods() != null
+                    && !config.getAllowedPosPaymentMethods().isEmpty()
+                    && !config.getAllowedPosPaymentMethods().contains(payment.method().name())) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "PAYMENT_METHOD_NOT_ALLOWED",
+                        "Método de pago no permitido.");
+            }
+            if (payment.method() == PaymentMethod.card
+                    && (payment.reference() == null || payment.reference().isBlank())) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "PAYMENT_REFERENCE_REQUIRED",
+                        "La tarjeta requiere referencia.");
+            }
+            if (payment.method() == PaymentMethod.transfer) {
+                UUID bankAccountId;
+                try {
+                    bankAccountId = UUID.fromString(payment.reference());
+                } catch (IllegalArgumentException | NullPointerException exception) {
+                    throw new BusinessException(
+                            HttpStatus.BAD_REQUEST,
+                            "BANK_ACCOUNT_INVALID",
+                            "La cuenta bancaria no es válida para la sucursal.");
+                }
+                boolean validAccount = bankAccounts.findByTenantIdAndId(actor.tenantId(), bankAccountId)
+                        .filter(account -> account.getStatus() == BankAccountStatus.active)
+                        .filter(account -> account.getBranchIds().contains(request.branchId()))
+                        .isPresent();
+                if (!validAccount) {
+                    throw new BusinessException(
+                            HttpStatus.BAD_REQUEST,
+                            "BANK_ACCOUNT_INVALID",
+                            "La cuenta bancaria no es válida para la sucursal.");
+                }
+            }
+        }
+    }
+
+    private static String fingerprint(CreateSaleRequest request) {
+        return Integer.toHexString(
+                request.items().toString().hashCode() * 31 + request.payments().toString().hashCode());
     }
 }

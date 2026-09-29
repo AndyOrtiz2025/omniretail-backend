@@ -9,6 +9,8 @@ import com.omniretail.backend.administration.service.BranchAccessResolver;
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.repository.TenantRepository;
+import com.omniretail.backend.administration.repository.BankAccountRepository;
+import com.omniretail.backend.administration.repository.BusinessCapabilitiesConfigRepository;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.inventory.service.InventoryStockService;
@@ -55,6 +57,8 @@ class SaleServiceTest {
     @Mock CashShiftRepository shifts;
     @Mock ProductRepository products;
     @Mock TenantRepository tenants;
+    @Mock BusinessCapabilitiesConfigRepository businessConfig;
+    @Mock BankAccountRepository bankAccounts;
     @Mock SaleRepository sales;
     @Mock SaleItemRepository items;
     @Mock PaymentRepository payments;
@@ -75,12 +79,12 @@ class SaleServiceTest {
         actor = new AuthenticatedUser(user, tenant, UserType.employee, UUID.randomUUID(), branch, UUID.randomUUID());
         when(currentUser.require()).thenReturn(actor);
         when(branchAccess.resolve(actor)).thenReturn(new BranchAccessResolver.BranchAccess(false, Set.of(branch)));
-        lenient().when(shifts.findByTenantIdAndBranchIdAndUserIdAndStatus(tenant, branch, user, CashShiftStatus.open))
-                .thenReturn(Optional.of(shift()));
+        lenient().when(shifts.findOwnedByIdForUpdate(tenant, user, shiftId)).thenReturn(Optional.of(shift()));
         lenient().when(counter.nextPosSaleNumber(tenant)).thenReturn("POS-001");
         lenient().when(tenants.findById(tenant)).thenReturn(Optional.of(Tenant.builder()
                 .name("Tenant").slug("tenant").status(TenantStatus.active).defaultCurrency("GTQ")
                 .timezone("America/Guatemala").build()));
+        lenient().when(businessConfig.findByTenantId(tenant)).thenReturn(Optional.empty());
     }
 
     @Test
@@ -112,6 +116,56 @@ class SaleServiceTest {
     }
 
     @Test
+    void returnsExistingSaleForRepeatedConfirmation() {
+        UUID confirmationId = UUID.randomUUID();
+        Sale existing = sale(SaleStatus.completed);
+        when(sales.findByTenantIdAndConfirmationId(tenant, confirmationId)).thenReturn(Optional.of(existing));
+
+        var result = service.create(new CreateSaleRequest(
+                branch,
+                shiftId,
+                null,
+                BigDecimal.ZERO,
+                List.of(new CreateSaleRequest.Item(productId, BigDecimal.ONE, BigDecimal.ZERO)),
+                List.of(new CreateSaleRequest.PaymentLine(PaymentMethod.cash, new BigDecimal("20.00"), null)),
+                confirmationId));
+
+        assertThat(result.id()).isEqualTo(existing.getId());
+        verifyNoInteractions(inventory, items, payments, cashMovements);
+    }
+
+    @Test
+    void rejectsPaymentMethodNotAllowedByTenantConfiguration() {
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+        when(businessConfig.findByTenantId(tenant)).thenReturn(Optional.of(
+                com.omniretail.backend.administration.entity.BusinessCapabilitiesConfig.builder()
+                        .allowedPosPaymentMethods(List.of("cash"))
+                        .build()));
+
+        assertThatThrownBy(() -> service.create(request(PaymentMethod.card, "CARD-001")))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.getCode()).isEqualTo("PAYMENT_METHOD_NOT_ALLOWED"));
+    }
+
+    @Test
+    void rejectsCardPaymentWithoutReference() {
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+
+        assertThatThrownBy(() -> service.create(request(PaymentMethod.card, null)))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.getCode()).isEqualTo("PAYMENT_REFERENCE_REQUIRED"));
+    }
+
+    @Test
+    void rejectsTransferWithInvalidBankAccount() {
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+
+        assertThatThrownBy(() -> service.create(request(PaymentMethod.transfer, "not-a-uuid")))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.getCode()).isEqualTo("BANK_ACCOUNT_INVALID"));
+    }
+
+    @Test
     void rejectsProductUnavailableForPos() {
         when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.empty());
         assertThatThrownBy(() -> service.create(request(new BigDecimal("20.00"), BigDecimal.ONE)))
@@ -122,7 +176,7 @@ class SaleServiceTest {
 
     @Test
     void rejectsShiftNotOwnedByCashier() {
-        when(shifts.findByTenantIdAndBranchIdAndUserIdAndStatus(tenant, branch, user, CashShiftStatus.open))
+        when(shifts.findOwnedByIdForUpdate(tenant, user, shiftId))
                 .thenReturn(Optional.empty());
         assertThatThrownBy(() -> service.create(request(new BigDecimal("20.00"), BigDecimal.ONE)))
                 .isInstanceOfSatisfying(BusinessException.class,
@@ -216,6 +270,16 @@ class SaleServiceTest {
         return new CreateSaleRequest(branch, shiftId, null, BigDecimal.ZERO,
                 List.of(new CreateSaleRequest.Item(productId, quantity, BigDecimal.ZERO)),
                 List.of(new CreateSaleRequest.PaymentLine(PaymentMethod.cash, payment, null)));
+    }
+
+    private CreateSaleRequest request(PaymentMethod paymentMethod, String reference) {
+        return new CreateSaleRequest(
+                branch,
+                shiftId,
+                null,
+                BigDecimal.ZERO,
+                List.of(new CreateSaleRequest.Item(productId, BigDecimal.ONE, BigDecimal.ZERO)),
+                List.of(new CreateSaleRequest.PaymentLine(paymentMethod, new BigDecimal("20.00"), reference)));
     }
 
     private CashShift shift() {
