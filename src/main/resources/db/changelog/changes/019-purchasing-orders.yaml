@@ -1,0 +1,28 @@
+databaseChangeLog:
+  - changeSet:
+      id: 019-purchasing-orders
+      author: mafer
+      changes:
+        - createTable:
+            tableName: purchase_orders
+            columns:
+              - column: {name: id, type: UUID, defaultValueComputed: gen_random_uuid(), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: tenant_id, type: UUID, constraints: {nullable: false, referencedTableName: tenants, referencedColumnNames: id, foreignKeyName: fk_purchase_orders_tenant}}
+              - column: {name: supplier_id, type: UUID, constraints: {nullable: false, referencedTableName: suppliers, referencedColumnNames: id, foreignKeyName: fk_purchase_orders_supplier}}
+              - column: {name: branch_id, type: UUID, constraints: {nullable: false, referencedTableName: branches, referencedColumnNames: id, foreignKeyName: fk_purchase_orders_branch}}
+              - column: {name: status, type: VARCHAR(20), defaultValue: draft, constraints: {nullable: false}}
+              - column: {name: total_amount, type: 'NUMERIC(12,2)', constraints: {nullable: false}}
+              - column: {name: created_by_user_id, type: UUID, constraints: {nullable: false, referencedTableName: users, referencedColumnNames: id, foreignKeyName: fk_purchase_orders_user}}
+              - column: {name: created_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+              - column: {name: updated_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+        - createTable:
+            tableName: purchase_order_items
+            columns:
+              - column: {name: id, type: UUID, defaultValueComputed: gen_random_uuid(), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: purchase_order_id, type: UUID, constraints: {nullable: false, referencedTableName: purchase_orders, referencedColumnNames: id, foreignKeyName: fk_purchase_order_items_order}}
+              - column: {name: product_id, type: UUID, constraints: {nullable: false, referencedTableName: products, referencedColumnNames: id, foreignKeyName: fk_purchase_order_items_product}}
+              - column: {name: quantity, type: 'NUMERIC(12,3)', constraints: {nullable: false}}
+              - column: {name: unit_cost, type: 'NUMERIC(12,2)', constraints: {nullable: false}}
+              - column: {name: subtotal, type: 'NUMERIC(12,2)', constraints: {nullable: false}}
+        - sql: {sql: "ALTER TABLE purchase_orders ADD CONSTRAINT ck_purchase_orders_status CHECK (status IN ('draft','submitted','approved','cancelled'))"}
+        - sql: {sql: "ALTER TABLE purchase_order_items ADD CONSTRAINT ck_purchase_order_items_values CHECK (quantity > 0 AND unit_cost >= 0 AND subtotal >= 0)"}
