@@ -64,6 +64,9 @@ public class CashMovement {
     @Column(name = "reference_id", updatable = false)
     private UUID referenceId;
 
+    @Column(name = "sale_number", updatable = false, length = 50)
+    private String saleNumber;
+
     @NotNull
     @Column(name = "created_by_user_id", nullable = false, updatable = false)
     private UUID createdByUserId;

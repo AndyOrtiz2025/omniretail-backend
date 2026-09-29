@@ -7,11 +7,11 @@ import java.time.Instant;
 import java.util.UUID;
 
 public record CashMovementResponse(UUID id, UUID cashShiftId, CashMovementType type, BigDecimal amount,
-                                   String reason, String referenceType, UUID referenceId,
+                                   String reason, String referenceType, UUID referenceId, String saleNumber,
                                    UUID createdByUserId, Instant createdAt) {
     public static CashMovementResponse from(CashMovement movement) {
         return new CashMovementResponse(movement.getId(), movement.getCashShiftId(), movement.getType(),
                 movement.getAmount(), movement.getReason(), movement.getReferenceType(), movement.getReferenceId(),
-                movement.getCreatedByUserId(), movement.getCreatedAt());
+                movement.getSaleNumber(), movement.getCreatedByUserId(), movement.getCreatedAt());
     }
 }

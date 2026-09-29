@@ -1,0 +1,11 @@
+databaseChangeLog:
+  - changeSet:
+      id: 020-cash-movement-sale-number
+      author: mafer
+      changes:
+        - addColumn:
+            tableName: cash_movements
+            columns:
+              - column:
+                  name: sale_number
+                  type: VARCHAR(50)

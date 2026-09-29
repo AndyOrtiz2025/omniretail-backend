@@ -63,10 +63,8 @@ public class CashMovementService {
     @Transactional(readOnly = true)
     public List<CashMovementResponse> listByShift(UUID cashShiftId) {
         AuthenticatedUser actor = currentUser.require();
-        capability.ensureTenantCapability(actor.tenantId(), SaasCapability.pos);
         var shift = shifts.findByTenantIdAndId(actor.tenantId(), cashShiftId)
-                .filter(found -> found.getUserId().equals(actor.userId())
-                        || branchAccessResolver.resolve(actor).allows(found.getBranchId()))
+                .filter(found -> found.getUserId().equals(actor.userId()))
                 .orElseThrow(this::notFound);
         return movements.findByTenantIdAndCashShiftIdOrderByCreatedAtAscIdAsc(actor.tenantId(), shift.getId())
                 .stream().map(CashMovementResponse::from).toList();
