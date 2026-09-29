@@ -2,6 +2,7 @@ package com.omniretail.backend.catalog.controller;
 
 import com.omniretail.backend.catalog.dto.ProductCreateRequest;
 import com.omniretail.backend.catalog.dto.ProductDto;
+import com.omniretail.backend.catalog.dto.ProductUpdateRequest;
 import com.omniretail.backend.catalog.service.ProductService;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.security.RequirePermission;
@@ -10,11 +11,15 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.enums.ParameterIn;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.Valid;
+import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
@@ -56,5 +61,25 @@ public class ProductController {
     @ResponseStatus(HttpStatus.CREATED)
     public ProductDto create(@Valid @RequestBody ProductCreateRequest request) {
         return productService.create(request);
+    }
+
+    @GetMapping("/{id}")
+    @RequirePermission("catalog.products.read")
+    public ProductDto get(@PathVariable UUID id) {
+        return productService.get(id);
+    }
+
+    @PutMapping("/{id}")
+    @RequirePermission("catalog.products.update")
+    public ProductDto update(
+            @PathVariable UUID id, @Valid @RequestBody ProductUpdateRequest request) {
+        return productService.update(id, request);
+    }
+
+    @DeleteMapping("/{id}")
+    @RequirePermission("catalog.products.update")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void archive(@PathVariable UUID id) {
+        productService.archive(id);
     }
 }

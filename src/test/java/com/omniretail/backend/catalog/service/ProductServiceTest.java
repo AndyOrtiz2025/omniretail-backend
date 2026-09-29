@@ -7,7 +7,10 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
+import com.omniretail.backend.administration.dto.BusinessConfigResponse;
+import com.omniretail.backend.administration.entity.BusinessPreset;
 import com.omniretail.backend.administration.entity.UserType;
+import com.omniretail.backend.administration.service.BusinessConfigService;
 import com.omniretail.backend.catalog.dto.ProductChannelsDto;
 import com.omniretail.backend.catalog.dto.ProductCreateRequest;
 import com.omniretail.backend.catalog.dto.ProductDto;
@@ -19,10 +22,17 @@ import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.entity.UnitStatus;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.catalog.repository.UnitConversionRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
+import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
+import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
+import com.omniretail.backend.pos.repository.SaleItemRepository;
+import com.omniretail.backend.purchasing.repository.PurchaseOrderItemRepository;
+import com.omniretail.backend.purchasing.repository.SupplierProductRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
+import com.omniretail.backend.shared.security.TenantCapabilityGuard;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
@@ -51,13 +61,49 @@ class ProductServiceTest {
     private UnitRepository unitRepository;
 
     @Mock
+    private UnitConversionRepository unitConversionRepository;
+
+    @Mock
+    private InventoryBalanceRepository inventoryBalanceRepository;
+
+    @Mock
+    private InventoryMovementRepository inventoryMovementRepository;
+
+    @Mock
+    private SupplierProductRepository supplierProductRepository;
+
+    @Mock
+    private PurchaseOrderItemRepository purchaseOrderItemRepository;
+
+    @Mock
+    private SaleItemRepository saleItemRepository;
+
+    @Mock
+    private BusinessConfigService businessConfigService;
+
+    @Mock
+    private TenantCapabilityGuard tenantCapabilityGuard;
+
+    @Mock
     private CurrentUser currentUser;
 
     private ProductService service;
 
     @BeforeEach
     void setUp() {
-        service = new ProductService(productRepository, categoryRepository, unitRepository, currentUser);
+        service = new ProductService(
+                productRepository,
+                categoryRepository,
+                unitRepository,
+                unitConversionRepository,
+                inventoryBalanceRepository,
+                inventoryMovementRepository,
+                supplierProductRepository,
+                purchaseOrderItemRepository,
+                saleItemRepository,
+                businessConfigService,
+                tenantCapabilityGuard,
+                currentUser);
         given(currentUser.require()).willReturn(new AuthenticatedUser(
                 UUID.randomUUID(), TENANT_ID, UserType.employee, null, null, UUID.randomUUID()));
     }
@@ -308,6 +354,7 @@ class ProductServiceTest {
     }
 
     private void allowValidCreation() {
+        given(businessConfigService.getConfig()).willReturn(fullBusinessConfig());
         given(categoryRepository.existsByIdAndTenantIdAndStatus(
                         any(UUID.class), any(UUID.class), any(CategoryStatus.class)))
                 .willReturn(true);
@@ -315,6 +362,24 @@ class ProductServiceTest {
                         any(UUID.class), any(UUID.class), any(UnitStatus.class)))
                 .willReturn(true);
         given(productRepository.saveAndFlush(any(Product.class))).willAnswer(invocation -> invocation.getArgument(0));
+    }
+
+    private static BusinessConfigResponse fullBusinessConfig() {
+        return new BusinessConfigResponse(
+                TENANT_ID,
+                BusinessPreset.custom,
+                true,
+                true,
+                true,
+                true,
+                true,
+                true,
+                true,
+                true,
+                true,
+                List.of(),
+                new com.omniretail.backend.administration.dto.ProductTrackingDto(
+                        true, true, true, true));
     }
 
     private Product savedProduct() {

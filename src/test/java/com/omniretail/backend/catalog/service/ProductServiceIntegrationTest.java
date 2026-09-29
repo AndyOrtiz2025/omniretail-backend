@@ -1,12 +1,16 @@
 package com.omniretail.backend.catalog.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.BDDMockito.given;
 
 import com.omniretail.backend.TestcontainersConfiguration;
+import com.omniretail.backend.administration.dto.BusinessConfigResponse;
+import com.omniretail.backend.administration.entity.BusinessPreset;
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.administration.repository.TenantRepository;
+import com.omniretail.backend.administration.service.BusinessConfigService;
 import com.omniretail.backend.catalog.dto.ProductChannelsDto;
 import com.omniretail.backend.catalog.dto.ProductCreateRequest;
 import com.omniretail.backend.catalog.dto.ProductDto;
@@ -30,6 +34,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Transactional;
 
 @SpringBootTest
@@ -49,6 +54,9 @@ class ProductServiceIntegrationTest {
 
     @Autowired
     private UnitRepository unitRepository;
+
+    @MockitoBean
+    private BusinessConfigService businessConfigService;
 
     @AfterEach
     void clearSecurityContext() {
@@ -79,6 +87,12 @@ class ProductServiceIntegrationTest {
         unit.setTenantId(tenant.getId());
         unit = unitRepository.saveAndFlush(unit);
         authenticate(tenant.getId());
+        given(businessConfigService.getConfig()).willReturn(new BusinessConfigResponse(
+                tenant.getId(), BusinessPreset.custom,
+                true, true, true, true, true, true, true, true, true,
+                List.of(),
+                new com.omniretail.backend.administration.dto.ProductTrackingDto(
+                        true, true, true, true)));
 
         ProductDto created = productService.create(new ProductCreateRequest(
                 "SKU-" + UUID.randomUUID(),
