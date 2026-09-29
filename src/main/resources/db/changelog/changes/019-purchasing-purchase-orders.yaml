@@ -1,0 +1,291 @@
+databaseChangeLog:
+  - changeSet:
+      id: 019-purchasing-purchase-orders
+      author: joga17000
+      changes:
+        - createTable:
+            tableName: purchase_orders
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: branch_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: number
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: supplier_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: supplier_name_snapshot
+                  type: VARCHAR(120)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(30)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: expected_date
+                  type: DATE
+              - column:
+                  name: notes
+                  type: VARCHAR(1000)
+              - column:
+                  name: subtotal
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: total
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: cancellation_reason
+                  type: VARCHAR(500)
+              - column:
+                  name: created_by_user_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: approved_by_user_id
+                  type: UUID
+              - column:
+                  name: approved_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: cancelled_by_user_id
+                  type: UUID
+              - column:
+                  name: cancelled_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: purchase_orders
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_purchase_orders_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: purchase_orders
+            baseColumnNames: branch_id
+            referencedTableName: branches
+            referencedColumnNames: id
+            constraintName: fk_purchase_orders_branch
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: purchase_orders
+            baseColumnNames: supplier_id
+            referencedTableName: suppliers
+            referencedColumnNames: id
+            constraintName: fk_purchase_orders_supplier
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: purchase_orders
+            baseColumnNames: created_by_user_id
+            referencedTableName: users
+            referencedColumnNames: id
+            constraintName: fk_purchase_orders_created_by
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: purchase_orders
+            baseColumnNames: approved_by_user_id
+            referencedTableName: users
+            referencedColumnNames: id
+            constraintName: fk_purchase_orders_approved_by
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: purchase_orders
+            baseColumnNames: cancelled_by_user_id
+            referencedTableName: users
+            referencedColumnNames: id
+            constraintName: fk_purchase_orders_cancelled_by
+            onDelete: RESTRICT
+        - addUniqueConstraint:
+            tableName: purchase_orders
+            columnNames: tenant_id, number
+            constraintName: uk_purchase_orders_tenant_number
+        - sql:
+            sql: "ALTER TABLE purchase_orders ADD CONSTRAINT ck_purchase_orders_status CHECK (status IN ('draft', 'pending_approval', 'approved', 'sent', 'partially_received', 'received', 'cancelled'))"
+        - sql:
+            sql: "ALTER TABLE purchase_orders ADD CONSTRAINT ck_purchase_orders_subtotal CHECK (subtotal >= 0)"
+        - sql:
+            sql: "ALTER TABLE purchase_orders ADD CONSTRAINT ck_purchase_orders_total CHECK (total >= 0)"
+        - createIndex:
+            tableName: purchase_orders
+            indexName: idx_purchase_orders_tenant_branch
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: branch_id
+        - createIndex:
+            tableName: purchase_orders
+            indexName: idx_purchase_orders_tenant_supplier
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: supplier_id
+        - createIndex:
+            tableName: purchase_orders
+            indexName: idx_purchase_orders_tenant_status
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: status
+        - createTable:
+            tableName: purchase_order_items
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: purchase_order_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: supplier_product_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: product_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: product_name_snapshot
+                  type: VARCHAR(300)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: product_sku_snapshot
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: supplier_sku_snapshot
+                  type: VARCHAR(100)
+              - column:
+                  name: quantity
+                  type: NUMERIC(12,3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: unit_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: unit_symbol_snapshot
+                  type: VARCHAR(10)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: purchase_to_base_factor
+                  type: NUMERIC(18,6)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: unit_cost
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: subtotal
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: purchase_order_items
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_purchase_order_items_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: purchase_order_items
+            baseColumnNames: purchase_order_id
+            referencedTableName: purchase_orders
+            referencedColumnNames: id
+            constraintName: fk_purchase_order_items_order
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: purchase_order_items
+            baseColumnNames: supplier_product_id
+            referencedTableName: supplier_products
+            referencedColumnNames: id
+            constraintName: fk_purchase_order_items_supplier_product
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: purchase_order_items
+            baseColumnNames: product_id
+            referencedTableName: products
+            referencedColumnNames: id
+            constraintName: fk_purchase_order_items_product
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: purchase_order_items
+            baseColumnNames: unit_id
+            referencedTableName: units
+            referencedColumnNames: id
+            constraintName: fk_purchase_order_items_unit
+            onDelete: RESTRICT
+        - sql:
+            sql: "ALTER TABLE purchase_order_items ADD CONSTRAINT ck_purchase_order_items_quantity CHECK (quantity > 0)"
+        - sql:
+            sql: "ALTER TABLE purchase_order_items ADD CONSTRAINT ck_purchase_order_items_factor CHECK (purchase_to_base_factor > 0)"
+        - sql:
+            sql: "ALTER TABLE purchase_order_items ADD CONSTRAINT ck_purchase_order_items_unit_cost CHECK (unit_cost >= 0)"
+        - sql:
+            sql: "ALTER TABLE purchase_order_items ADD CONSTRAINT ck_purchase_order_items_subtotal CHECK (subtotal >= 0)"
+        - createIndex:
+            tableName: purchase_order_items
+            indexName: idx_purchase_order_items_order
+            columns:
+              - column:
+                  name: purchase_order_id

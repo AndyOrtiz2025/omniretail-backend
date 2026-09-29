@@ -63,6 +63,16 @@ class DocumentCounterServiceTest {
     }
 
     @Test
+    void purchaseOrdersUseAnIndependentCounterWithoutChangingPosNumbering() {
+        UUID tenantId = createTenant();
+
+        assertThat(documentCounterService.nextPosSaleNumber(tenantId)).isEqualTo("POS-001");
+        assertThat(documentCounterService.nextPurchaseOrderNumber(tenantId)).isEqualTo("OC-001");
+        assertThat(documentCounterService.nextPurchaseOrderNumber(tenantId)).isEqualTo("OC-002");
+        assertThat(documentCounterService.nextPosSaleNumber(tenantId)).isEqualTo("POS-002");
+    }
+
+    @Test
     void appliesMinimumPaddingWithoutTruncatingLargerValues() {
         UUID tenantId = createTenant();
         assertThat(documentCounterService.nextPosSaleNumber(tenantId)).isEqualTo("POS-001");
