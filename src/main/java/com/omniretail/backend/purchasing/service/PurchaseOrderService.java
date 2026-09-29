@@ -6,6 +6,7 @@ import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.administration.entity.SupplierStatus;
+import com.omniretail.backend.pos.service.DocumentCounterService;
 import com.omniretail.backend.purchasing.dto.*;
 import com.omniretail.backend.purchasing.entity.*;
 import com.omniretail.backend.purchasing.repository.*;
