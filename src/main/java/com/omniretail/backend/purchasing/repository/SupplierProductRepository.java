@@ -1,6 +1,7 @@
 package com.omniretail.backend.purchasing.repository;
 
 import com.omniretail.backend.purchasing.entity.SupplierProduct;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -14,6 +15,11 @@ import org.springframework.data.repository.query.Param;
 public interface SupplierProductRepository extends JpaRepository<SupplierProduct, UUID> {
 
     Optional<SupplierProduct> findByTenantIdAndId(UUID tenantId, UUID id);
+
+    Optional<SupplierProduct> findByTenantIdAndSupplierIdAndProductId(
+            UUID tenantId, UUID supplierId, UUID productId);
+
+    List<SupplierProduct> findByTenantIdAndIdIn(UUID tenantId, Collection<UUID> ids);
 
     boolean existsByTenantIdAndSupplierIdAndProductId(UUID tenantId, UUID supplierId, UUID productId);
 
