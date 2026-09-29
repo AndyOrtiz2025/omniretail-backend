@@ -60,7 +60,7 @@ public class AuthService {
         UUID customerTenantId = resolveCustomerTenant(request.tenantSlug());
         // Solo quedan cuentas que pueden entrar: si todas se descartan, la lista queda vacia.
         List<Candidate> candidates = authAccountRepository.findByEmail(request.email()).stream()
-                .map(account -> toCandidate(account, customerTenantId, now))
+                .map(account -> toCandidate(account, customerTenantId, now, request.expectedUserType()))
                 .flatMap(Optional::stream)
                 .toList();
         if (candidates.isEmpty()) {
@@ -83,6 +83,10 @@ public class AuthService {
         }
 
         Candidate match = matches.get(0);
+        // Defensa en profundidad: toCandidate ya filtra por tipo; nunca se muta una cuenta de otro tipo.
+        if (request.expectedUserType() != null && match.user().getType() != request.expectedUserType()) {
+            throw invalidCredentials();
+        }
         AuthAccount account = match.account();
         account.setStatus(AccountStatus.active);
         account.setFailedLoginAttempts(0);
@@ -109,12 +113,14 @@ public class AuthService {
                 .orElse(null);
     }
 
-    private Optional<Candidate> toCandidate(AuthAccount account, UUID customerTenantId, Instant now) {
+    private Optional<Candidate> toCandidate(AuthAccount account, UUID customerTenantId, Instant now,
+            UserType expectedUserType) {
         if (!canAuthenticate(account, now)) {
             return Optional.empty();
         }
         return userRepository.findById(account.getUserId())
                 .filter(user -> user.getStatus() == UserStatus.active)
+                .filter(user -> expectedUserType == null || user.getType() == expectedUserType)
                 .filter(user -> user.getType() == UserType.employee || user.getTenantId().equals(customerTenantId))
                 .filter(user -> tenantRepository.findById(user.getTenantId())
                         .map(tenant -> tenant.getStatus() == TenantStatus.active)
