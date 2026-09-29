@@ -1,0 +1,187 @@
+databaseChangeLog:
+  - changeSet:
+      id: 022-pos-sales-returns
+      author: mafer
+      changes:
+        - createTable:
+            tableName: sale_returns
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: branch_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: sale_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: reason
+                  type: VARCHAR(1000)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: refund_amount
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_by_user_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - createTable:
+            tableName: sale_return_items
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: return_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: sale_item_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: product_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: quantity
+                  type: NUMERIC(12,3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: refund_amount
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - createIndex:
+            tableName: sale_returns
+            indexName: idx_sale_returns_tenant_branch
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: branch_id
+        - createIndex:
+            tableName: sale_return_items
+            indexName: idx_sale_return_items_return
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: return_id
+        - addForeignKeyConstraint:
+            baseTableName: sale_returns
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_sale_returns_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: sale_returns
+            baseColumnNames: branch_id
+            referencedTableName: branches
+            referencedColumnNames: id
+            constraintName: fk_sale_returns_branch
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: sale_returns
+            baseColumnNames: sale_id
+            referencedTableName: sales
+            referencedColumnNames: id
+            constraintName: fk_sale_returns_sale
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: sale_returns
+            baseColumnNames: created_by_user_id
+            referencedTableName: users
+            referencedColumnNames: id
+            constraintName: fk_sale_returns_created_by_user
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: sale_return_items
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_sale_return_items_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: sale_return_items
+            baseColumnNames: return_id
+            referencedTableName: sale_returns
+            referencedColumnNames: id
+            constraintName: fk_sale_return_items_return
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: sale_return_items
+            baseColumnNames: sale_item_id
+            referencedTableName: sale_items
+            referencedColumnNames: id
+            constraintName: fk_sale_return_items_sale_item
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: sale_return_items
+            baseColumnNames: product_id
+            referencedTableName: products
+            referencedColumnNames: id
+            constraintName: fk_sale_return_items_product
+            onDelete: RESTRICT
+        - sql:
+            sql: "ALTER TABLE sale_returns ADD CONSTRAINT ck_sale_returns_refund_amount CHECK (refund_amount >= 0)"
+        - sql:
+            sql: "ALTER TABLE sale_return_items ADD CONSTRAINT ck_sale_return_items_quantity CHECK (quantity > 0)"
+        - sql:
+            sql: "ALTER TABLE sale_return_items ADD CONSTRAINT ck_sale_return_items_refund_amount CHECK (refund_amount >= 0)"
