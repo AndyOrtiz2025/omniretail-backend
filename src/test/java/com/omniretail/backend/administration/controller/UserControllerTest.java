@@ -109,6 +109,28 @@ class UserControllerTest {
     }
 
     @Test
+    void createEmployeeWithMaxEmailLengthSucceeds() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        Role role = persistRole(tenant, List.of());
+        // 64 (local) + 1 (@) + 61 + 1 + 61 + 1 + 60 + 5 (.demo) = 254, el maximo de RFC 5321.
+        String email254 = "e".repeat(64) + "@" + "d".repeat(61) + "." + "d".repeat(61) + "." + "d".repeat(60) + ".demo";
+
+        String body =
+                """
+                {"name":"Empleado 254","email":"%s","employeeCode":"EMP-254","roleId":"%s"}
+                """
+                        .formatted(email254, role.getId());
+
+        mockMvc.perform(post(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.email").value(email254));
+    }
+
+    @Test
     void createUserDuplicateEmailConflict() throws Exception {
         Tenant tenant = persistTenant();
         String token = tokenFor(tenant);

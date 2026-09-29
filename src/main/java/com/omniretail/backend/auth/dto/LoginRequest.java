@@ -12,7 +12,7 @@ import java.util.Locale;
  * @param expectedUserType opcional: si viene, solo se consideran cuentas de ese tipo (portal de tienda o administrativo).
  */
 public record LoginRequest(
-        @NotBlank @Email @Size(max = 200) String email,
+        @NotBlank @Email @Size(max = 254) String email,
         @NotBlank @Size(max = 200) String password,
         Boolean rememberMe,
         @Size(max = 200) String deviceLabel,

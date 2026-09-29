@@ -48,7 +48,7 @@ public class Branch extends TenantScopedEntity {
     private String phone;
 
     @Email
-    @Size(max = 200)
+    @Size(max = 254)
     @Column(name = "email")
     private String email;
 

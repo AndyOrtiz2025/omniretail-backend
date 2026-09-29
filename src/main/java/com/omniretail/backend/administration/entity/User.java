@@ -43,7 +43,7 @@ public class User extends TenantScopedEntity {
 
     @NotBlank
     @Email
-    @Size(max = 200)
+    @Size(max = 254)
     @Column(name = "email", nullable = false)
     private String email;
 
