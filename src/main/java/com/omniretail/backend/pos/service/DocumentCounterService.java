@@ -34,4 +34,16 @@ public class DocumentCounterService {
 
         return POS_SALE_PREFIX + String.format(Locale.ROOT, "%03d", nextValue);
     }
+
+    @Transactional
+    public String nextPurchaseOrderNumber(UUID tenantId) {
+        if (tenantId == null) throw new IllegalArgumentException("tenantId es requerido.");
+        String key = "purchase_order";
+        documentCounterRepository.ensureExists(tenantId, key);
+        DocumentCounter counter = documentCounterRepository.findByTenantIdAndCounterKey(tenantId, key)
+                .orElseThrow(() -> new IllegalStateException("No se pudo inicializar el contador de compras."));
+        counter.setLastValue(Math.incrementExact(counter.getLastValue()));
+        documentCounterRepository.flush();
+        return "PO-" + String.format(Locale.ROOT, "%05d", counter.getLastValue());
+    }
 }

@@ -15,6 +15,9 @@ public interface SupplierProductRepository extends JpaRepository<SupplierProduct
 
     Optional<SupplierProduct> findByTenantIdAndId(UUID tenantId, UUID id);
 
+    Optional<SupplierProduct> findByTenantIdAndSupplierIdAndProductIdAndActiveTrue(
+            UUID tenantId, UUID supplierId, UUID productId);
+
     boolean existsByTenantIdAndSupplierIdAndProductId(UUID tenantId, UUID supplierId, UUID productId);
 
     boolean existsByTenantIdAndSupplierIdAndProductIdAndIdNot(
