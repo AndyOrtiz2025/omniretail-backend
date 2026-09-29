@@ -117,6 +117,138 @@ class InventoryStockServiceTest {
     }
 
     @Test
+    void incrementAtLocationCreatesSpecificBalanceMovementAndPreservesMetadata() {
+        Fixture fixture = createFixtureWithoutBalance();
+        UUID locationId = createLocation(fixture, fixture.branchId(), "active");
+        UUID referenceId = UUID.randomUUID();
+        AddStockCommand command = new AddStockCommand(
+                fixture.tenantId(),
+                fixture.branchId(),
+                fixture.productId(),
+                new BigDecimal("3.500"),
+                "Recepcion de compra",
+                "GOODS_RECEIPT",
+                referenceId,
+                fixture.userId());
+
+        InventoryMovement created = inventoryStockService.incrementStockAtLocation(command, locationId);
+
+        assertThat(locationBalanceQuantity(fixture, locationId)).isEqualByComparingTo("3.500");
+        assertThat(locationBalanceReservedQuantity(fixture, locationId)).isEqualByComparingTo("0.000");
+        assertThat(countBalances(fixture)).isZero();
+        InventoryMovement movement = inventoryMovementRepository.findById(created.getId()).orElseThrow();
+        assertThat(movement.getType()).isEqualTo(InventoryMovementType.in);
+        assertThat(movement.getQuantityBefore()).isEqualByComparingTo("0.000");
+        assertThat(movement.getQuantityAfter()).isEqualByComparingTo("3.500");
+        assertThat(movement.getFromLocationId()).isNull();
+        assertThat(movement.getToLocationId()).isEqualTo(locationId);
+        assertThat(movement.getReason()).isEqualTo("Recepcion de compra");
+        assertThat(movement.getReferenceType()).isEqualTo("GOODS_RECEIPT");
+        assertThat(movement.getReferenceId()).isEqualTo(referenceId);
+        assertThat(movement.getPerformedByUserId()).isEqualTo(fixture.userId());
+    }
+
+    @Test
+    void incrementAtLocationUpdatesExistingBalanceWithoutChangingReservedQuantity() {
+        Fixture fixture = createFixtureWithoutBalance();
+        UUID locationId = createLocation(fixture, fixture.branchId(), "active");
+        createLocationBalance(fixture, locationId, "10.000", "2.000");
+
+        InventoryMovement movement = inventoryStockService.incrementStockAtLocation(
+                addStockCommand(fixture, new BigDecimal("4.000"), "Recepcion parcial"), locationId);
+
+        assertThat(locationBalanceQuantity(fixture, locationId)).isEqualByComparingTo("14.000");
+        assertThat(locationBalanceReservedQuantity(fixture, locationId)).isEqualByComparingTo("2.000");
+        assertThat(movement.getQuantityBefore()).isEqualByComparingTo("10.000");
+        assertThat(movement.getQuantityAfter()).isEqualByComparingTo("14.000");
+    }
+
+    @Test
+    void defaultAndDifferentLocationBalancesRemainIndependent() {
+        Fixture fixture = createFixture("5.000", "1.000");
+        UUID firstLocation = createLocation(fixture, fixture.branchId(), "active");
+        UUID secondLocation = createLocation(fixture, fixture.branchId(), "active");
+
+        inventoryStockService.incrementStockAtLocation(
+                addStockCommand(fixture, new BigDecimal("2.000"), "Primera ubicacion"), firstLocation);
+        inventoryStockService.incrementStockAtLocation(
+                addStockCommand(fixture, new BigDecimal("7.000"), "Segunda ubicacion"), secondLocation);
+
+        assertBalance(fixture, "5.000", "1.000");
+        assertThat(locationBalanceQuantity(fixture, firstLocation)).isEqualByComparingTo("2.000");
+        assertThat(locationBalanceQuantity(fixture, secondLocation)).isEqualByComparingTo("7.000");
+    }
+
+    @Test
+    void incrementAtLocationRejectsInvalidArgumentsBeforeCreatingBalance() {
+        Fixture fixture = createFixtureWithoutBalance();
+        UUID locationId = createLocation(fixture, fixture.branchId(), "active");
+
+        assertThatThrownBy(() -> inventoryStockService.incrementStockAtLocation(null, locationId))
+                .isInstanceOfSatisfying(BusinessException.class, exception ->
+                        assertThat(exception.getCode()).isEqualTo("INVALID_STOCK_COMMAND"));
+        assertThatThrownBy(() -> inventoryStockService.incrementStockAtLocation(
+                        addStockCommand(fixture, BigDecimal.ONE, "Sin ubicacion"), null))
+                .isInstanceOfSatisfying(BusinessException.class, exception ->
+                        assertThat(exception.getCode()).isEqualTo("INVALID_STOCK_LOCATION"));
+        assertInvalidQuantity(() -> inventoryStockService.incrementStockAtLocation(
+                addStockCommand(fixture, BigDecimal.ZERO, "Cantidad cero"), locationId));
+        assertInvalidQuantity(() -> inventoryStockService.incrementStockAtLocation(
+                addStockCommand(fixture, new BigDecimal("-1.000"), "Cantidad negativa"), locationId));
+        assertThat(countLocationBalances(fixture, locationId)).isZero();
+    }
+
+    @Test
+    void incrementAtLocationEnforcesTenantBranchAndStatus() {
+        Fixture fixture = createFixtureWithoutBalance();
+        Fixture otherTenant = createFixtureWithoutBalance();
+        UUID crossTenantLocation = createLocation(otherTenant, otherTenant.branchId(), "active");
+        assertLocationError(
+                () -> inventoryStockService.incrementStockAtLocation(
+                        addStockCommand(fixture, BigDecimal.ONE, "Cross tenant"), crossTenantLocation),
+                HttpStatus.NOT_FOUND,
+                "LOCATION_NOT_FOUND");
+
+        UUID otherBranch = createBranch(fixture.tenantId());
+        UUID otherBranchLocation = createLocation(fixture, otherBranch, "active");
+        assertLocationError(
+                () -> inventoryStockService.incrementStockAtLocation(
+                        addStockCommand(fixture, BigDecimal.ONE, "Otra sucursal"), otherBranchLocation),
+                HttpStatus.BAD_REQUEST,
+                "LOCATION_BRANCH_MISMATCH");
+
+        for (String status : new String[] {"inactive", "archived"}) {
+            UUID locationId = createLocation(fixture, fixture.branchId(), status);
+            assertLocationError(
+                    () -> inventoryStockService.incrementStockAtLocation(
+                            addStockCommand(fixture, BigDecimal.ONE, "Ubicacion " + status), locationId),
+                    HttpStatus.BAD_REQUEST,
+                    "LOCATION_NOT_ACTIVE");
+        }
+    }
+
+    @Test
+    void incrementAtLocationRollsBackBalanceWhenMovementCannotBePersisted() {
+        Fixture fixture = createFixtureWithoutBalance();
+        UUID locationId = createLocation(fixture, fixture.branchId(), "active");
+        createLocationBalance(fixture, locationId, "10.000", "2.000");
+
+        assertThatThrownBy(() -> inventoryStockService.incrementStockAtLocation(
+                        addStockCommand(fixture, BigDecimal.ONE, null), locationId))
+                .isInstanceOf(RuntimeException.class);
+
+        assertThat(locationBalanceQuantity(fixture, locationId)).isEqualByComparingTo("10.000");
+        assertThat(locationBalanceReservedQuantity(fixture, locationId)).isEqualByComparingTo("2.000");
+        assertThat(countMovements(fixture)).isZero();
+
+        UUID emptyLocation = createLocation(fixture, fixture.branchId(), "active");
+        assertThatThrownBy(() -> inventoryStockService.incrementStockAtLocation(
+                        addStockCommand(fixture, BigDecimal.ONE, null), emptyLocation))
+                .isInstanceOf(RuntimeException.class);
+        assertThat(countLocationBalances(fixture, emptyLocation)).isZero();
+    }
+
+    @Test
     void deductStockReducesPhysicalQuantityAndCreatesOutMovement() {
         Fixture fixture = createFixture("10.000", "2.000");
 
@@ -262,6 +394,15 @@ class InventoryStockServiceTest {
                 });
     }
 
+    private static void assertLocationError(
+            Runnable operation, HttpStatus status, String code) {
+        assertThatThrownBy(operation::run)
+                .isInstanceOfSatisfying(BusinessException.class, exception -> {
+                    assertThat(exception.getStatus()).isEqualTo(status);
+                    assertThat(exception.getCode()).isEqualTo(code);
+                });
+    }
+
     private long countMovements(Fixture fixture) {
         Long count = jdbcTemplate.queryForObject(
                 """
@@ -314,6 +455,90 @@ class InventoryStockServiceTest {
                 fixture.tenantId(),
                 fixture.branchId(),
                 fixture.productId());
+    }
+
+    private long countLocationBalances(Fixture fixture, UUID locationId) {
+        Long count = jdbcTemplate.queryForObject(
+                """
+                SELECT count(*) FROM inventory_balances
+                WHERE tenant_id = ? AND branch_id = ? AND product_id = ? AND location_id = ?
+                """,
+                Long.class,
+                fixture.tenantId(),
+                fixture.branchId(),
+                fixture.productId(),
+                locationId);
+        return count == null ? 0 : count;
+    }
+
+    private BigDecimal locationBalanceQuantity(Fixture fixture, UUID locationId) {
+        return jdbcTemplate.queryForObject(
+                """
+                SELECT quantity FROM inventory_balances
+                WHERE tenant_id = ? AND branch_id = ? AND product_id = ? AND location_id = ?
+                """,
+                BigDecimal.class,
+                fixture.tenantId(),
+                fixture.branchId(),
+                fixture.productId(),
+                locationId);
+    }
+
+    private BigDecimal locationBalanceReservedQuantity(Fixture fixture, UUID locationId) {
+        return jdbcTemplate.queryForObject(
+                """
+                SELECT reserved_quantity FROM inventory_balances
+                WHERE tenant_id = ? AND branch_id = ? AND product_id = ? AND location_id = ?
+                """,
+                BigDecimal.class,
+                fixture.tenantId(),
+                fixture.branchId(),
+                fixture.productId(),
+                locationId);
+    }
+
+    private void createLocationBalance(
+            Fixture fixture, UUID locationId, String quantity, String reservedQuantity) {
+        jdbcTemplate.update(
+                """
+                INSERT INTO inventory_balances
+                    (tenant_id, branch_id, product_id, location_id, quantity, reserved_quantity)
+                VALUES (?, ?, ?, ?, ?::numeric, ?::numeric)
+                """,
+                fixture.tenantId(),
+                fixture.branchId(),
+                fixture.productId(),
+                locationId,
+                quantity,
+                reservedQuantity);
+    }
+
+    private UUID createLocation(Fixture fixture, UUID branchId, String status) {
+        UUID locationId = UUID.randomUUID();
+        jdbcTemplate.update(
+                """
+                INSERT INTO locations (id, tenant_id, branch_id, code, name, type, status)
+                VALUES (?, ?, ?, ?, 'Bodega prueba', 'warehouse', ?)
+                """,
+                locationId,
+                fixture.tenantId(),
+                branchId,
+                "LOC-" + locationId,
+                status);
+        return locationId;
+    }
+
+    private UUID createBranch(UUID tenantId) {
+        UUID branchId = UUID.randomUUID();
+        jdbcTemplate.update(
+                """
+                INSERT INTO branches (id, tenant_id, code, name, type, status)
+                VALUES (?, ?, ?, 'Sucursal secundaria', 'store', 'active')
+                """,
+                branchId,
+                tenantId,
+                "BR-" + branchId);
+        return branchId;
     }
 
     private static AddStockCommand addStockCommand(

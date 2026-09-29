@@ -58,6 +58,32 @@ class InventoryStockServiceConcurrencyTest {
     }
 
     @Test
+    void concurrentLocationIncrementsCreateOneBalanceWithoutLostUpdate() throws Exception {
+        Fixture fixture = createFixtureWithoutBalance();
+        UUID locationId = createLocation(fixture);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+
+        try {
+            Future<Outcome> first = executor.submit(() -> incrementOnceAtLocation(fixture, locationId, ready, start));
+            Future<Outcome> second = executor.submit(() -> incrementOnceAtLocation(fixture, locationId, ready, start));
+
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            List<Outcome> outcomes = List.of(
+                    first.get(20, TimeUnit.SECONDS), second.get(20, TimeUnit.SECONDS));
+            assertThat(outcomes).allMatch(Outcome::succeeded);
+            assertThat(countLocationBalances(fixture, locationId)).isOne();
+            assertThat(locationBalanceQuantity(fixture, locationId)).isEqualByComparingTo("10.000");
+            assertThat(countMovementsToLocation(fixture, locationId)).isEqualTo(2);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
     void concurrentDeductionsAllowExactlyOneOutMovement() throws Exception {
         Fixture fixture = createFixture();
         ExecutorService executor = Executors.newFixedThreadPool(2);
@@ -132,6 +158,31 @@ class InventoryStockServiceConcurrencyTest {
         }
     }
 
+    private Outcome incrementOnceAtLocation(
+            Fixture fixture, UUID locationId, CountDownLatch ready, CountDownLatch start)
+            throws InterruptedException {
+        ready.countDown();
+        if (!start.await(10, TimeUnit.SECONDS)) {
+            throw new IllegalStateException("Los incrementos por ubicacion no iniciaron a tiempo.");
+        }
+        try {
+            inventoryStockService.incrementStockAtLocation(
+                    new AddStockCommand(
+                            fixture.tenantId(),
+                            fixture.branchId(),
+                            fixture.productId(),
+                            new BigDecimal("5.000"),
+                            "Recepcion concurrente",
+                            "GOODS_RECEIPT",
+                            UUID.randomUUID(),
+                            null),
+                    locationId);
+            return new Outcome(true, null);
+        } catch (BusinessException exception) {
+            return new Outcome(false, exception.getCode());
+        }
+    }
+
     private long countMovements(Fixture fixture) {
         return countMovements(fixture, "out");
     }
@@ -190,6 +241,62 @@ class InventoryStockServiceConcurrencyTest {
                 fixture.branchId(),
                 fixture.productId(),
                 type);
+    }
+
+    private UUID createLocation(Fixture fixture) {
+        UUID locationId = UUID.randomUUID();
+        jdbcTemplate.update(
+                """
+                INSERT INTO locations (id, tenant_id, branch_id, code, name, type, status)
+                VALUES (?, ?, ?, ?, 'Bodega concurrente', 'warehouse', 'active')
+                """,
+                locationId,
+                fixture.tenantId(),
+                fixture.branchId(),
+                "LOC-" + locationId);
+        return locationId;
+    }
+
+    private long countLocationBalances(Fixture fixture, UUID locationId) {
+        Long count = jdbcTemplate.queryForObject(
+                """
+                SELECT count(*) FROM inventory_balances
+                WHERE tenant_id = ? AND branch_id = ? AND product_id = ? AND location_id = ?
+                """,
+                Long.class,
+                fixture.tenantId(),
+                fixture.branchId(),
+                fixture.productId(),
+                locationId);
+        return count == null ? 0 : count;
+    }
+
+    private BigDecimal locationBalanceQuantity(Fixture fixture, UUID locationId) {
+        return jdbcTemplate.queryForObject(
+                """
+                SELECT quantity FROM inventory_balances
+                WHERE tenant_id = ? AND branch_id = ? AND product_id = ? AND location_id = ?
+                """,
+                BigDecimal.class,
+                fixture.tenantId(),
+                fixture.branchId(),
+                fixture.productId(),
+                locationId);
+    }
+
+    private long countMovementsToLocation(Fixture fixture, UUID locationId) {
+        Long count = jdbcTemplate.queryForObject(
+                """
+                SELECT count(*) FROM inventory_movements
+                WHERE tenant_id = ? AND branch_id = ? AND product_id = ?
+                  AND type = 'in' AND to_location_id = ?
+                """,
+                Long.class,
+                fixture.tenantId(),
+                fixture.branchId(),
+                fixture.productId(),
+                locationId);
+        return count == null ? 0 : count;
     }
 
     private Fixture createFixture() {
