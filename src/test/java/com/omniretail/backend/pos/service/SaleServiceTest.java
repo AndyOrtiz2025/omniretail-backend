@@ -16,6 +16,10 @@ import com.omniretail.backend.pos.dto.CreateSaleRequest;
 import com.omniretail.backend.pos.entity.CashShift;
 import com.omniretail.backend.pos.entity.CashShiftStatus;
 import com.omniretail.backend.pos.entity.PaymentMethod;
+import com.omniretail.backend.pos.entity.Payment;
+import com.omniretail.backend.pos.entity.Sale;
+import com.omniretail.backend.pos.entity.SaleItem;
+import com.omniretail.backend.pos.entity.SaleStatus;
 import com.omniretail.backend.pos.repository.CashMovementRepository;
 import com.omniretail.backend.pos.repository.CashShiftRepository;
 import com.omniretail.backend.pos.repository.PaymentRepository;
@@ -28,6 +32,7 @@ import com.omniretail.backend.shared.security.SaasCapability;
 import com.omniretail.backend.shared.security.TenantCapabilityGuard;
 import com.omniretail.backend.administration.entity.UserType;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -39,6 +44,8 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 
 @ExtendWith(MockitoExtension.class)
 class SaleServiceTest {
@@ -68,7 +75,7 @@ class SaleServiceTest {
         actor = new AuthenticatedUser(user, tenant, UserType.employee, UUID.randomUUID(), branch, UUID.randomUUID());
         when(currentUser.require()).thenReturn(actor);
         when(branchAccess.resolve(actor)).thenReturn(new BranchAccessResolver.BranchAccess(false, Set.of(branch)));
-        when(shifts.findByTenantIdAndBranchIdAndUserIdAndStatus(tenant, branch, user, CashShiftStatus.open))
+        lenient().when(shifts.findByTenantIdAndBranchIdAndUserIdAndStatus(tenant, branch, user, CashShiftStatus.open))
                 .thenReturn(Optional.of(shift()));
         lenient().when(counter.nextPosSaleNumber(tenant)).thenReturn("POS-001");
         lenient().when(tenants.findById(tenant)).thenReturn(Optional.of(Tenant.builder()
@@ -123,6 +130,88 @@ class SaleServiceTest {
         verifyNoInteractions(products, sales, inventory, items, payments);
     }
 
+    @Test
+    void voidSaleRevertsStockAndRegistersCashOutWhenShiftIsOpen() {
+        Sale sale = sale(SaleStatus.completed);
+        when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
+        when(items.findByTenantIdAndSaleId(tenant, sale.getId())).thenReturn(List.of(saleItem()));
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+        when(payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(tenant, sale.getId()))
+                .thenReturn(List.of(Payment.builder().method(PaymentMethod.cash).amount(new BigDecimal("20.00")).build()));
+        when(shifts.findByTenantIdAndId(tenant, shiftId)).thenReturn(Optional.of(shift()));
+        when(sales.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.voidSale(sale.getId());
+
+        verify(inventory).incrementStock(any());
+        verify(cashMovements).save(argThat(movement -> movement.getType().name().equals("out")));
+        assertThat(sale.getStatus()).isEqualTo(SaleStatus.cancelled);
+    }
+
+    @Test
+    void voidSaleRevertsStockWithoutCashMovementWhenShiftIsClosed() {
+        Sale sale = sale(SaleStatus.completed);
+        CashShift closed = shift();
+        closed.setStatus(CashShiftStatus.closed);
+        when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
+        when(items.findByTenantIdAndSaleId(tenant, sale.getId())).thenReturn(List.of(saleItem()));
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+        when(shifts.findByTenantIdAndId(tenant, shiftId)).thenReturn(Optional.of(closed));
+        when(sales.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.voidSale(sale.getId());
+
+        verify(inventory).incrementStock(any());
+        verifyNoInteractions(cashMovements);
+    }
+
+    @Test
+    void voidSaleRejectsAlreadyCancelledSale() {
+        Sale sale = sale(SaleStatus.cancelled);
+        when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
+
+        assertThatThrownBy(() -> service.voidSale(sale.getId()))
+                .isInstanceOfSatisfying(BusinessException.class, ex -> {
+                    assertThat(ex.getStatus()).isEqualTo(org.springframework.http.HttpStatus.CONFLICT);
+                    assertThat(ex.getCode()).isEqualTo("SALE_ALREADY_VOIDED");
+                });
+    }
+
+    @Test
+    void voidSaleEnforcesBranchAccess() {
+        Sale sale = sale(SaleStatus.completed);
+        when(branchAccess.resolve(actor)).thenReturn(new BranchAccessResolver.BranchAccess(false, Set.of()));
+        when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
+
+        assertThatThrownBy(() -> service.voidSale(sale.getId()))
+                .isInstanceOfSatisfying(BusinessException.class, ex -> assertThat(ex.getCode()).isEqualTo("SALE_NOT_FOUND"));
+    }
+
+    @Test
+    void listSalesAppliesFiltersAndPagination() {
+        Sale sale = sale(SaleStatus.completed);
+        when(sales.findByTenantIdAndBranchIdAndStatus(tenant, branch, SaleStatus.completed, PageRequest.of(0, 10)))
+                .thenReturn(new PageImpl<>(List.of(sale), PageRequest.of(0, 10), 1));
+
+        var page = service.list(branch, SaleStatus.completed, null, null, PageRequest.of(0, 10));
+
+        assertThat(page.getTotalElements()).isEqualTo(1);
+    }
+
+    @Test
+    void getSaleDetailReturnsItemsAndPayments() {
+        Sale sale = sale(SaleStatus.completed);
+        when(sales.findByTenantIdAndId(tenant, sale.getId())).thenReturn(Optional.of(sale));
+        when(items.findByTenantIdAndSaleId(tenant, sale.getId())).thenReturn(List.of(saleItem()));
+        when(payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(tenant, sale.getId()))
+                .thenReturn(List.of(Payment.builder().method(PaymentMethod.cash).amount(new BigDecimal("20.00")).build()));
+
+        var detail = service.get(sale.getId());
+
+        assertThat(detail.items()).hasSize(1);
+        assertThat(detail.payments()).hasSize(1);
+    }
+
     private CreateSaleRequest request(BigDecimal payment, BigDecimal quantity) {
         return new CreateSaleRequest(branch, shiftId, null, BigDecimal.ZERO,
                 List.of(new CreateSaleRequest.Item(productId, quantity, BigDecimal.ZERO)),
@@ -140,5 +229,20 @@ class SaleServiceTest {
                 .channelPos(true).build();
         ReflectionTestUtils.setField(product, "id", productId);
         return product;
+    }
+
+    private Sale sale(SaleStatus status) {
+        Sale sale = Sale.builder().branchId(branch).cashShiftId(shiftId).number("POS-001")
+                .subtotal(new BigDecimal("20.00")).discountTotal(BigDecimal.ZERO).taxTotal(BigDecimal.ZERO)
+                .total(new BigDecimal("20.00")).createdByUserId(user).status(status).build();
+        sale.setTenantId(tenant);
+        ReflectionTestUtils.setField(sale, "id", UUID.randomUUID());
+        return sale;
+    }
+
+    private SaleItem saleItem() {
+        return SaleItem.builder().productId(productId).skuSnapshot("SKU-1").nameSnapshot("Producto")
+                .quantity(BigDecimal.ONE).unitPrice(new BigDecimal("20.00")).discount(BigDecimal.ZERO)
+                .subtotal(new BigDecimal("20.00")).build();
     }
 }

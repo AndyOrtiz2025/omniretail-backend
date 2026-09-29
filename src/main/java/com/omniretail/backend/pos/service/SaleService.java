@@ -23,6 +23,7 @@ import com.omniretail.backend.pos.entity.PaymentMethod;
 import com.omniretail.backend.pos.entity.PaymentStatus;
 import com.omniretail.backend.pos.entity.Sale;
 import com.omniretail.backend.pos.entity.SaleItem;
+import com.omniretail.backend.pos.entity.SaleStatus;
 import com.omniretail.backend.pos.repository.CashMovementRepository;
 import com.omniretail.backend.pos.repository.CashShiftRepository;
 import com.omniretail.backend.pos.repository.PaymentRepository;
@@ -144,6 +145,10 @@ public class SaleService {
         capability.ensureTenantCapability(actor.tenantId(), SaasCapability.pos);
         if (!branchAccess.resolve(actor).allows(branchId)) {
             throw notFound("BRANCH_NOT_FOUND", "Sucursal no encontrada.");
+        }
+        if ((from == null) != (to == null) || (from != null && from.isAfter(to))) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "INVALID_SALE_DATE_RANGE",
+                    "Las fechas from y to son requeridas juntas y deben formar un rango válido.");
         }
         Page<Sale> page;
         if (from != null && to != null) {
