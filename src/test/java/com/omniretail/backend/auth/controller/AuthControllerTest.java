@@ -228,10 +228,112 @@ class AuthControllerTest {
         assertThat(session(response).getRevokedAt()).isNotNull();
     }
 
+    @Test
+    void customerLoginWithExpectedUserTypeCustomerSucceeds() throws Exception {
+        Tenant tenant = tenant();
+        User customer = account(tenant, UserType.customer, uniqueEmail());
+
+        login(customer.getEmail(), PASSWORD, null, tenant.getSlug(), "customer")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.user.id").value(customer.getId().toString()))
+                .andExpect(jsonPath("$.user.type").value("customer"));
+    }
+
+    @Test
+    void employeeLoginWithExpectedUserTypeEmployeeSucceeds() throws Exception {
+        User employee = account(tenant(), UserType.employee, uniqueEmail());
+
+        login(employee.getEmail(), PASSWORD, null, null, "employee")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.user.id").value(employee.getId().toString()))
+                .andExpect(jsonPath("$.user.type").value("employee"));
+    }
+
+    @Test
+    void employeeAttemptingLoginWithExpectedUserTypeCustomerIsRejected() throws Exception {
+        Tenant tenant = tenant();
+        User employee = account(tenant, UserType.employee, uniqueEmail());
+
+        login(employee.getEmail(), PASSWORD, null, tenant.getSlug(), "customer")
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("INVALID_CREDENTIALS"))
+                .andExpect(jsonPath("$.message").value(GENERIC_MESSAGE));
+
+        AuthAccount account = authAccountRepository.findByUserId(employee.getId()).orElseThrow();
+        assertThat(account.getFailedLoginAttempts()).isZero();
+        assertThat(account.getLastLoginAt()).isNull();
+        assertThat(sessionRepository.findByUserIdAndRevokedAtIsNull(employee.getId())).isEmpty();
+    }
+
+    @Test
+    void customerAttemptingLoginWithExpectedUserTypeEmployeeIsRejected() throws Exception {
+        Tenant tenant = tenant();
+        User customer = account(tenant, UserType.customer, uniqueEmail());
+
+        login(customer.getEmail(), PASSWORD, null, null, "employee")
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("INVALID_CREDENTIALS"))
+                .andExpect(jsonPath("$.message").value(GENERIC_MESSAGE));
+        // Aun con el slug correcto, el tipo esperado descarta la cuenta de cliente.
+        login(customer.getEmail(), PASSWORD, null, tenant.getSlug(), "employee")
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("INVALID_CREDENTIALS"))
+                .andExpect(jsonPath("$.message").value(GENERIC_MESSAGE));
+
+        assertThat(sessionRepository.findByUserIdAndRevokedAtIsNull(customer.getId())).isEmpty();
+    }
+
+    /** uk_users_tenant_email impide ambos tipos en la misma tienda: el empleado vive en otra. */
+    @Test
+    void userWithBothRolesLogsIntoCorrectAccountUsingExpectedUserType() throws Exception {
+        String email = uniqueEmail();
+        User employee = account(tenant(), UserType.employee, email);
+        Tenant store = tenant();
+        User customer = account(store, UserType.customer, email);
+
+        // Sin tipo esperado ambas cuentas son candidatas y la misma contrasena abre las dos.
+        login(email, PASSWORD, null, store.getSlug(), null)
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("INVALID_CREDENTIALS"));
+
+        login(email, PASSWORD, null, store.getSlug(), "customer")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.user.id").value(customer.getId().toString()))
+                .andExpect(jsonPath("$.user.type").value("customer"));
+        login(email, PASSWORD, null, store.getSlug(), "employee")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.user.id").value(employee.getId().toString()))
+                .andExpect(jsonPath("$.user.type").value("employee"));
+    }
+
+    @Test
+    void loginWithoutExpectedUserTypeMaintainsBackwardCompatibility() throws Exception {
+        Tenant tenant = tenant();
+        User customer = account(tenant, UserType.customer, uniqueEmail());
+        User employee = account(tenant(), UserType.employee, uniqueEmail());
+
+        login(customer.getEmail(), PASSWORD, null, tenant.getSlug(), null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.user.id").value(customer.getId().toString()));
+        login(employee.getEmail(), PASSWORD, null, null, null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.user.id").value(employee.getId().toString()));
+    }
+
     private ResultActions login(String email, String password, Boolean rememberMe, String tenantSlug) throws Exception {
+        return login(email, password, rememberMe, tenantSlug, null);
+    }
+
+    private ResultActions login(String email, String password, Boolean rememberMe, String tenantSlug,
+            String expectedUserType) throws Exception {
         String body = """
-                {"email": "%s", "password": "%s", "rememberMe": %s, "tenantSlug": %s}
-                """.formatted(email, password, rememberMe, tenantSlug == null ? "null" : "\"" + tenantSlug + "\"");
+                {"email": "%s", "password": "%s", "rememberMe": %s, "tenantSlug": %s, "expectedUserType": %s}
+                """.formatted(
+                        email,
+                        password,
+                        rememberMe,
+                        tenantSlug == null ? "null" : "\"" + tenantSlug + "\"",
+                        expectedUserType == null ? "null" : "\"" + expectedUserType + "\"");
         return mockMvc.perform(post(LOGIN).contentType(MediaType.APPLICATION_JSON).content(body));
     }
 
