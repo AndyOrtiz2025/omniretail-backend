@@ -10,7 +10,7 @@ import java.util.Locale;
  * @param tenantSlug obligatorio para que un cliente pueda entrar; el tenant nunca se recibe por id.
  */
 public record LoginRequest(
-        @NotBlank @Email @Size(max = 200) String email,
+        @NotBlank @Email @Size(max = 254) String email,
         @NotBlank @Size(max = 200) String password,
         Boolean rememberMe,
         @Size(max = 200) String deviceLabel,

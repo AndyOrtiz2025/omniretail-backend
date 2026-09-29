@@ -89,6 +89,25 @@ class BranchControllerTest {
     }
 
     @Test
+    void createBranchWithMaxEmailLengthSucceeds() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        // 64 (local) + 1 (@) + 61 + 1 + 61 + 1 + 60 + 5 (.demo) = 254, el maximo de RFC 5321.
+        String email254 = "b".repeat(64) + "@" + "d".repeat(61) + "." + "d".repeat(61) + "." + "d".repeat(60) + ".demo";
+
+        String body = """
+                {"code":"BR-254","name":"Sucursal Email Largo","type":"store","email":"%s"}
+                """.formatted(email254);
+
+        mockMvc.perform(post(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.email").value(email254));
+    }
+
+    @Test
     void createBranchDuplicateCodeConflict() throws Exception {
         Tenant tenantA = persistTenant();
         String token = tokenFor(tenantA);

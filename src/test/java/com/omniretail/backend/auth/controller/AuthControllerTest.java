@@ -93,6 +93,18 @@ class AuthControllerTest {
     }
 
     @Test
+    void employeeLoginWithMaxEmailLengthSucceeds() throws Exception {
+        // 64 (local) + 1 (@) + 61 + 1 + 61 + 1 + 60 + 5 (.demo) = 254, el maximo de RFC 5321.
+        String email254 = "a".repeat(64) + "@" + "d".repeat(61) + "." + "d".repeat(61) + "." + "d".repeat(60) + ".demo";
+        User employee = account(tenant(), UserType.employee, email254);
+
+        login(employee.getEmail(), PASSWORD, null, null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.user.id").value(employee.getId().toString()))
+                .andExpect(jsonPath("$.user.email").value(email254));
+    }
+
+    @Test
     void emailIsNormalizedBeforeLookup() throws Exception {
         User employee = account(tenant(), UserType.employee, "admin@ferrepharma.demo");
 
