@@ -4,6 +4,7 @@ import com.omniretail.backend.purchasing.entity.PurchaseOrder;
 import com.omniretail.backend.purchasing.entity.PurchaseOrderStatus;
 import jakarta.persistence.LockModeType;
 import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
@@ -16,6 +17,8 @@ import org.springframework.data.repository.query.Param;
 public interface PurchaseOrderRepository extends JpaRepository<PurchaseOrder, UUID> {
 
     Optional<PurchaseOrder> findByTenantIdAndId(UUID tenantId, UUID id);
+
+    List<PurchaseOrder> findByTenantIdAndIdIn(UUID tenantId, Collection<UUID> ids);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select purchaseOrder from PurchaseOrder purchaseOrder "

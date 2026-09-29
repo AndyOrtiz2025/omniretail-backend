@@ -1,0 +1,258 @@
+databaseChangeLog:
+  - changeSet:
+      id: 020-purchasing-receiving
+      author: openai
+      changes:
+        - createTable:
+            tableName: goods_receipts
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: branch_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: purchase_order_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: number
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: received_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: notes
+                  type: VARCHAR(1000)
+              - column:
+                  name: received_by_user_id
+                  type: UUID
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: goods_receipts
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_goods_receipts_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: goods_receipts
+            baseColumnNames: branch_id
+            referencedTableName: branches
+            referencedColumnNames: id
+            constraintName: fk_goods_receipts_branch
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: goods_receipts
+            baseColumnNames: purchase_order_id
+            referencedTableName: purchase_orders
+            referencedColumnNames: id
+            constraintName: fk_goods_receipts_purchase_order
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: goods_receipts
+            baseColumnNames: received_by_user_id
+            referencedTableName: users
+            referencedColumnNames: id
+            constraintName: fk_goods_receipts_received_by
+            onDelete: RESTRICT
+        - addUniqueConstraint:
+            tableName: goods_receipts
+            columnNames: tenant_id, number
+            constraintName: uk_goods_receipts_tenant_number
+        - sql:
+            sql: "ALTER TABLE goods_receipts ADD CONSTRAINT ck_goods_receipts_status CHECK (status IN ('draft', 'confirmed'))"
+        - createIndex:
+            tableName: goods_receipts
+            indexName: idx_goods_receipts_tenant_branch
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: branch_id
+        - createIndex:
+            tableName: goods_receipts
+            indexName: idx_goods_receipts_tenant_purchase_order
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: purchase_order_id
+        - createIndex:
+            tableName: goods_receipts
+            indexName: idx_goods_receipts_tenant_status
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: status
+        - createTable:
+            tableName: goods_receipt_items
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: goods_receipt_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: purchase_order_item_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: product_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: location_id
+                  type: UUID
+              - column:
+                  name: received_quantity
+                  type: NUMERIC(12,3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: unit_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: unit_symbol_snapshot
+                  type: VARCHAR(10)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: purchase_to_base_factor
+                  type: NUMERIC(18,6)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: base_quantity
+                  type: NUMERIC(12,3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: unit_cost
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: goods_receipt_items
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_goods_receipt_items_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: goods_receipt_items
+            baseColumnNames: goods_receipt_id
+            referencedTableName: goods_receipts
+            referencedColumnNames: id
+            constraintName: fk_goods_receipt_items_receipt
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: goods_receipt_items
+            baseColumnNames: purchase_order_item_id
+            referencedTableName: purchase_order_items
+            referencedColumnNames: id
+            constraintName: fk_goods_receipt_items_purchase_order_item
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: goods_receipt_items
+            baseColumnNames: product_id
+            referencedTableName: products
+            referencedColumnNames: id
+            constraintName: fk_goods_receipt_items_product
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: goods_receipt_items
+            baseColumnNames: location_id
+            referencedTableName: locations
+            referencedColumnNames: id
+            constraintName: fk_goods_receipt_items_location
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: goods_receipt_items
+            baseColumnNames: unit_id
+            referencedTableName: units
+            referencedColumnNames: id
+            constraintName: fk_goods_receipt_items_unit
+            onDelete: RESTRICT
+        - sql:
+            sql: "ALTER TABLE goods_receipt_items ADD CONSTRAINT ck_goods_receipt_items_received_quantity CHECK (received_quantity > 0)"
+        - sql:
+            sql: "ALTER TABLE goods_receipt_items ADD CONSTRAINT ck_goods_receipt_items_factor CHECK (purchase_to_base_factor > 0)"
+        - sql:
+            sql: "ALTER TABLE goods_receipt_items ADD CONSTRAINT ck_goods_receipt_items_base_quantity CHECK (base_quantity > 0)"
+        - sql:
+            sql: "ALTER TABLE goods_receipt_items ADD CONSTRAINT ck_goods_receipt_items_unit_cost CHECK (unit_cost >= 0)"
+        - createIndex:
+            tableName: goods_receipt_items
+            indexName: idx_goods_receipt_items_receipt
+            columns:
+              - column:
+                  name: goods_receipt_id
+        - createIndex:
+            tableName: goods_receipt_items
+            indexName: idx_goods_receipt_items_purchase_order_item
+            columns:
+              - column:
+                  name: purchase_order_item_id
+        - createIndex:
+            tableName: goods_receipt_items
+            indexName: idx_goods_receipt_items_tenant_purchase_order_item
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: purchase_order_item_id
