@@ -26,6 +26,6 @@ public class CashMovementController {
     @GetMapping("/shift/{cashShiftId}")
     @RequirePermission("pos.cash.read")
     public List<CashMovementResponse> list(@PathVariable java.util.UUID cashShiftId) {
-        return service.list(new CreateCashMovementRequest(cashShiftId, null, null, ""));
+        return service.listByShift(cashShiftId);
     }
 }

@@ -10,6 +10,4 @@ public interface CashMovementRepository extends JpaRepository<CashMovement, UUID
     List<CashMovement> findByTenantIdAndCashShiftIdOrderByCreatedAtAscIdAsc(
             UUID tenantId, UUID cashShiftId);
 
-    List<CashMovement> findByTenantIdAndCashShiftIdAndCreatedByUserIdOrderByCreatedAtAscIdAsc(
-            UUID tenantId, UUID cashShiftId, UUID createdByUserId);
 }
