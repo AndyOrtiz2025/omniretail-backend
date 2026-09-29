@@ -84,6 +84,9 @@ class SaleReturnServiceTest {
         when(saleItems.findByTenantIdAndSaleId(tenant, sale.getId())).thenReturn(List.of(item(BigDecimal.ONE)));
         when(shifts.findByTenantIdAndBranchIdAndUserIdAndStatus(tenant, branch, user, CashShiftStatus.open))
                 .thenReturn(Optional.empty());
+        when(payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(tenant, sale.getId()))
+                .thenReturn(List.of(Payment.builder().method(PaymentMethod.cash)
+                        .amount(new BigDecimal("20.00")).build()));
 
         assertThatThrownBy(() -> service.create(sale.getId(), request(BigDecimal.ONE)))
                 .isInstanceOfSatisfying(BusinessException.class,
