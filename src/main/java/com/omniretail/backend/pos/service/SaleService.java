@@ -8,9 +8,13 @@ import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.inventory.dto.DeductStockCommand;
+import com.omniretail.backend.inventory.dto.AddStockCommand;
 import com.omniretail.backend.inventory.service.InventoryStockService;
 import com.omniretail.backend.pos.dto.CreateSaleRequest;
 import com.omniretail.backend.pos.dto.SaleResponse;
+import com.omniretail.backend.pos.dto.SaleDetailResponse;
+import com.omniretail.backend.pos.dto.SaleItemResponse;
+import com.omniretail.backend.pos.dto.PaymentResponse;
 import com.omniretail.backend.pos.entity.CashMovement;
 import com.omniretail.backend.pos.entity.CashMovementType;
 import com.omniretail.backend.pos.entity.CashShiftStatus;
@@ -19,6 +23,7 @@ import com.omniretail.backend.pos.entity.PaymentMethod;
 import com.omniretail.backend.pos.entity.PaymentStatus;
 import com.omniretail.backend.pos.entity.Sale;
 import com.omniretail.backend.pos.entity.SaleItem;
+import com.omniretail.backend.pos.entity.SaleStatus;
 import com.omniretail.backend.pos.repository.CashMovementRepository;
 import com.omniretail.backend.pos.repository.CashShiftRepository;
 import com.omniretail.backend.pos.repository.PaymentRepository;
@@ -33,6 +38,10 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
+import java.time.Instant;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -128,6 +137,76 @@ public class SaleService {
             }
         }
         return SaleResponse.from(sale);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<SaleResponse> list(UUID branchId, SaleStatus status, Instant from, Instant to, Pageable pageable) {
+        AuthenticatedUser actor = currentUser.require();
+        capability.ensureTenantCapability(actor.tenantId(), SaasCapability.pos);
+        if (!branchAccess.resolve(actor).allows(branchId)) {
+            throw notFound("BRANCH_NOT_FOUND", "Sucursal no encontrada.");
+        }
+        if ((from == null) != (to == null) || (from != null && from.isAfter(to))) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "INVALID_SALE_DATE_RANGE",
+                    "Las fechas from y to son requeridas juntas y deben formar un rango válido.");
+        }
+        Page<Sale> page;
+        if (from != null && to != null) {
+            page = status == null
+                    ? sales.findByTenantIdAndBranchIdAndCreatedAtBetween(actor.tenantId(), branchId, from, to, pageable)
+                    : sales.findByTenantIdAndBranchIdAndStatusAndCreatedAtBetween(actor.tenantId(), branchId, status, from, to, pageable);
+        } else {
+            page = status == null
+                    ? sales.findByTenantIdAndBranchId(actor.tenantId(), branchId, pageable)
+                    : sales.findByTenantIdAndBranchIdAndStatus(actor.tenantId(), branchId, status, pageable);
+        }
+        return page.map(SaleResponse::from);
+    }
+
+    @Transactional(readOnly = true)
+    public SaleDetailResponse get(UUID id) {
+        AuthenticatedUser actor = currentUser.require();
+        capability.ensureTenantCapability(actor.tenantId(), SaasCapability.pos);
+        Sale sale = sales.findByTenantIdAndId(actor.tenantId(), id)
+                .orElseThrow(() -> notFound("SALE_NOT_FOUND", "Venta no encontrada."));
+        if (!branchAccess.resolve(actor).allows(sale.getBranchId())) {
+            throw notFound("SALE_NOT_FOUND", "Venta no encontrada.");
+        }
+        return new SaleDetailResponse(SaleResponse.from(sale),
+                items.findByTenantIdAndSaleId(actor.tenantId(), id).stream().map(SaleItemResponse::from).toList(),
+                payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(actor.tenantId(), id).stream().map(PaymentResponse::from).toList());
+    }
+
+    public SaleResponse voidSale(UUID id) {
+        AuthenticatedUser actor = currentUser.require();
+        capability.ensureTenantCapability(actor.tenantId(), SaasCapability.pos);
+        Sale sale = sales.findByTenantIdAndIdForUpdate(actor.tenantId(), id)
+                .orElseThrow(() -> notFound("SALE_NOT_FOUND", "Venta no encontrada."));
+        if (!branchAccess.resolve(actor).allows(sale.getBranchId())) {
+            throw notFound("SALE_NOT_FOUND", "Venta no encontrada.");
+        }
+        if (sale.getStatus() == SaleStatus.cancelled) {
+            throw new BusinessException(HttpStatus.CONFLICT, "SALE_ALREADY_VOIDED", "La venta ya está anulada.");
+        }
+        for (SaleItem item : items.findByTenantIdAndSaleId(actor.tenantId(), id)) {
+            Product product = products.findByTenantIdAndId(actor.tenantId(), item.getProductId()).orElse(null);
+            if (product != null && Boolean.TRUE.equals(product.getTrackingStock()) && product.getProductType() == ProductType.physical) {
+                inventory.incrementStock(new AddStockCommand(actor.tenantId(), sale.getBranchId(), product.getId(), item.getQuantity(),
+                        "Anulación venta POS #" + sale.getNumber(), "POS_SALE_VOID", sale.getId(), actor.userId()));
+            }
+        }
+        var shift = shifts.findByTenantIdAndId(actor.tenantId(), sale.getCashShiftId())
+                .filter(found -> found.getStatus() == CashShiftStatus.open);
+        if (shift.isPresent()) {
+            payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(actor.tenantId(), id).stream()
+                    .filter(payment -> payment.getMethod() == PaymentMethod.cash)
+                    .forEach(payment -> cashMovements.save(CashMovement.builder().tenantId(actor.tenantId())
+                            .cashShiftId(sale.getCashShiftId()).type(CashMovementType.out).amount(payment.getAmount())
+                            .reason("Anulación venta POS #" + sale.getNumber()).referenceType("sale_void")
+                            .referenceId(sale.getId()).createdByUserId(actor.userId()).build()));
+        }
+        sale.setStatus(SaleStatus.cancelled);
+        return SaleResponse.from(sales.save(sale));
     }
 
     private static BusinessException notFound(String code, String message) {
