@@ -6,6 +6,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 import com.omniretail.backend.administration.service.BranchAccessResolver;
+import com.omniretail.backend.administration.entity.Tenant;
+import com.omniretail.backend.administration.entity.TenantStatus;
+import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.inventory.service.InventoryStockService;
@@ -13,6 +16,7 @@ import com.omniretail.backend.pos.dto.CreateSaleRequest;
 import com.omniretail.backend.pos.entity.CashShift;
 import com.omniretail.backend.pos.entity.CashShiftStatus;
 import com.omniretail.backend.pos.entity.PaymentMethod;
+import com.omniretail.backend.pos.repository.CashMovementRepository;
 import com.omniretail.backend.pos.repository.CashShiftRepository;
 import com.omniretail.backend.pos.repository.PaymentRepository;
 import com.omniretail.backend.pos.repository.SaleItemRepository;
@@ -43,9 +47,11 @@ class SaleServiceTest {
     @Mock BranchAccessResolver branchAccess;
     @Mock CashShiftRepository shifts;
     @Mock ProductRepository products;
+    @Mock TenantRepository tenants;
     @Mock SaleRepository sales;
     @Mock SaleItemRepository items;
     @Mock PaymentRepository payments;
+    @Mock CashMovementRepository cashMovements;
     @Mock InventoryStockService inventory;
     @Mock DocumentCounterService counter;
     @InjectMocks SaleService service;
@@ -65,6 +71,9 @@ class SaleServiceTest {
         when(shifts.findByTenantIdAndBranchIdAndUserIdAndStatus(tenant, branch, user, CashShiftStatus.open))
                 .thenReturn(Optional.of(shift()));
         lenient().when(counter.nextPosSaleNumber(tenant)).thenReturn("POS-001");
+        lenient().when(tenants.findById(tenant)).thenReturn(Optional.of(Tenant.builder()
+                .name("Tenant").slug("tenant").status(TenantStatus.active).defaultCurrency("GTQ")
+                .timezone("America/Guatemala").build()));
     }
 
     @Test
@@ -83,6 +92,7 @@ class SaleServiceTest {
         verify(inventory).deductStock(any());
         verify(items).save(any());
         verify(payments).save(any());
+        verify(cashMovements).save(any());
     }
 
     @Test
