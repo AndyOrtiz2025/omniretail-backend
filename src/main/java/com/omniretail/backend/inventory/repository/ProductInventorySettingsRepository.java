@@ -29,7 +29,7 @@ public interface ProductInventorySettingsRepository
             @Param("productId") UUID productId,
             Pageable pageable);
 
-    @Modifying
+    @Modifying(clearAutomatically = true)
     @Query(value = """
             INSERT INTO product_inventory_settings
                 (tenant_id, branch_id, product_id, min_stock, reorder_point, default_location_id)

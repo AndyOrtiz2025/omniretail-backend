@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 023-inventory-product-settings
-      author: openai
+      author: melbyn
       changes:
         - createTable:
             tableName: product_inventory_settings
