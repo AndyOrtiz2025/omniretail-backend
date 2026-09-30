@@ -2,12 +2,16 @@ package com.omniretail.backend.catalog.repository;
 
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductStatus;
+import jakarta.persistence.LockModeType;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 public interface ProductRepository extends JpaRepository<Product, UUID> {
 
@@ -16,6 +20,11 @@ public interface ProductRepository extends JpaRepository<Product, UUID> {
     List<Product> findByTenantId(UUID tenantId);
 
     Optional<Product> findByTenantIdAndId(UUID tenantId, UUID id);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select product from Product product where product.tenantId = :tenantId and product.id = :id")
+    Optional<Product> findForUpdateByTenantIdAndId(
+            @Param("tenantId") UUID tenantId, @Param("id") UUID id);
 
     Optional<Product> findByTenantIdAndSku(UUID tenantId, String sku);
 

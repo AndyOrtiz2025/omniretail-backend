@@ -17,11 +17,13 @@ import com.omniretail.backend.catalog.dto.ProductDto;
 import com.omniretail.backend.catalog.dto.ProductTrackingDto;
 import com.omniretail.backend.catalog.entity.CategoryStatus;
 import com.omniretail.backend.catalog.entity.Product;
+import com.omniretail.backend.catalog.entity.ProductPriceHistory;
 import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.entity.UnitStatus;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.catalog.repository.ProductPriceHistoryRepository;
 import com.omniretail.backend.catalog.repository.UnitConversionRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
 import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
@@ -53,6 +55,9 @@ class ProductServiceTest {
 
     @Mock
     private ProductRepository productRepository;
+
+    @Mock
+    private ProductPriceHistoryRepository productPriceHistoryRepository;
 
     @Mock
     private CategoryRepository categoryRepository;
@@ -93,6 +98,7 @@ class ProductServiceTest {
     void setUp() {
         service = new ProductService(
                 productRepository,
+                productPriceHistoryRepository,
                 categoryRepository,
                 unitRepository,
                 unitConversionRepository,
@@ -145,6 +151,26 @@ class ProductServiceTest {
         assertThat(saved.getTrackingExpiration()).isEqualTo(request.tracking().expiration());
         assertThat(saved.getTrackingSerial()).isEqualTo(request.tracking().serial());
         assertThat(response.tracking()).isEqualTo(request.tracking());
+    }
+
+    @Test
+    void createAlwaysRegistersInitialPriceIncludingZero() {
+        allowValidCreation();
+        ProductCreateRequest request = request(
+                "SKU-ZERO", null, UUID.randomUUID(), UUID.randomUUID());
+        request = new ProductCreateRequest(
+                request.sku(), request.barcode(), request.name(), request.description(), request.brand(),
+                request.productType(), request.categoryId(), request.baseUnitId(), request.inventoryUnitId(),
+                request.saleUnitId(), BigDecimal.ZERO, request.status(), request.tracking(), request.channels());
+
+        service.create(request);
+
+        ArgumentCaptor<ProductPriceHistory> captor = ArgumentCaptor.forClass(ProductPriceHistory.class);
+        verify(productPriceHistoryRepository).saveAndFlush(captor.capture());
+        assertThat(captor.getValue().getTenantId()).isEqualTo(TENANT_ID);
+        assertThat(captor.getValue().getOldPrice()).isNull();
+        assertThat(captor.getValue().getNewPrice()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(captor.getValue().getReason()).isEqualTo("Creación de producto");
     }
 
     @Test

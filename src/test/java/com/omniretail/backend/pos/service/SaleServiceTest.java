@@ -111,10 +111,14 @@ class SaleServiceTest {
     @Test
     void rejectsPaymentsThatDoNotMatchTotal() {
         when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
-        assertThatThrownBy(() -> service.create(request(new BigDecimal("19.99"), BigDecimal.ONE)))
+        CreateSaleRequest request = request(new BigDecimal("19.99"), BigDecimal.ONE);
+        assertThatThrownBy(() -> service.create(request))
                 .isInstanceOfSatisfying(BusinessException.class,
                         ex -> assertThat(ex.getCode()).isEqualTo("PAYMENT_TOTAL_MISMATCH"));
-        verifyNoInteractions(sales, inventory, items, payments);
+        verify(sales).findByTenantIdAndConfirmationId(tenant, request.confirmationId());
+        verify(sales, never()).save(any());
+        verify(sales, never()).saveAndFlush(any());
+        verifyNoInteractions(inventory, items, payments, cashMovements, counter);
     }
 
     @Test
@@ -145,6 +149,7 @@ class SaleServiceTest {
 
     @Test
     void rejectsSaleWithoutConfirmationId() {
+        reset(branchAccess);
         CreateSaleRequest request = new CreateSaleRequest(
                 branch,
                 shiftId,
@@ -318,10 +323,14 @@ class SaleServiceTest {
     @Test
     void rejectsProductUnavailableForPos() {
         when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.empty());
-        assertThatThrownBy(() -> service.create(request(new BigDecimal("20.00"), BigDecimal.ONE)))
+        CreateSaleRequest request = request(new BigDecimal("20.00"), BigDecimal.ONE);
+        assertThatThrownBy(() -> service.create(request))
                 .isInstanceOfSatisfying(BusinessException.class,
                         ex -> assertThat(ex.getCode()).isEqualTo("PRODUCT_NOT_FOUND"));
-        verifyNoInteractions(sales, inventory, items, payments);
+        verify(sales).findByTenantIdAndConfirmationId(tenant, request.confirmationId());
+        verify(sales, never()).save(any());
+        verify(sales, never()).saveAndFlush(any());
+        verifyNoInteractions(inventory, items, payments, cashMovements, counter);
     }
 
     @Test
