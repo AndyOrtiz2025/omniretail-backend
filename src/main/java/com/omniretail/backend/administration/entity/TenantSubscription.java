@@ -9,6 +9,9 @@ import jakarta.persistence.Table;
 import jakarta.validation.constraints.NotNull;
 import java.time.Instant;
 import java.util.UUID;
+import java.util.List;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -34,6 +37,10 @@ public class TenantSubscription extends TenantScopedEntity {
     private TenantSubscriptionStatus status;
 
     @NotNull
+    @Column(name = "started_at", nullable = false)
+    private Instant startedAt;
+
+    @NotNull
     @Column(name = "current_period_start", nullable = false)
     private Instant currentPeriodStart;
 
@@ -41,6 +48,9 @@ public class TenantSubscription extends TenantScopedEntity {
     @Column(name = "current_period_end", nullable = false)
     private Instant currentPeriodEnd;
 
-    @Column(name = "cancel_at_period_end", nullable = false)
-    private boolean cancelAtPeriodEnd;
+    @NotNull
+    @Builder.Default
+    @JdbcTypeCode(SqlTypes.ARRAY)
+    @Column(name = "addon_codes", nullable = false, columnDefinition = "text[]")
+    private List<String> addonCodes = List.of();
 }

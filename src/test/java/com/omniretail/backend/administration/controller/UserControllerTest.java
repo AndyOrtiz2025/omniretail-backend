@@ -9,6 +9,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.omniretail.backend.TestcontainersConfiguration;
+import com.omniretail.backend.SubscriptionTestFixtures;
+import com.omniretail.backend.administration.repository.SaasPlanRepository;
+import com.omniretail.backend.administration.repository.TenantSubscriptionRepository;
 import com.omniretail.backend.administration.entity.Branch;
 import com.omniretail.backend.administration.entity.BranchStatus;
 import com.omniretail.backend.administration.entity.BranchType;
@@ -54,6 +57,9 @@ class UserControllerTest {
 
     @Autowired
     private TenantRepository tenantRepository;
+
+    @Autowired private SaasPlanRepository planRepository;
+    @Autowired private TenantSubscriptionRepository subscriptionRepository;
 
     @Autowired
     private UserRepository userRepository;
@@ -678,6 +684,36 @@ class UserControllerTest {
         return branchRepository.save(branch);
     }
 
+    @Test
+    void employeeLimitBlocksNextCreationButNeverEditingOrReactivation() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        Role role = persistRole(tenant, List.of());
+        User existing = persistEmployee(tenant, "inactive-" + UUID.randomUUID() + "@test.local", role.getId(),
+                "INACTIVE", UserStatus.inactive, List.of());
+        var limited = planRepository.saveAndFlush(com.omniretail.backend.administration.entity.SaasPlan.builder()
+                .code("limited-" + UUID.randomUUID()).name("Plan limitado")
+                .monthlyQuetzales(new java.math.BigDecimal("199.00"))
+                .status(com.omniretail.backend.administration.entity.PlanStatus.active)
+                .maxEmployees(1).capabilities(List.of()).build());
+        var subscription = subscriptionRepository.findByTenantIdAndStatusIn(tenant.getId(),
+                List.of(com.omniretail.backend.administration.entity.TenantSubscriptionStatus.active)).orElseThrow();
+        subscription.setPlanId(limited.getId());
+        subscriptionRepository.saveAndFlush(subscription);
+
+        mockMvc.perform(post(BASE_URL).header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Siguiente","email":"next-%s@test.local","employeeCode":"NEXT","roleId":"%s"}
+                                """.formatted(UUID.randomUUID(), role.getId())))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("PLAN_LIMIT_EXCEEDED"));
+        mockMvc.perform(put(BASE_URL + "/" + existing.getId()).header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Nombre actualizado","employeeCode":"INACTIVE","roleId":"%s","status":"active"}
+                                """.formatted(role.getId())))
+                .andExpect(status().isOk());
+    }
     private Tenant persistTenant() {
         String suffix = UUID.randomUUID().toString();
         Tenant tenant = Tenant.builder()
@@ -687,7 +723,9 @@ class UserControllerTest {
                 .defaultCurrency("GTQ")
                 .timezone("America/Guatemala")
                 .build();
-        return tenantRepository.save(tenant);
+        Tenant saved = tenantRepository.save(tenant);
+        SubscriptionTestFixtures.provisionBasic(subscriptionRepository, planRepository, saved.getId());
+        return saved;
     }
 
     private String tokenFor(Tenant tenant) {

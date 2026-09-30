@@ -7,6 +7,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.omniretail.backend.TestcontainersConfiguration;
+import com.omniretail.backend.SubscriptionTestFixtures;
+import com.omniretail.backend.administration.repository.SaasPlanRepository;
+import com.omniretail.backend.administration.repository.TenantSubscriptionRepository;
 import com.omniretail.backend.administration.entity.Branch;
 import com.omniretail.backend.administration.entity.BranchStatus;
 import com.omniretail.backend.administration.entity.BranchType;
@@ -51,6 +54,9 @@ class BranchControllerTest {
 
     @Autowired
     private TenantRepository tenantRepository;
+
+    @Autowired private SaasPlanRepository planRepository;
+    @Autowired private TenantSubscriptionRepository subscriptionRepository;
 
     @Autowired
     private UserRepository userRepository;
@@ -161,6 +167,37 @@ class BranchControllerTest {
                 .andExpect(jsonPath("$.code").value("BRANCH_NOT_FOUND"));
     }
 
+    @Test
+    void branchLimitCountsInactiveButAllowsEditingExistingBranch() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        var limited = planRepository.saveAndFlush(com.omniretail.backend.administration.entity.SaasPlan.builder()
+                .code("limited-" + UUID.randomUUID()).name("Plan limitado")
+                .monthlyQuetzales(new java.math.BigDecimal("199.00"))
+                .status(com.omniretail.backend.administration.entity.PlanStatus.active)
+                .maxBranches(1).capabilities(List.of()).build());
+        var subscription = subscriptionRepository.findByTenantIdAndStatusIn(tenant.getId(),
+                List.of(com.omniretail.backend.administration.entity.TenantSubscriptionStatus.active)).orElseThrow();
+        subscription.setPlanId(limited.getId());
+        subscriptionRepository.saveAndFlush(subscription);
+        Branch existing = Branch.builder().code("EXISTING").name("Existente")
+                .type(BranchType.main).status(BranchStatus.inactive).build();
+        existing.setTenantId(tenant.getId());
+        existing = branchRepository.saveAndFlush(existing);
+
+        mockMvc.perform(post(BASE_URL).header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"code":"NEXT","name":"Siguiente","type":"store"}
+                                """))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("PLAN_LIMIT_EXCEEDED"));
+        mockMvc.perform(put(BASE_URL + "/" + existing.getId()).header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Nombre actualizado","type":"main","status":"active"}
+                                """))
+                .andExpect(status().isOk());
+    }
     private Tenant persistTenant() {
         String suffix = UUID.randomUUID().toString();
         Tenant tenant = Tenant.builder()
@@ -170,7 +207,9 @@ class BranchControllerTest {
                 .defaultCurrency("GTQ")
                 .timezone("America/Guatemala")
                 .build();
-        return tenantRepository.save(tenant);
+        Tenant saved = tenantRepository.save(tenant);
+        SubscriptionTestFixtures.provisionBasic(subscriptionRepository, planRepository, saved.getId());
+        return saved;
     }
 
     private String tokenFor(Tenant tenant) {

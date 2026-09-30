@@ -45,9 +45,6 @@ app:
     issuer: omniretail-backend
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
-  saas-administration:
-    # Vacio por defecto: las mutaciones del catalogo global quedan bloqueadas hasta configurarlo.
-    platform-tenant-id: ${PLATFORM_TENANT_ID:}
 
 springdoc:
   api-docs:

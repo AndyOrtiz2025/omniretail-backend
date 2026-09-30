@@ -34,5 +34,5 @@ public interface UserRepository extends JpaRepository<User, UUID> {
 
     Optional<User> findByTenantIdAndEmployeeCode(UUID tenantId, String employeeCode);
 
-    long countByTenantIdAndTypeAndStatus(UUID tenantId, UserType type, UserStatus status);
+    long countByTenantIdAndTypeAndStatusNot(UUID tenantId, UserType type, UserStatus status);
 }

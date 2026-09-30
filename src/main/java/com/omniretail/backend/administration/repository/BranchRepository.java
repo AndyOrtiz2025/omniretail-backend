@@ -27,5 +27,5 @@ public interface BranchRepository extends JpaRepository<Branch, UUID> {
 
     boolean existsByTenantIdAndCodeIgnoreCaseAndIdNot(UUID tenantId, String code, UUID id);
 
-    long countByTenantIdAndStatus(UUID tenantId, BranchStatus status);
+    long countByTenantIdAndStatusNot(UUID tenantId, BranchStatus status);
 }

@@ -13,7 +13,7 @@ import org.springframework.data.repository.query.Param;
 
 public interface TenantSubscriptionRepository extends JpaRepository<TenantSubscription, UUID> {
 
-    boolean existsByPlanId(UUID planId);
+    Optional<TenantSubscription> findFirstByTenantIdOrderByStartedAtDescCreatedAtDesc(UUID tenantId);
 
     Optional<TenantSubscription> findByTenantIdAndId(UUID tenantId, UUID id);
 

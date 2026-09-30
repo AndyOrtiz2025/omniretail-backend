@@ -32,7 +32,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
-@SpringBootTest(properties = "app.saas-administration.platform-tenant-id=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+@SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @Import(TestcontainersConfiguration.class)
@@ -41,7 +41,7 @@ class SaasPlanControllerTest {
     private static final String BASE_URL = "/api/v1/admin/plans";
     private static final String PERMISSION_READ = "admin.plans.read";
     private static final String PERMISSION_MANAGE = "admin.plans.manage";
-    private static final UUID PLATFORM_TENANT_ID = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+    private static final UUID TENANT_ID = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
 
     @Autowired private MockMvc mockMvc;
     @Autowired private JdbcTemplate jdbc;
@@ -52,12 +52,12 @@ class SaasPlanControllerTest {
     @Autowired private JwtService jwtService;
 
     @BeforeEach
-    void ensurePlatformTenant() {
+    void ensureTenant() {
         jdbc.update("""
                 INSERT INTO tenants (id, name, slug, status, default_currency, timezone)
-                VALUES (?, 'Platform', 'platform-test', 'active', 'USD', 'UTC')
+                VALUES (?, 'Catalog tenant', 'catalog-test', 'active', 'USD', 'UTC')
                 ON CONFLICT (id) DO NOTHING
-                """, PLATFORM_TENANT_ID);
+                """, TENANT_ID);
     }
 
     @Test
@@ -67,93 +67,52 @@ class SaasPlanControllerTest {
 
     @Test
     void withoutPermissionReturnsForbidden() throws Exception {
-        Tenant tenant = tenantRepository.findById(PLATFORM_TENANT_ID).orElseThrow();
+        Tenant tenant = tenantRepository.findById(TENANT_ID).orElseThrow();
         mockMvc.perform(get(BASE_URL).header("Authorization", bearer(tokenFor(tenant, List.of()))))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
     }
 
     @Test
-    void readPermissionCanListPlansButCannotCreateOne() throws Exception {
-        Tenant tenant = tenantRepository.findById(PLATFORM_TENANT_ID).orElseThrow();
-        String token = tokenFor(tenant, List.of(PERMISSION_READ));
-
-        mockMvc.perform(get(BASE_URL).header("Authorization", bearer(token)))
-                .andExpect(status().isOk());
-
-        mockMvc.perform(post(BASE_URL)
-                        .header("Authorization", bearer(token))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"code":"read-only-%s","name":"Read only","maxBranches":1,"maxUsers":1,
-                                 "maxProducts":1,"priceMonthly":1,"currency":"USD","capabilities":["pos"]}
-                                """.formatted(UUID.randomUUID())))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+    void readPermissionCanListSeededBasicPlan() throws Exception {
+        Tenant tenant = tenantRepository.findById(TENANT_ID).orElseThrow();
+        mockMvc.perform(get(BASE_URL).param("activeOnly", "true")
+                        .header("Authorization", bearer(tokenFor(tenant, List.of(PERMISSION_READ)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.code == 'basic')].monthlyQuetzales").value(
+                        org.hamcrest.Matchers.hasItem(199.0)))
+                .andExpect(jsonPath("$[?(@.code == 'basic')].status").value(
+                        org.hamcrest.Matchers.hasItem("active")));
     }
 
     @Test
-    void invalidCreateRequestReturnsBadRequest() throws Exception {
-        Tenant tenant = tenantRepository.findById(PLATFORM_TENANT_ID).orElseThrow();
-        mockMvc.perform(post(BASE_URL)
-                        .header("Authorization", bearer(tokenFor(tenant, List.of(PERMISSION_MANAGE))))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"code":"INVALID CODE","name":"","maxBranches":0,"maxUsers":0,
-                                 "maxProducts":0,"priceMonthly":-1,"currency":"USD","capabilities":[]}
-                                """))
-                .andExpect(status().isBadRequest());
+    void readPermissionCanGetPlanWithNullableLimitsAndQuetzales() throws Exception {
+        Tenant tenant = tenantRepository.findById(TENANT_ID).orElseThrow();
+        UUID id = jdbc.queryForObject("SELECT id FROM saas_plans WHERE code = 'basic'", UUID.class);
+        mockMvc.perform(get(BASE_URL + "/" + id)
+                        .header("Authorization", bearer(tokenFor(tenant, List.of(PERMISSION_READ)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.monthlyQuetzales").value(199.0))
+                .andExpect(jsonPath("$.limits").isMap())
+                .andExpect(jsonPath("$.limits").isEmpty())
+                .andExpect(jsonPath("$.currency").doesNotExist())
+                .andExpect(jsonPath("$.maxProducts").doesNotExist());
     }
 
     @Test
-    void platformTenantCanCreatePlanWithExpectedContract() throws Exception {
-        Tenant tenant = tenantRepository.findById(PLATFORM_TENANT_ID).orElseThrow();
-        String code = "plan-" + UUID.randomUUID();
-        mockMvc.perform(post(BASE_URL)
-                        .header("Authorization", bearer(tokenFor(tenant, List.of(PERMISSION_MANAGE))))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"code":"%s","name":"Growth","description":"Plan growth",
-                                 "maxBranches":3,"maxUsers":10,"maxProducts":1000,
-                                 "priceMonthly":49.90,"currency":"USD",
-                                 "capabilities":["pos","inventory"]}
-                                """.formatted(code)))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.id").isNotEmpty())
-                .andExpect(jsonPath("$.code").value(code))
-                .andExpect(jsonPath("$.name").value("Growth"))
-                .andExpect(jsonPath("$.maxBranches").value(3))
-                .andExpect(jsonPath("$.priceMonthly").value(49.90))
-                .andExpect(jsonPath("$.currency").value("USD"))
-                .andExpect(jsonPath("$.capabilities.length()").value(2))
-                .andExpect(jsonPath("$.active").value(true));
-    }
-
-    @Test
-    void tenantWithPermissionCannotMutateGlobalPlanCatalog() throws Exception {
-        Tenant ordinaryTenant = persistTenant();
-        String code = "forbidden-" + UUID.randomUUID();
-
-        mockMvc.perform(post(BASE_URL)
-                        .header("Authorization", bearer(tokenFor(ordinaryTenant, List.of(PERMISSION_MANAGE))))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"code":"%s","name":"Forbidden","maxBranches":1,"maxUsers":1,
-                                 "maxProducts":1,"priceMonthly":1,"currency":"USD","capabilities":["pos"]}
-                                """.formatted(code)))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value("PLATFORM_TENANT_REQUIRED"));
-    }
-
-    private Tenant persistTenant() {
-        String suffix = UUID.randomUUID().toString();
-        return tenantRepository.save(Tenant.builder()
-                .name("Tenant " + suffix)
-                .slug("tenant-" + suffix)
-                .status(TenantStatus.active)
-                .defaultCurrency("USD")
-                .timezone("UTC")
-                .build());
+    void catalogMutationsDoNotExistEvenWithManagePermission() throws Exception {
+        Tenant tenant = tenantRepository.findById(TENANT_ID).orElseThrow();
+        String token = tokenFor(tenant, List.of(PERMISSION_READ, PERMISSION_MANAGE));
+        UUID id = jdbc.queryForObject("SELECT id FROM saas_plans WHERE code = 'basic'", UUID.class);
+        mockMvc.perform(post(BASE_URL).header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isMethodNotAllowed());
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put(BASE_URL + "/" + id)
+                        .header("Authorization", bearer(token)).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isMethodNotAllowed());
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete(BASE_URL + "/" + id)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isMethodNotAllowed());
     }
 
     private String tokenFor(Tenant tenant, List<String> permissions) {

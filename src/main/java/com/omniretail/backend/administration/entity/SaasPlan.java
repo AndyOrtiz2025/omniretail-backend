@@ -44,32 +44,26 @@ public class SaasPlan extends BaseEntity {
     private String description;
 
     @Positive
-    @Column(name = "max_branches", nullable = false)
-    private int maxBranches;
+    @Column(name = "max_branches")
+    private Integer maxBranches;
 
     @Positive
-    @Column(name = "max_users", nullable = false)
-    private int maxUsers;
-
-    @Positive
-    @Column(name = "max_products", nullable = false)
-    private int maxProducts;
+    @Column(name = "max_employees")
+    private Integer maxEmployees;
 
     @NotNull
     @DecimalMin("0.00")
-    @Column(name = "price_monthly", nullable = false, precision = 12, scale = 2)
-    private BigDecimal priceMonthly;
+    @Column(name = "monthly_quetzales", nullable = false, precision = 12, scale = 2)
+    private BigDecimal monthlyQuetzales;
 
     @NotNull
     @Enumerated(EnumType.STRING)
-    @Column(name = "currency", nullable = false, length = 3)
-    private SaasPlanCurrency currency;
+    @Column(name = "status", nullable = false, length = 20)
+    private PlanStatus status;
 
     @NotNull
     @JdbcTypeCode(SqlTypes.ARRAY)
     @Column(name = "capabilities", nullable = false, columnDefinition = "text[]")
     private List<String> capabilities;
 
-    @Column(name = "is_active", nullable = false)
-    private boolean active;
 }
