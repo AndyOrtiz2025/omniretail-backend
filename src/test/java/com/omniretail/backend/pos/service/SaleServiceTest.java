@@ -13,6 +13,7 @@ import com.omniretail.backend.administration.repository.BankAccountRepository;
 import com.omniretail.backend.administration.repository.BusinessCapabilitiesConfigRepository;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.inventory.service.InventoryStockService;
 import com.omniretail.backend.pos.dto.CreateSaleRequest;
 import com.omniretail.backend.pos.entity.CashShift;
@@ -57,6 +58,7 @@ class SaleServiceTest {
     @Mock CashShiftRepository shifts;
     @Mock ProductRepository products;
     @Mock TenantRepository tenants;
+    @Mock CustomerRepository customers;
     @Mock BusinessCapabilitiesConfigRepository businessConfig;
     @Mock BankAccountRepository bankAccounts;
     @Mock SaleRepository sales;
@@ -113,6 +115,131 @@ class SaleServiceTest {
                 .isInstanceOfSatisfying(BusinessException.class,
                         ex -> assertThat(ex.getCode()).isEqualTo("PAYMENT_TOTAL_MISMATCH"));
         verifyNoInteractions(sales, inventory, items, payments);
+    }
+
+    @Test
+    void calculatesDiscountAndTaxOnTheServer() {
+        Product product = product();
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product));
+        when(sales.saveAndFlush(any())).thenAnswer(invocation -> {
+            Sale sale = invocation.getArgument(0);
+            ReflectionTestUtils.setField(sale, "id", UUID.randomUUID());
+            return sale;
+        });
+
+        CreateSaleRequest request = new CreateSaleRequest(
+                branch,
+                shiftId,
+                null,
+                new BigDecimal("99.99"),
+                List.of(new CreateSaleRequest.Item(productId, BigDecimal.ONE, new BigDecimal("10.00"))),
+                List.of(new CreateSaleRequest.PaymentLine(PaymentMethod.cash, new BigDecimal("20.00"), null)),
+                UUID.randomUUID());
+
+        var response = service.create(request);
+
+        assertThat(response.discountTotal()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(response.taxTotal()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(response.total()).isEqualByComparingTo(new BigDecimal("20.00"));
+    }
+
+    @Test
+    void rejectsSaleWithoutConfirmationId() {
+        CreateSaleRequest request = new CreateSaleRequest(
+                branch,
+                shiftId,
+                null,
+                BigDecimal.ZERO,
+                List.of(new CreateSaleRequest.Item(productId, BigDecimal.ONE, BigDecimal.ZERO)),
+                List.of(new CreateSaleRequest.PaymentLine(PaymentMethod.cash, new BigDecimal("20.00"), null)),
+                null);
+
+        assertThatThrownBy(() -> service.create(request))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.getCode()).isEqualTo("CONFIRMATION_ID_REQUIRED"));
+    }
+
+    @Test
+    void rejectsDuplicateProducts() {
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+        CreateSaleRequest request = new CreateSaleRequest(
+                branch,
+                shiftId,
+                null,
+                BigDecimal.ZERO,
+                List.of(
+                        new CreateSaleRequest.Item(productId, BigDecimal.ONE, BigDecimal.ZERO),
+                        new CreateSaleRequest.Item(productId, BigDecimal.ONE, BigDecimal.ZERO)),
+                List.of(new CreateSaleRequest.PaymentLine(PaymentMethod.cash, new BigDecimal("40.00"), null)),
+                UUID.randomUUID());
+
+        assertThatThrownBy(() -> service.create(request))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.getCode()).isEqualTo("DUPLICATE_PRODUCT"));
+    }
+
+    @Test
+    void rejectsZeroAmountPayment() {
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+
+        assertThatThrownBy(() -> service.create(request(BigDecimal.ZERO, BigDecimal.ONE)))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.getCode()).isEqualTo("PAYMENT_AMOUNT_INVALID"));
+    }
+
+    @Test
+    void rejectsUnknownCustomer() {
+        UUID customerId = UUID.randomUUID();
+        when(customers.findByTenantIdAndId(tenant, customerId)).thenReturn(Optional.empty());
+        CreateSaleRequest request = new CreateSaleRequest(
+                branch,
+                shiftId,
+                customerId,
+                BigDecimal.ZERO,
+                List.of(new CreateSaleRequest.Item(productId, BigDecimal.ONE, BigDecimal.ZERO)),
+                List.of(new CreateSaleRequest.PaymentLine(PaymentMethod.cash, new BigDecimal("20.00"), null)),
+                UUID.randomUUID());
+
+        assertThatThrownBy(() -> service.create(request))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.getCode()).isEqualTo("CUSTOMER_NOT_FOUND"));
+    }
+
+    @Test
+    void storesTransferDataSeparately() {
+        UUID bankAccountId = UUID.randomUUID();
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+        when(bankAccounts.findByTenantIdAndId(tenant, bankAccountId)).thenReturn(Optional.of(
+                com.omniretail.backend.administration.entity.BankAccount.builder()
+                        .status(com.omniretail.backend.administration.entity.BankAccountStatus.active)
+                        .branchIds(List.of(branch))
+                        .build()));
+        when(sales.saveAndFlush(any())).thenAnswer(invocation -> {
+            Sale sale = invocation.getArgument(0);
+            ReflectionTestUtils.setField(sale, "id", UUID.randomUUID());
+            return sale;
+        });
+        CreateSaleRequest request = new CreateSaleRequest(
+                branch,
+                shiftId,
+                null,
+                BigDecimal.ZERO,
+                List.of(new CreateSaleRequest.Item(productId, BigDecimal.ONE, BigDecimal.ZERO)),
+                List.of(new CreateSaleRequest.PaymentLine(
+                        PaymentMethod.transfer,
+                        new BigDecimal("20.00"),
+                        bankAccountId,
+                        "COMPROBANTE-001",
+                        true)),
+                UUID.randomUUID());
+
+        service.create(request);
+
+        verify(payments).save(argThat(payment -> bankAccountId.equals(payment.getBankAccountId())
+                && "COMPROBANTE-001".equals(payment.getReference())
+                && Boolean.TRUE.equals(payment.getExternallyVerified())
+                && user.equals(payment.getVerifiedByUserId())
+                && payment.getVerifiedAt() != null));
     }
 
     @Test
@@ -292,7 +419,7 @@ class SaleServiceTest {
     private CreateSaleRequest request(BigDecimal payment, BigDecimal quantity) {
         return new CreateSaleRequest(branch, shiftId, null, BigDecimal.ZERO,
                 List.of(new CreateSaleRequest.Item(productId, quantity, BigDecimal.ZERO)),
-                List.of(new CreateSaleRequest.PaymentLine(PaymentMethod.cash, payment, null)));
+                List.of(new CreateSaleRequest.PaymentLine(PaymentMethod.cash, payment, null)), UUID.randomUUID());
     }
 
     private CreateSaleRequest request(PaymentMethod paymentMethod, String reference) {
@@ -302,7 +429,8 @@ class SaleServiceTest {
                 null,
                 BigDecimal.ZERO,
                 List.of(new CreateSaleRequest.Item(productId, BigDecimal.ONE, BigDecimal.ZERO)),
-                List.of(new CreateSaleRequest.PaymentLine(paymentMethod, new BigDecimal("20.00"), reference)));
+                List.of(new CreateSaleRequest.PaymentLine(paymentMethod, new BigDecimal("20.00"), reference)),
+                UUID.randomUUID());
     }
 
     private CashShift shift() {
