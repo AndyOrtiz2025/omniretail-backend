@@ -1,15 +1,19 @@
 package com.omniretail.backend.purchasing.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 
 import com.omniretail.backend.TestcontainersConfiguration;
 import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.purchasing.dto.CreateGoodsReceiptRequest;
+import com.omniretail.backend.purchasing.dto.CreateReceiptIncidentRequest;
 import com.omniretail.backend.purchasing.dto.GoodsReceiptItemRequest;
 import com.omniretail.backend.purchasing.dto.GoodsReceiptResponse;
+import com.omniretail.backend.purchasing.entity.ReceiptIncidentType;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
@@ -41,6 +45,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 class GoodsReceiptServiceConcurrencyTest {
 
     @Autowired private GoodsReceiptService service;
+    @Autowired private ReceiptIncidentService incidentService;
     @Autowired private JdbcTemplate jdbc;
     @MockitoBean private CurrentUser currentUser;
     @MockitoBean private PermissionResolver permissions;
@@ -48,7 +53,13 @@ class GoodsReceiptServiceConcurrencyTest {
 
     @BeforeEach
     void setUp() {
-        given(permissions.hasPermission(any(), any(), anyString())).willReturn(true);
+        given(permissions.hasPermission(any(), any(), anyString())).willReturn(false);
+        given(permissions.hasPermission(any(), any(), eq("receiving.receipts.create")))
+                .willReturn(true);
+        given(permissions.hasPermission(any(), any(), eq("receiving.receipts.confirm")))
+                .willReturn(true);
+        given(permissions.hasPermission(any(), any(), eq("receiving.incidents.manage")))
+                .willReturn(true);
         given(entitlements.resolve(any())).willReturn(
                 new TenantEntitlements(true, true, EnumSet.allOf(SaasCapability.class)));
     }
@@ -93,6 +104,68 @@ class GoodsReceiptServiceConcurrencyTest {
         assertThat(orderStatus(fixture)).isEqualTo("received");
     }
 
+    @Test
+    void incidentServiceRequiresManagePermissionWithoutController() {
+        Fixture fixture = fixture();
+        GoodsReceiptResponse receipt = create(fixture, "10");
+        given(permissions.hasPermission(any(), any(), eq("receiving.incidents.manage")))
+                .willReturn(false);
+
+        assertThatThrownBy(() -> incidentService.create(
+                        receipt.id(),
+                        new CreateReceiptIncidentRequest(
+                                ReceiptIncidentType.other, null, null, "Sin permiso")))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode()).isEqualTo("ACCESS_DENIED"));
+        assertThat(openIncidentCount(fixture, receipt.id())).isZero();
+    }
+
+    @Test
+    void concurrentIncidentCreationAndConfirmationSerializeOnReceipt() throws Exception {
+        Fixture fixture = fixture();
+        GoodsReceiptResponse receipt = create(fixture, "10");
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            Future<TimedOutcome> createIncident = executor.submit(
+                    () -> createIncident(receipt.id(), ready, start));
+            Future<TimedOutcome> confirmReceipt = executor.submit(
+                    () -> confirmTimed(receipt.id(), ready, start));
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            TimedOutcome incidentOutcome = createIncident.get(30, TimeUnit.SECONDS);
+            TimedOutcome confirmOutcome = confirmReceipt.get(30, TimeUnit.SECONDS);
+            assertThat(incidentOutcome.success()).isTrue();
+            assertThat(openIncidentCount(fixture, receipt.id())).isOne();
+            assertThat(movementCount(fixture)).isLessThanOrEqualTo(1L);
+            assertThat(balanceCount(fixture)).isLessThanOrEqualTo(1L);
+
+            if (receiptStatus(receipt.id()).equals("confirmed")) {
+                assertThat(confirmOutcome.success()).isTrue();
+                assertThat(incidentOutcome.completedAtNanos())
+                        .isGreaterThanOrEqualTo(confirmOutcome.completedAtNanos());
+                assertThat(balance(fixture)).isEqualByComparingTo("10");
+                assertThat(movementCount(fixture)).isOne();
+                assertThat(balanceCount(fixture)).isOne();
+            } else {
+                assertThat(confirmOutcome.success()).isFalse();
+                assertThat(confirmOutcome.code()).isEqualTo("RECEIPT_HAS_OPEN_INCIDENTS");
+                assertThat(incidentOutcome.completedAtNanos())
+                        .isLessThanOrEqualTo(confirmOutcome.completedAtNanos());
+                assertThat(receiptStatus(receipt.id())).isEqualTo("draft");
+                assertThat(movementCount(fixture)).isZero();
+                assertThat(balanceCount(fixture)).isZero();
+                assertThat(orderStatus(fixture)).isEqualTo("approved");
+            }
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+        }
+    }
+
     private List<Outcome> race(UUID firstId, UUID secondId) throws Exception {
         ExecutorService executor = Executors.newFixedThreadPool(2);
         CountDownLatch ready = new CountDownLatch(2);
@@ -120,6 +193,39 @@ class GoodsReceiptServiceConcurrencyTest {
             return new Outcome(true, null);
         } catch (BusinessException exception) {
             return new Outcome(false, exception.getCode());
+        }
+    }
+
+    private TimedOutcome createIncident(
+            UUID receiptId, CountDownLatch ready, CountDownLatch start) throws InterruptedException {
+        awaitRaceStart(ready, start);
+        try {
+            incidentService.create(
+                    receiptId,
+                    new CreateReceiptIncidentRequest(
+                            ReceiptIncidentType.other, null, null, "Incidencia concurrente"));
+            return new TimedOutcome(true, null, System.nanoTime());
+        } catch (BusinessException exception) {
+            return new TimedOutcome(false, exception.getCode(), System.nanoTime());
+        }
+    }
+
+    private TimedOutcome confirmTimed(
+            UUID receiptId, CountDownLatch ready, CountDownLatch start) throws InterruptedException {
+        awaitRaceStart(ready, start);
+        try {
+            service.confirm(receiptId);
+            return new TimedOutcome(true, null, System.nanoTime());
+        } catch (BusinessException exception) {
+            return new TimedOutcome(false, exception.getCode(), System.nanoTime());
+        }
+    }
+
+    private static void awaitRaceStart(CountDownLatch ready, CountDownLatch start)
+            throws InterruptedException {
+        ready.countDown();
+        if (!start.await(10, TimeUnit.SECONDS)) {
+            throw new IllegalStateException("Las operaciones concurrentes no iniciaron a tiempo.");
         }
     }
 
@@ -228,12 +334,26 @@ class GoodsReceiptServiceConcurrencyTest {
                 fixture.tenant());
     }
 
+    private long openIncidentCount(Fixture fixture, UUID receiptId) {
+        return jdbc.queryForObject("""
+                SELECT count(*) FROM receipt_incidents
+                WHERE tenant_id = ? AND goods_receipt_id = ? AND status = 'open'
+                """, Long.class, fixture.tenant(), receiptId);
+    }
+
+    private String receiptStatus(UUID receiptId) {
+        return jdbc.queryForObject(
+                "SELECT status FROM goods_receipts WHERE id = ?", String.class, receiptId);
+    }
+
     private String orderStatus(Fixture fixture) {
         return jdbc.queryForObject(
                 "SELECT status FROM purchase_orders WHERE id = ?", String.class, fixture.order());
     }
 
     private record Outcome(boolean success, String code) {}
+
+    private record TimedOutcome(boolean success, String code, long completedAtNanos) {}
 
     private record Fixture(
             UUID tenant, UUID branch, UUID order, UUID orderItem, UUID product, UUID location) {}
