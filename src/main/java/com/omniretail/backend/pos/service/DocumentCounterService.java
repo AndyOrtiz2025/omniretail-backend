@@ -18,6 +18,8 @@ public class DocumentCounterService {
     private static final String PURCHASE_ORDER_PREFIX = "OC-";
     private static final String GOODS_RECEIPT_COUNTER_KEY = "goods_receipt";
     private static final String GOODS_RECEIPT_PREFIX = "REC-";
+    private static final String CUSTOMER_COUNTER_KEY = "customer";
+    private static final String CUSTOMER_PREFIX = "CLI-";
 
     private final DocumentCounterRepository documentCounterRepository;
 
@@ -36,6 +38,11 @@ public class DocumentCounterService {
     public String nextGoodsReceiptNumber(UUID tenantId) {
         return nextNumber(
                 tenantId, GOODS_RECEIPT_COUNTER_KEY, GOODS_RECEIPT_PREFIX, "de recepcion de compra");
+    }
+
+    @Transactional
+    public String nextCustomerCode(UUID tenantId) {
+        return nextNumber(tenantId, CUSTOMER_COUNTER_KEY, CUSTOMER_PREFIX, "de clientes");
     }
 
     private String nextNumber(UUID tenantId, String counterKey, String prefix, String label) {
