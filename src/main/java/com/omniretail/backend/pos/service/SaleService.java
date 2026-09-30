@@ -43,6 +43,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.time.Instant;
+import java.util.stream.Collectors;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import lombok.RequiredArgsConstructor;
@@ -78,6 +79,14 @@ public class SaleService {
         if (request.confirmationId() != null) {
             var existing = sales.findByTenantIdAndConfirmationId(actor.tenantId(), request.confirmationId());
             if (existing.isPresent()) {
+                String currentFingerprint = fingerprint(request);
+                if (existing.get().getConfirmationFingerprint() != null
+                        && !existing.get().getConfirmationFingerprint().equals(currentFingerprint)) {
+                    throw new BusinessException(
+                            HttpStatus.CONFLICT,
+                            "IDEMPOTENCY_KEY_REUSED",
+                            "La confirmación ya fue usada con una venta distinta.");
+                }
                 return SaleResponse.from(existing.get());
             }
         }
@@ -138,9 +147,13 @@ public class SaleService {
                     .discount(lineDiscount).subtotal(lineSubtotal).build());
         }
         for (var paymentRequest : request.payments()) {
+            UUID bankAccountId = paymentRequest.method() == PaymentMethod.transfer
+                    ? UUID.fromString(paymentRequest.reference())
+                    : null;
             Payment payment = Payment.builder().saleId(sale.getId()).method(paymentRequest.method())
                     .status(PaymentStatus.approved).amount(paymentRequest.amount().setScale(2, RoundingMode.HALF_UP))
-                    .currency(tenant.getDefaultCurrency()).reference(paymentRequest.reference()).build();
+                    .currency(tenant.getDefaultCurrency()).bankAccountId(bankAccountId)
+                    .reference(paymentRequest.reference()).build();
             payment.setTenantId(actor.tenantId());
             payments.save(payment);
             if (paymentRequest.method() == PaymentMethod.cash) {
@@ -271,7 +284,26 @@ public class SaleService {
     }
 
     private static String fingerprint(CreateSaleRequest request) {
-        return Integer.toHexString(
-                request.items().toString().hashCode() * 31 + request.payments().toString().hashCode());
+        String payload = request.branchId()
+                + "|" + request.items().stream()
+                        .map(item -> item.productId() + ":" + item.quantity().stripTrailingZeros().toPlainString()
+                                + ":" + (item.discount() == null
+                                ? "0"
+                                : item.discount().stripTrailingZeros().toPlainString()))
+                        .sorted()
+                        .collect(Collectors.joining(","))
+                + "|" + request.payments().stream()
+                        .map(payment -> payment.method() + ":"
+                                + payment.amount().stripTrailingZeros().toPlainString()
+                                + ":" + payment.reference())
+                        .sorted()
+                        .collect(Collectors.joining(","));
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(payload.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (java.security.NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 no está disponible.", exception);
+        }
     }
 }

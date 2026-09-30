@@ -119,19 +119,42 @@ class SaleServiceTest {
     void returnsExistingSaleForRepeatedConfirmation() {
         UUID confirmationId = UUID.randomUUID();
         Sale existing = sale(SaleStatus.completed);
-        when(sales.findByTenantIdAndConfirmationId(tenant, confirmationId)).thenReturn(Optional.of(existing));
-
-        var result = service.create(new CreateSaleRequest(
+        CreateSaleRequest request = new CreateSaleRequest(
                 branch,
                 shiftId,
                 null,
                 BigDecimal.ZERO,
                 List.of(new CreateSaleRequest.Item(productId, BigDecimal.ONE, BigDecimal.ZERO)),
                 List.of(new CreateSaleRequest.PaymentLine(PaymentMethod.cash, new BigDecimal("20.00"), null)),
-                confirmationId));
+                confirmationId);
+        ReflectionTestUtils.setField(existing, "confirmationFingerprint",
+                ReflectionTestUtils.invokeMethod(service, "fingerprint", request));
+        when(sales.findByTenantIdAndConfirmationId(tenant, confirmationId)).thenReturn(Optional.of(existing));
+
+        var result = service.create(request);
 
         assertThat(result.id()).isEqualTo(existing.getId());
         verifyNoInteractions(inventory, items, payments, cashMovements);
+    }
+
+    @Test
+    void rejectsReusedConfirmationWithDifferentPayload() {
+        UUID confirmationId = UUID.randomUUID();
+        Sale existing = sale(SaleStatus.completed);
+        ReflectionTestUtils.setField(existing, "confirmationFingerprint", "distinct-fingerprint");
+        when(sales.findByTenantIdAndConfirmationId(tenant, confirmationId)).thenReturn(Optional.of(existing));
+        CreateSaleRequest request = new CreateSaleRequest(
+                branch,
+                shiftId,
+                null,
+                BigDecimal.ZERO,
+                List.of(new CreateSaleRequest.Item(productId, BigDecimal.ONE, BigDecimal.ZERO)),
+                List.of(new CreateSaleRequest.PaymentLine(PaymentMethod.cash, new BigDecimal("20.00"), null)),
+                confirmationId);
+
+        assertThatThrownBy(() -> service.create(request))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.getCode()).isEqualTo("IDEMPOTENCY_KEY_REUSED"));
     }
 
     @Test
