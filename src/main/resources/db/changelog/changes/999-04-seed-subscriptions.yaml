@@ -12,3 +12,15 @@ databaseChangeLog:
               FROM tenants t CROSS JOIN saas_plans p
               WHERE p.code = 'basic'
                 AND NOT EXISTS (SELECT 1 FROM tenant_subscriptions s WHERE s.tenant_id = t.id);
+  - changeSet:
+      id: 999-04-seed-demo-subscription-addons
+      author: joga17000
+      context: dev
+      changes:
+        - sql:
+            sql: |
+              UPDATE tenant_subscriptions
+              SET addon_codes = ARRAY['ecommerce_delivery', 'advanced_reports']::text[],
+                  updated_at = now()
+              WHERE tenant_id = '11111111-1111-1111-1111-111111111111'
+                AND status IN ('active', 'suspended');
