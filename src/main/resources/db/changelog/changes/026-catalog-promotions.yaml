@@ -242,3 +242,26 @@ databaseChangeLog:
             columns:
               - column:
                   name: promotion_id
+
+  - changeSet:
+      id: 026-catalog-promotions-admin-role-permissions
+      author: melbyn
+      context: dev
+      changes:
+        - sql:
+            sql: |
+              UPDATE roles
+              SET permissions = array_cat(
+                permissions,
+                ARRAY[
+                  'catalog.promotions.read',
+                  'catalog.promotions.manage'
+                ]::text[]
+              )
+              WHERE id = '33333333-3333-3333-3333-333333333331'
+                AND NOT (
+                  permissions @> ARRAY[
+                    'catalog.promotions.read',
+                    'catalog.promotions.manage'
+                  ]::text[]
+                );
