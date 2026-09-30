@@ -1,0 +1,140 @@
+package com.omniretail.backend.administration.controller;
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import com.omniretail.backend.TestcontainersConfiguration;
+import com.omniretail.backend.administration.entity.Role;
+import com.omniretail.backend.administration.entity.Tenant;
+import com.omniretail.backend.administration.entity.TenantStatus;
+import com.omniretail.backend.administration.entity.User;
+import com.omniretail.backend.administration.entity.UserType;
+import com.omniretail.backend.administration.repository.RoleRepository;
+import com.omniretail.backend.administration.repository.TenantRepository;
+import com.omniretail.backend.administration.repository.UserRepository;
+import com.omniretail.backend.auth.entity.Session;
+import com.omniretail.backend.auth.repository.SessionRepository;
+import com.omniretail.backend.auth.service.JwtService;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.List;
+import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.web.servlet.MockMvc;
+
+@SpringBootTest
+@AutoConfigureMockMvc
+@ActiveProfiles("test")
+@Import(TestcontainersConfiguration.class)
+class SaasPlanControllerTest {
+
+    private static final String BASE_URL = "/api/v1/admin/plans";
+    private static final String PERMISSION_READ = "admin.plans.read";
+    private static final String PERMISSION_MANAGE = "admin.plans.manage";
+    private static final UUID TENANT_ID = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+
+    @Autowired private MockMvc mockMvc;
+    @Autowired private JdbcTemplate jdbc;
+    @Autowired private TenantRepository tenantRepository;
+    @Autowired private RoleRepository roleRepository;
+    @Autowired private UserRepository userRepository;
+    @Autowired private SessionRepository sessionRepository;
+    @Autowired private JwtService jwtService;
+
+    @BeforeEach
+    void ensureTenant() {
+        jdbc.update("""
+                INSERT INTO tenants (id, name, slug, status, default_currency, timezone)
+                VALUES (?, 'Catalog tenant', 'catalog-test', 'active', 'USD', 'UTC')
+                ON CONFLICT (id) DO NOTHING
+                """, TENANT_ID);
+    }
+
+    @Test
+    void withoutTokenReturnsUnauthorized() throws Exception {
+        mockMvc.perform(get(BASE_URL)).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void withoutPermissionReturnsForbidden() throws Exception {
+        Tenant tenant = tenantRepository.findById(TENANT_ID).orElseThrow();
+        mockMvc.perform(get(BASE_URL).header("Authorization", bearer(tokenFor(tenant, List.of()))))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+    }
+
+    @Test
+    void readPermissionCanListSeededBasicPlan() throws Exception {
+        Tenant tenant = tenantRepository.findById(TENANT_ID).orElseThrow();
+        mockMvc.perform(get(BASE_URL).param("activeOnly", "true")
+                        .header("Authorization", bearer(tokenFor(tenant, List.of(PERMISSION_READ)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.code == 'basic')].monthlyQuetzales").value(
+                        org.hamcrest.Matchers.hasItem(199.0)))
+                .andExpect(jsonPath("$[?(@.code == 'basic')].status").value(
+                        org.hamcrest.Matchers.hasItem("active")));
+    }
+
+    @Test
+    void readPermissionCanGetPlanWithNullableLimitsAndQuetzales() throws Exception {
+        Tenant tenant = tenantRepository.findById(TENANT_ID).orElseThrow();
+        UUID id = jdbc.queryForObject("SELECT id FROM saas_plans WHERE code = 'basic'", UUID.class);
+        mockMvc.perform(get(BASE_URL + "/" + id)
+                        .header("Authorization", bearer(tokenFor(tenant, List.of(PERMISSION_READ)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.monthlyQuetzales").value(199.0))
+                .andExpect(jsonPath("$.limits").isMap())
+                .andExpect(jsonPath("$.limits").isEmpty())
+                .andExpect(jsonPath("$.currency").doesNotExist())
+                .andExpect(jsonPath("$.maxProducts").doesNotExist());
+    }
+
+    @Test
+    void catalogMutationsDoNotExistEvenWithManagePermission() throws Exception {
+        Tenant tenant = tenantRepository.findById(TENANT_ID).orElseThrow();
+        String token = tokenFor(tenant, List.of(PERMISSION_READ, PERMISSION_MANAGE));
+        UUID id = jdbc.queryForObject("SELECT id FROM saas_plans WHERE code = 'basic'", UUID.class);
+        mockMvc.perform(post(BASE_URL).header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isMethodNotAllowed());
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put(BASE_URL + "/" + id)
+                        .header("Authorization", bearer(token)).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isMethodNotAllowed());
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete(BASE_URL + "/" + id)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isMethodNotAllowed());
+    }
+
+    private String tokenFor(Tenant tenant, List<String> permissions) {
+        Role role = Role.builder().name("Plan actor " + UUID.randomUUID()).permissions(permissions).build();
+        role.setTenantId(tenant.getId());
+        role = roleRepository.save(role);
+        User user = User.builder()
+                .name("Plan actor")
+                .email("plan-" + UUID.randomUUID() + "@test.local")
+                .type(UserType.employee)
+                .roleId(role.getId())
+                .build();
+        user.setTenantId(tenant.getId());
+        user = userRepository.save(user);
+        Session session = sessionRepository.save(Session.builder()
+                .userId(user.getId())
+                .expiresAt(Instant.now().plus(1, ChronoUnit.HOURS))
+                .build());
+        return jwtService.generateToken(user, session);
+    }
+
+    private static String bearer(String token) {
+        return "Bearer " + token;
+    }
+}

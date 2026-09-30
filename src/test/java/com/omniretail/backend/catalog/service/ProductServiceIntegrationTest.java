@@ -4,6 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.BDDMockito.given;
 
 import com.omniretail.backend.TestcontainersConfiguration;
+import com.omniretail.backend.SubscriptionTestFixtures;
+import com.omniretail.backend.administration.repository.SaasPlanRepository;
+import com.omniretail.backend.administration.repository.TenantSubscriptionRepository;
 import com.omniretail.backend.administration.dto.BusinessConfigResponse;
 import com.omniretail.backend.administration.entity.BusinessPreset;
 import com.omniretail.backend.administration.entity.Tenant;
@@ -52,6 +55,9 @@ class ProductServiceIntegrationTest {
     @Autowired
     private TenantRepository tenantRepository;
 
+    @Autowired private SaasPlanRepository planRepository;
+    @Autowired private TenantSubscriptionRepository subscriptionRepository;
+
     @Autowired
     private CategoryRepository categoryRepository;
 
@@ -81,6 +87,7 @@ class ProductServiceIntegrationTest {
                 .defaultCurrency("GTQ")
                 .timezone("America/Guatemala")
                 .build());
+        SubscriptionTestFixtures.provisionBasic(subscriptionRepository, planRepository, tenant.getId());
         Category category = Category.builder()
                 .name("Categoria")
                 .slug("categoria-" + UUID.randomUUID())

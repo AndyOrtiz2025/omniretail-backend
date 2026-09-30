@@ -42,6 +42,7 @@ public class UserService {
     private final CurrentUser currentUser;
     private final PermissionResolver permissionResolver;
     private final SessionRevoker sessionRevoker;
+    private final PlanLimitGuard planLimitGuard;
 
     /** Este endpoint administra EMPLEADOS unicamente (ver GetEmployeesService.ts); nunca clientes. */
     public PageResponse<UserResponse> listUsers(UserStatus status, Pageable pageable) {
@@ -59,6 +60,7 @@ public class UserService {
 
     public UserResponse createUser(CreateUserRequest request) {
         UUID tenantId = currentUser.require().tenantId();
+        planLimitGuard.ensureEmployeeCreationAllowed(tenantId);
 
         String email = request.email().trim().toLowerCase();
         // Unico entre TODAS las tiendas para empleados (CreateEmployeeService.ts): un mismo correo

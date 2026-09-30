@@ -3,6 +3,9 @@ package com.omniretail.backend.ecommerce.service;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.omniretail.backend.TestcontainersConfiguration;
+import com.omniretail.backend.SubscriptionTestFixtures;
+import com.omniretail.backend.administration.repository.SaasPlanRepository;
+import com.omniretail.backend.administration.repository.TenantSubscriptionRepository;
 import com.omniretail.backend.ecommerce.dto.StorefrontCheckoutItemRequest;
 import com.omniretail.backend.ecommerce.dto.StorefrontCheckoutRequest;
 import com.omniretail.backend.shared.exception.BusinessException;
@@ -26,6 +29,8 @@ import org.springframework.test.context.ActiveProfiles;
 @Import(TestcontainersConfiguration.class)
 class StorefrontCheckoutServiceConcurrencyTest {
 
+    @Autowired private SaasPlanRepository saasPlans;
+    @Autowired private TenantSubscriptionRepository tenantSubscriptions;
     @Autowired private StorefrontCheckoutService checkoutService;
     @Autowired private JdbcTemplate jdbcTemplate;
 
@@ -83,6 +88,8 @@ class StorefrontCheckoutServiceConcurrencyTest {
         jdbcTemplate.update(
                 "INSERT INTO tenants (id, name, slug, status, default_currency, timezone) VALUES (?, ?, ?, 'active', 'GTQ', 'America/Guatemala')",
                 tenantId, "Tienda " + suffix, slug);
+        SubscriptionTestFixtures.provisionBasic(tenantSubscriptions, saasPlans, tenantId,
+                List.of("ecommerce_delivery"));
         jdbcTemplate.update(
                 "INSERT INTO branches (id, tenant_id, code, name, type, status) VALUES (?, ?, ?, ?, 'main', 'active')",
                 branchId, tenantId, "MAIN-" + suffix, "Principal " + suffix);
