@@ -5,6 +5,7 @@ import com.omniretail.backend.purchasing.entity.GoodsReceiptStatus;
 import java.math.BigDecimal;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
@@ -12,6 +13,8 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 public interface GoodsReceiptItemRepository extends JpaRepository<GoodsReceiptItem, UUID> {
+
+    Optional<GoodsReceiptItem> findByTenantIdAndId(UUID tenantId, UUID id);
 
     List<GoodsReceiptItem> findByTenantIdAndGoodsReceiptIdOrderByIdAsc(
             UUID tenantId, UUID goodsReceiptId);

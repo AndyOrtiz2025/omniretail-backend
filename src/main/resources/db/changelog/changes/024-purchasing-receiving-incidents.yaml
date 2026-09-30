@@ -1,0 +1,142 @@
+databaseChangeLog:
+  - changeSet:
+      id: 024-purchasing-receiving-incidents
+      author: melbyn
+      changes:
+        - createTable:
+            tableName: receipt_incidents
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: branch_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: goods_receipt_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: goods_receipt_item_id
+                  type: UUID
+              - column:
+                  name: incident_type
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: quantity_affected
+                  type: NUMERIC(12,3)
+              - column:
+                  name: notes
+                  type: VARCHAR(1000)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_by_user_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: resolved_by_user_id
+                  type: UUID
+              - column:
+                  name: resolved_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: receipt_incidents
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_receipt_incidents_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: receipt_incidents
+            baseColumnNames: branch_id
+            referencedTableName: branches
+            referencedColumnNames: id
+            constraintName: fk_receipt_incidents_branch
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: receipt_incidents
+            baseColumnNames: goods_receipt_id
+            referencedTableName: goods_receipts
+            referencedColumnNames: id
+            constraintName: fk_receipt_incidents_receipt
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: receipt_incidents
+            baseColumnNames: goods_receipt_item_id
+            referencedTableName: goods_receipt_items
+            referencedColumnNames: id
+            constraintName: fk_receipt_incidents_receipt_item
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: receipt_incidents
+            baseColumnNames: created_by_user_id
+            referencedTableName: users
+            referencedColumnNames: id
+            constraintName: fk_receipt_incidents_created_by
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: receipt_incidents
+            baseColumnNames: resolved_by_user_id
+            referencedTableName: users
+            referencedColumnNames: id
+            constraintName: fk_receipt_incidents_resolved_by
+            onDelete: RESTRICT
+        - sql:
+            sql: "ALTER TABLE receipt_incidents ADD CONSTRAINT ck_receipt_incidents_status CHECK (status IN ('open', 'resolved'))"
+        - sql:
+            sql: "ALTER TABLE receipt_incidents ADD CONSTRAINT ck_receipt_incidents_type CHECK (incident_type IN ('missing', 'damaged', 'wrong_item', 'expired', 'other'))"
+        - sql:
+            sql: "ALTER TABLE receipt_incidents ADD CONSTRAINT ck_receipt_incidents_quantity CHECK (quantity_affected IS NULL OR quantity_affected > 0)"
+        - sql:
+            sql: "ALTER TABLE receipt_incidents ADD CONSTRAINT ck_receipt_incidents_item_quantity CHECK ((goods_receipt_item_id IS NULL AND quantity_affected IS NULL) OR (goods_receipt_item_id IS NOT NULL AND quantity_affected IS NOT NULL))"
+        - sql:
+            sql: "ALTER TABLE receipt_incidents ADD CONSTRAINT ck_receipt_incidents_resolution CHECK ((status = 'open' AND resolved_by_user_id IS NULL AND resolved_at IS NULL) OR (status = 'resolved' AND resolved_by_user_id IS NOT NULL AND resolved_at IS NOT NULL))"
+        - createIndex:
+            tableName: receipt_incidents
+            indexName: idx_receipt_incidents_tenant_receipt
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: goods_receipt_id
+        - createIndex:
+            tableName: receipt_incidents
+            indexName: idx_receipt_incidents_tenant_branch
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: branch_id
