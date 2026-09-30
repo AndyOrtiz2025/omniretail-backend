@@ -1,0 +1,90 @@
+databaseChangeLog:
+  - changeSet:
+      id: 023-inventory-product-settings
+      author: melbyn
+      changes:
+        - createTable:
+            tableName: product_inventory_settings
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: branch_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: product_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: min_stock
+                  type: NUMERIC(12,3)
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: reorder_point
+                  type: NUMERIC(12,3)
+              - column:
+                  name: default_location_id
+                  type: UUID
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: product_inventory_settings
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_product_inventory_settings_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: product_inventory_settings
+            baseColumnNames: branch_id
+            referencedTableName: branches
+            referencedColumnNames: id
+            constraintName: fk_product_inventory_settings_branch
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: product_inventory_settings
+            baseColumnNames: product_id
+            referencedTableName: products
+            referencedColumnNames: id
+            constraintName: fk_product_inventory_settings_product
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: product_inventory_settings
+            baseColumnNames: default_location_id
+            referencedTableName: locations
+            referencedColumnNames: id
+            constraintName: fk_product_inventory_settings_default_location
+            onDelete: RESTRICT
+        - addUniqueConstraint:
+            tableName: product_inventory_settings
+            columnNames: tenant_id, branch_id, product_id
+            constraintName: uk_product_inventory_settings_logical
+        - sql:
+            sql: "ALTER TABLE product_inventory_settings ADD CONSTRAINT ck_product_inventory_settings_min_stock CHECK (min_stock >= 0)"
+        - sql:
+            sql: "ALTER TABLE product_inventory_settings ADD CONSTRAINT ck_product_inventory_settings_reorder_point CHECK (reorder_point IS NULL OR reorder_point >= 0)"
