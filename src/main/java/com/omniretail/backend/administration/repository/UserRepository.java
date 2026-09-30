@@ -17,6 +17,8 @@ public interface UserRepository extends JpaRepository<User, UUID> {
 
     boolean existsByTenantIdAndEmail(UUID tenantId, String email);
 
+    boolean existsByTenantIdAndEmailIgnoreCase(UUID tenantId, String email);
+
     Page<User> findByTenantId(UUID tenantId, Pageable pageable);
 
     Page<User> findByTenantIdAndType(UUID tenantId, UserType type, Pageable pageable);
