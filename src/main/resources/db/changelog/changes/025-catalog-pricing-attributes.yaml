@@ -216,3 +216,26 @@ databaseChangeLog:
                   name: tenant_id
               - column:
                   name: product_id
+
+  - changeSet:
+      id: 025-catalog-attributes-admin-role-permissions
+      author: melbyn
+      context: dev
+      changes:
+        - sql:
+            sql: |
+              UPDATE roles
+              SET permissions = array_cat(
+                permissions,
+                ARRAY[
+                  'catalog.attributes.read',
+                  'catalog.attributes.manage'
+                ]::text[]
+              )
+              WHERE id = '33333333-3333-3333-3333-333333333331'
+                AND NOT (
+                  permissions @> ARRAY[
+                    'catalog.attributes.read',
+                    'catalog.attributes.manage'
+                  ]::text[]
+                );
