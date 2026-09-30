@@ -1,0 +1,173 @@
+databaseChangeLog:
+  - changeSet:
+      id: 025-administration-plans-subscriptions
+      author: andy
+      changes:
+        - createTable:
+            tableName: saas_plans
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: code
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+                    unique: true
+                    uniqueConstraintName: uk_saas_plans_code
+              - column:
+                  name: name
+                  type: VARCHAR(100)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: description
+                  type: TEXT
+              - column:
+                  name: max_branches
+                  type: INT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: max_users
+                  type: INT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: max_products
+                  type: INT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: price_monthly
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: currency
+                  type: VARCHAR(3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: capabilities
+                  type: text[]
+                  constraints:
+                    nullable: false
+              - column:
+                  name: is_active
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - createTable:
+            tableName: tenant_subscriptions
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: plan_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: current_period_start
+                  type: TIMESTAMPTZ
+                  constraints:
+                    nullable: false
+              - column:
+                  name: current_period_end
+                  type: TIMESTAMPTZ
+                  constraints:
+                    nullable: false
+              - column:
+                  name: cancel_at_period_end
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: tenant_subscriptions
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_tenant_subscriptions_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: tenant_subscriptions
+            baseColumnNames: plan_id
+            referencedTableName: saas_plans
+            referencedColumnNames: id
+            constraintName: fk_tenant_subscriptions_plan
+            onDelete: RESTRICT
+        - createIndex:
+            tableName: tenant_subscriptions
+            indexName: idx_tenant_subscriptions_tenant
+            columns:
+              - column:
+                  name: tenant_id
+        - createIndex:
+            tableName: tenant_subscriptions
+            indexName: idx_tenant_subscriptions_plan
+            columns:
+              - column:
+                  name: plan_id
+        - sql:
+            sql: "ALTER TABLE saas_plans ADD CONSTRAINT ck_saas_plans_max_branches CHECK (max_branches > 0)"
+        - sql:
+            sql: "ALTER TABLE saas_plans ADD CONSTRAINT ck_saas_plans_max_users CHECK (max_users > 0)"
+        - sql:
+            sql: "ALTER TABLE saas_plans ADD CONSTRAINT ck_saas_plans_max_products CHECK (max_products > 0)"
+        - sql:
+            sql: "ALTER TABLE saas_plans ADD CONSTRAINT ck_saas_plans_price_monthly CHECK (price_monthly >= 0)"
+        - sql:
+            sql: "ALTER TABLE saas_plans ADD CONSTRAINT ck_saas_plans_currency CHECK (currency IN ('USD', 'NIO'))"
+        - sql:
+            sql: "ALTER TABLE tenant_subscriptions ADD CONSTRAINT ck_tenant_subscriptions_status CHECK (status IN ('active', 'past_due', 'canceled', 'trialing'))"
+        - sql:
+            sql: "ALTER TABLE tenant_subscriptions ADD CONSTRAINT ck_tenant_subscriptions_period CHECK (current_period_end > current_period_start)"
+        - sql:
+            sql: "CREATE UNIQUE INDEX uq_tenant_subscriptions_current ON tenant_subscriptions (tenant_id) WHERE status IN ('active', 'trialing')"

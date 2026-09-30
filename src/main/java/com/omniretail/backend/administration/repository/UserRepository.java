@@ -33,4 +33,6 @@ public interface UserRepository extends JpaRepository<User, UUID> {
     boolean existsByTenantIdAndEmployeeCodeIgnoreCaseAndIdNot(UUID tenantId, String employeeCode, UUID id);
 
     Optional<User> findByTenantIdAndEmployeeCode(UUID tenantId, String employeeCode);
+
+    long countByTenantIdAndTypeAndStatus(UUID tenantId, UserType type, UserStatus status);
 }
