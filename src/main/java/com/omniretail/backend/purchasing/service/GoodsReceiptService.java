@@ -23,11 +23,13 @@ import com.omniretail.backend.purchasing.entity.GoodsReceiptStatus;
 import com.omniretail.backend.purchasing.entity.PurchaseOrder;
 import com.omniretail.backend.purchasing.entity.PurchaseOrderItem;
 import com.omniretail.backend.purchasing.entity.PurchaseOrderStatus;
+import com.omniretail.backend.purchasing.entity.ReceiptIncidentStatus;
 import com.omniretail.backend.purchasing.repository.GoodsReceiptItemRepository;
 import com.omniretail.backend.purchasing.repository.GoodsReceiptItemRepository.ConfirmedQuantity;
 import com.omniretail.backend.purchasing.repository.GoodsReceiptRepository;
 import com.omniretail.backend.purchasing.repository.PurchaseOrderItemRepository;
 import com.omniretail.backend.purchasing.repository.PurchaseOrderRepository;
+import com.omniretail.backend.purchasing.repository.ReceiptIncidentRepository;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
@@ -77,6 +79,7 @@ public class GoodsReceiptService {
 
     private final GoodsReceiptRepository goodsReceiptRepository;
     private final GoodsReceiptItemRepository goodsReceiptItemRepository;
+    private final ReceiptIncidentRepository receiptIncidentRepository;
     private final PurchaseOrderRepository purchaseOrderRepository;
     private final PurchaseOrderItemRepository purchaseOrderItemRepository;
     private final ProductRepository productRepository;
@@ -192,6 +195,12 @@ public class GoodsReceiptService {
         PurchaseOrder order = requirePurchaseOrderForUpdate(tenantId, receipt.getPurchaseOrderId());
         requireBranchAccess(branchAccessResolver.resolve(actor), order.getBranchId());
         requireReceivable(order);
+        if (receiptIncidentRepository.existsByTenantIdAndGoodsReceiptIdAndStatus(
+                tenantId, receipt.getId(), ReceiptIncidentStatus.open)) {
+            throw BusinessException.conflict(
+                    "RECEIPT_HAS_OPEN_INCIDENTS",
+                    "La recepcion tiene incidencias abiertas que deben resolverse antes de confirmar.");
+        }
 
         List<GoodsReceiptItem> storedItems = goodsReceiptItemRepository
                 .findByTenantIdAndGoodsReceiptIdOrderByIdAsc(tenantId, receipt.getId());
