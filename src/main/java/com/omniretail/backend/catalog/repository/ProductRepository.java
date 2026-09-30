@@ -23,6 +23,8 @@ public interface ProductRepository extends JpaRepository<Product, UUID> {
 
     boolean existsByTenantIdAndBarcode(UUID tenantId, String barcode);
 
+    boolean existsByTenantIdAndBarcodeAndIdNot(UUID tenantId, String barcode, UUID id);
+
     List<Product> findByTenantIdAndStatus(UUID tenantId, ProductStatus status);
 
     List<Product> findByTenantIdAndStatusAndTrackingStockTrue(UUID tenantId, ProductStatus status);
@@ -35,4 +37,6 @@ public interface ProductRepository extends JpaRepository<Product, UUID> {
     List<Product> findByTenantIdAndCategoryId(UUID tenantId, UUID categoryId);
 
     boolean existsByTenantIdAndSku(UUID tenantId, String sku);
+
+    boolean existsByTenantIdAndSkuAndIdNot(UUID tenantId, String sku, UUID id);
 }

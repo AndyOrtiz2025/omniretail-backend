@@ -65,4 +65,17 @@ public interface InventoryBalanceRepository extends JpaRepository<InventoryBalan
     boolean existsPositiveStockByTenantIdAndLocationId(
             @Param("tenantId") UUID tenantId,
             @Param("locationId") UUID locationId);
+
+    @Query(
+            value = """
+                    SELECT EXISTS (
+                        SELECT 1 FROM inventory_balances
+                        WHERE tenant_id = :tenantId
+                          AND product_id = :productId
+                          AND (quantity > 0 OR reserved_quantity > 0)
+                    )
+                    """,
+            nativeQuery = true)
+    boolean existsPositiveStockByTenantIdAndProductId(
+            @Param("tenantId") UUID tenantId, @Param("productId") UUID productId);
 }

@@ -11,6 +11,30 @@ import org.springframework.data.repository.query.Param;
 
 public interface PurchaseOrderItemRepository extends JpaRepository<PurchaseOrderItem, UUID> {
 
+    boolean existsByTenantIdAndProductId(UUID tenantId, UUID productId);
+
+    @Query(
+            value = """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM purchase_order_items item
+                        JOIN purchase_orders purchase_order
+                          ON purchase_order.id = item.purchase_order_id
+                         AND purchase_order.tenant_id = :tenantId
+                        WHERE item.tenant_id = :tenantId
+                          AND item.product_id = :productId
+                          AND purchase_order.status IN (
+                              'draft',
+                              'pending_approval',
+                              'approved',
+                              'sent',
+                              'partially_received')
+                    )
+                    """,
+            nativeQuery = true)
+    boolean existsOpenOrderForProduct(
+            @Param("tenantId") UUID tenantId, @Param("productId") UUID productId);
+
     List<PurchaseOrderItem> findByTenantIdAndPurchaseOrderIdOrderByIdAsc(
             UUID tenantId, UUID purchaseOrderId);
 

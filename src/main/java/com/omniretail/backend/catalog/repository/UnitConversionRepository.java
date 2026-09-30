@@ -25,6 +25,8 @@ public interface UnitConversionRepository extends JpaRepository<UnitConversion, 
     boolean existsByTenantIdAndProductIdAndFromUnitIdAndToUnitId(
             UUID tenantId, UUID productId, UUID fromUnitId, UUID toUnitId);
 
+    boolean existsByTenantIdAndProductId(UUID tenantId, UUID productId);
+
     @Query("""
             SELECT conversion
             FROM UnitConversion conversion

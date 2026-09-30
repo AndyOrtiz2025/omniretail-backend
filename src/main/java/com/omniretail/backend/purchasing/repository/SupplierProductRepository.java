@@ -28,6 +28,8 @@ public interface SupplierProductRepository extends JpaRepository<SupplierProduct
 
     boolean existsByTenantIdAndProductIdAndActiveTrueAndPreferredTrue(UUID tenantId, UUID productId);
 
+    boolean existsByTenantIdAndProductId(UUID tenantId, UUID productId);
+
     @Query("""
             select sp from SupplierProduct sp
             where sp.tenantId = :tenantId

@@ -10,6 +10,20 @@ import org.springframework.data.repository.query.Param;
 
 public interface SaleItemRepository extends JpaRepository<SaleItem, UUID> {
 
+    @Query(
+            value = """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM sale_items item
+                        JOIN sales sale ON sale.id = item.sale_id
+                        WHERE sale.tenant_id = :tenantId
+                          AND item.product_id = :productId
+                    )
+                    """,
+            nativeQuery = true)
+    boolean existsByTenantIdAndProductId(
+            @Param("tenantId") UUID tenantId, @Param("productId") UUID productId);
+
     @Query("""
             SELECT item
             FROM SaleItem item, Sale sale

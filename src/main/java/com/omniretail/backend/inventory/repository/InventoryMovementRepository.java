@@ -13,6 +13,8 @@ import org.springframework.data.repository.query.Param;
 
 public interface InventoryMovementRepository extends JpaRepository<InventoryMovement, UUID> {
 
+    boolean existsByTenantIdAndProductId(UUID tenantId, UUID productId);
+
     @Query("""
             SELECT movement
             FROM InventoryMovement movement

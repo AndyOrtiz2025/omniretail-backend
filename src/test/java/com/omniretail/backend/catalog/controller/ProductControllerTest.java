@@ -5,10 +5,12 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.omniretail.backend.TestcontainersConfiguration;
@@ -21,6 +23,7 @@ import com.omniretail.backend.catalog.dto.ProductChannelsDto;
 import com.omniretail.backend.catalog.dto.ProductCreateRequest;
 import com.omniretail.backend.catalog.dto.ProductDto;
 import com.omniretail.backend.catalog.dto.ProductTrackingDto;
+import com.omniretail.backend.catalog.dto.ProductUpdateRequest;
 import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.service.ProductService;
@@ -249,6 +252,95 @@ class ProductControllerTest {
                 .andExpect(jsonPath("$.code").value("PRODUCT_SKU_CONFLICT"));
     }
 
+    @Test
+    void detailSupportsPublishedOrArchivedAndRequiresReadPermission() throws Exception {
+        UUID id = UUID.randomUUID();
+        given(productService.get(id)).willReturn(productDto());
+        mockMvc.perform(get(PRODUCTS + "/" + id).header("Authorization", token()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sku").value("SKU-001"));
+
+        given(permissionResolver.hasPermission(
+                any(UUID.class), any(UUID.class), eq("catalog.products.read"))).willReturn(false);
+        mockMvc.perform(get(PRODUCTS + "/" + id).header("Authorization", token()))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+    }
+
+    @Test
+    void detailMissingUsesProjectNotFoundContract() throws Exception {
+        UUID id = UUID.randomUUID();
+        given(productService.get(id)).willThrow(new BusinessException(
+                org.springframework.http.HttpStatus.NOT_FOUND,
+                "PRODUCT_NOT_FOUND",
+                "Producto no encontrado."));
+        mockMvc.perform(get(PRODUCTS + "/" + id).header("Authorization", token()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("PRODUCT_NOT_FOUND"));
+    }
+
+    @Test
+    void updateUsesExactPermissionAndDtoExcludesOwnedFields() throws Exception {
+        UUID id = UUID.randomUUID();
+        given(productService.update(eq(id), any(ProductUpdateRequest.class))).willReturn(productDto());
+        mockMvc.perform(put(PRODUCTS + "/" + id)
+                        .header("Authorization", token())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validUpdateBody()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sku").value("SKU-001"));
+
+        ArgumentCaptor<ProductUpdateRequest> captor = ArgumentCaptor.forClass(ProductUpdateRequest.class);
+        org.mockito.Mockito.verify(productService).update(eq(id), captor.capture());
+        assertThat(captor.getValue().getClass().getRecordComponents())
+                .extracting(java.lang.reflect.RecordComponent::getName)
+                .doesNotContain("id", "tenantId", "createdAt", "updatedAt", "status", "salePrice");
+
+        given(permissionResolver.hasPermission(
+                any(UUID.class), any(UUID.class), eq("catalog.products.update"))).willReturn(false);
+        mockMvc.perform(put(PRODUCTS + "/" + id)
+                        .header("Authorization", token())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validUpdateBody()))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void invalidUpdateUsesProjectValidationContract() throws Exception {
+        UUID id = UUID.randomUUID();
+
+        mockMvc.perform(put(PRODUCTS + "/" + id)
+                        .header("Authorization", token())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+    }
+
+    @Test
+    void archiveReturns204AndUsesUpdatePermission() throws Exception {
+        UUID id = UUID.randomUUID();
+        mockMvc.perform(delete(PRODUCTS + "/" + id).header("Authorization", token()))
+                .andExpect(status().isNoContent());
+        org.mockito.Mockito.verify(productService).archive(id);
+
+        given(permissionResolver.hasPermission(
+                any(UUID.class), any(UUID.class), eq("catalog.products.update"))).willReturn(false);
+        mockMvc.perform(delete(PRODUCTS + "/" + id).header("Authorization", token()))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void managementEndpointsRequireAuthentication() throws Exception {
+        UUID id = UUID.randomUUID();
+        mockMvc.perform(get(PRODUCTS + "/" + id)).andExpect(status().isUnauthorized());
+        mockMvc.perform(put(PRODUCTS + "/" + id)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validUpdateBody()))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(delete(PRODUCTS + "/" + id)).andExpect(status().isUnauthorized());
+    }
+
     private String token() {
         User user = User.builder()
                 .name("Usuario catalogo")
@@ -288,6 +380,25 @@ class ProductControllerTest {
                 }
                 """.formatted(
                 tenantProperty, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+    }
+
+    private static String validUpdateBody() {
+        return """
+                {
+                  "sku": "SKU-001",
+                  "barcode": "123456789",
+                  "name": "Producto",
+                  "description": "Descripcion",
+                  "brand": "Marca",
+                  "productType": "physical",
+                  "categoryId": "%s",
+                  "baseUnitId": "%s",
+                  "inventoryUnitId": null,
+                  "saleUnitId": null,
+                  "tracking": {"stock": true, "lot": true, "expiration": true, "serial": false},
+                  "channels": {"ecommerce": true, "pos": true, "mobileApp": false}
+                }
+                """.formatted(UUID.randomUUID(), UUID.randomUUID());
     }
 
     private static ProductDto productDto() {
