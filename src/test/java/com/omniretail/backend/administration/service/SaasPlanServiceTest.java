@@ -15,6 +15,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
 @ExtendWith(MockitoExtension.class)
 class SaasPlanServiceTest {
@@ -49,9 +50,10 @@ class SaasPlanServiceTest {
     void getReturnsSeedCatalogContract() {
         SaasPlan plan = basic();
         UUID id = UUID.randomUUID();
-        plan.setId(id);
+        ReflectionTestUtils.setField(plan, "id", id);
         when(plans.findById(id)).thenReturn(Optional.of(plan));
         assertThat(service.get(id).code()).isEqualTo("basic");
+        assertThat(service.get(id).id()).isEqualTo(id);
     }
 
     private SaasPlan basic() {

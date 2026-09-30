@@ -60,18 +60,16 @@ public class PlanLimitGuard {
         var subscription = subscriptionRepository.findByTenantIdAndStatusIn(
                 tenantId, List.of(TenantSubscriptionStatus.active, TenantSubscriptionStatus.suspended))
                 .filter(current -> current.getStatus() == TenantSubscriptionStatus.active)
-                .orElseThrow(() -> BusinessException.conflict(
-                        "SUBSCRIPTION_INACTIVE", "El negocio no tiene una suscripcion activa."));
+                .orElseThrow(() -> BusinessException.forbidden(
+                        "SUBSCRIPTION_INACTIVE", "La suscripción del negocio no está activa."));
         return planRepository.findById(subscription.getPlanId())
                 .filter(plan -> plan.getStatus() == PlanStatus.active)
-                .orElseThrow(() -> BusinessException.conflict("PLAN_INACTIVE", "El plan no esta activo."));
+                .orElseThrow(() -> BusinessException.forbidden("PLAN_INACTIVE", "El plan del negocio no está activo."));
     }
 
     private static void ensureCreationAllowed(LimitUsage usage) {
         if (usage.reached()) {
-            throw BusinessException.conflict("PLAN_LIMIT_EXCEEDED",
-                    "No se puede crear otro recurso de " + usage.key() + ": uso " + usage.current()
-                            + ", limite " + usage.limit() + ".");
+            throw BusinessException.conflict("LIMIT_REACHED", "Alcanzaste el límite de tu plan actual.");
         }
     }
 

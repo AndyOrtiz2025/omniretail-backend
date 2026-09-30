@@ -706,7 +706,9 @@ class UserControllerTest {
                         .content("""
                                 {"name":"Siguiente","email":"next-%s@test.local","employeeCode":"NEXT","roleId":"%s"}
                                 """.formatted(UUID.randomUUID(), role.getId())))
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("PLAN_LIMIT_EXCEEDED"));
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("LIMIT_REACHED"))
+                .andExpect(jsonPath("$.message").value("Alcanzaste el límite de tu plan actual."));
         mockMvc.perform(put(BASE_URL + "/" + existing.getId()).header("Authorization", bearer(token))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""

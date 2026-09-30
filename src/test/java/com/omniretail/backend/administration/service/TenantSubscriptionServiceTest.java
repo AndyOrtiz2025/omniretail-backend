@@ -48,8 +48,12 @@ class TenantSubscriptionServiceTest {
  }
 
  void stubSnapshot() {
+  stubSnapshot(Optional.of(subscription));
+ }
+
+ void stubSnapshot(Optional<TenantSubscription> current) {
   when(tenants.findByIdForUpdate(tenantId)).thenReturn(Optional.of(Tenant.builder().build()));
-  when(subscriptions.findCurrentByTenantIdForUpdate(eq(tenantId), anyCollection())).thenReturn(Optional.of(subscription));
+  when(subscriptions.findCurrentByTenantIdForUpdate(eq(tenantId), anyCollection())).thenReturn(current);
   when(plans.findById(planId)).thenReturn(Optional.of(plan));
   when(limits.evaluateUsage(tenantId, plan)).thenReturn(new PlanLimitGuard.PlanUsage(
     new PlanLimitGuard.LimitUsage("maxEmployees", 4, null, null, false, false),
@@ -115,9 +119,8 @@ class TenantSubscriptionServiceTest {
  }
 
  @Test void cancelledHistoryCanStillBeReadWithoutReactivation() {
-  stubSnapshot();
+  stubSnapshot(Optional.empty());
   subscription.setStatus(TenantSubscriptionStatus.cancelled);
-  when(subscriptions.findCurrentByTenantIdForUpdate(eq(tenantId), anyCollection())).thenReturn(Optional.empty());
   when(subscriptions.findFirstByTenantIdOrderByStartedAtDescCreatedAtDesc(tenantId)).thenReturn(Optional.of(subscription));
   assertThat(service.getCurrent().subscription().status()).isEqualTo(TenantSubscriptionStatus.cancelled);
   verify(invoices, never()).save(any());

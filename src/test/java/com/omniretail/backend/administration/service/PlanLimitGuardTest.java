@@ -26,6 +26,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.HttpStatus;
 
 @ExtendWith(MockitoExtension.class)
 class PlanLimitGuardTest {
@@ -96,8 +97,44 @@ class PlanLimitGuardTest {
     void missingSubscriptionFailsClosedBeforeCounting() {
         when(tenants.findByIdForUpdate(tenantId)).thenReturn(Optional.of(new Tenant()));
         assertThatThrownBy(() -> guard.ensureEmployeeCreationAllowed(tenantId))
-                .isInstanceOfSatisfying(BusinessException.class,
-                        exception -> assertThat(exception.getCode()).isEqualTo("SUBSCRIPTION_INACTIVE"));
+                .isInstanceOfSatisfying(BusinessException.class, exception -> {
+                    assertThat(exception.getCode()).isEqualTo("SUBSCRIPTION_INACTIVE");
+                    assertThat(exception.getStatus()).isEqualTo(HttpStatus.FORBIDDEN);
+                    assertThat(exception.getMessage()).isEqualTo("La suscripción del negocio no está activa.");
+                });
+        verifyNoInteractions(users, branches, plans);
+    }
+
+    @Test
+    void suspendedSubscriptionIsForbiddenBeforeCounting() {
+        when(tenants.findByIdForUpdate(tenantId)).thenReturn(Optional.of(new Tenant()));
+        when(subscriptions.findByTenantIdAndStatusIn(tenantId,
+                List.of(TenantSubscriptionStatus.active, TenantSubscriptionStatus.suspended)))
+                .thenReturn(Optional.of(TenantSubscription.builder()
+                        .planId(planId).status(TenantSubscriptionStatus.suspended).build()));
+        assertThatThrownBy(() -> guard.ensureBranchCreationAllowed(tenantId))
+                .isInstanceOfSatisfying(BusinessException.class, exception -> {
+                    assertThat(exception.getCode()).isEqualTo("SUBSCRIPTION_INACTIVE");
+                    assertThat(exception.getStatus()).isEqualTo(HttpStatus.FORBIDDEN);
+                    assertThat(exception.getMessage()).isEqualTo("La suscripción del negocio no está activa.");
+                });
+        verifyNoInteractions(users, branches, plans);
+    }
+
+    @Test
+    void archivedPlanIsForbiddenBeforeCounting() {
+        SaasPlan plan = limits(null, null);
+        plan.setStatus(PlanStatus.archived);
+        setup(plan);
+        assertInactivePlan(() -> guard.ensureEmployeeCreationAllowed(tenantId));
+        verifyNoInteractions(users, branches);
+    }
+
+    @Test
+    void missingPlanIsForbiddenBeforeCounting() {
+        setup(limits(null, null));
+        when(plans.findById(planId)).thenReturn(Optional.empty());
+        assertInactivePlan(() -> guard.ensureBranchCreationAllowed(tenantId));
         verifyNoInteractions(users, branches);
     }
 
@@ -114,7 +151,18 @@ class PlanLimitGuardTest {
     }
 
     private static void assertLimit(Runnable action) {
-        assertThatThrownBy(action::run).isInstanceOfSatisfying(BusinessException.class,
-                exception -> assertThat(exception.getCode()).isEqualTo("PLAN_LIMIT_EXCEEDED"));
+        assertThatThrownBy(action::run).isInstanceOfSatisfying(BusinessException.class, exception -> {
+            assertThat(exception.getCode()).isEqualTo("LIMIT_REACHED");
+            assertThat(exception.getStatus()).isEqualTo(HttpStatus.CONFLICT);
+            assertThat(exception.getMessage()).isEqualTo("Alcanzaste el límite de tu plan actual.");
+        });
+    }
+
+    private static void assertInactivePlan(Runnable action) {
+        assertThatThrownBy(action::run).isInstanceOfSatisfying(BusinessException.class, exception -> {
+            assertThat(exception.getCode()).isEqualTo("PLAN_INACTIVE");
+            assertThat(exception.getStatus()).isEqualTo(HttpStatus.FORBIDDEN);
+            assertThat(exception.getMessage()).isEqualTo("El plan del negocio no está activo.");
+        });
     }
 }

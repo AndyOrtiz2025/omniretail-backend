@@ -61,7 +61,7 @@ class PlanLimitGuardConcurrencyTest {
             assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
             start.countDown();
             assertThat(List.of(first.get(20, TimeUnit.SECONDS), second.get(20, TimeUnit.SECONDS)))
-                    .containsExactlyInAnyOrder("created", "PLAN_LIMIT_EXCEEDED");
+                    .containsExactlyInAnyOrder("created", "LIMIT_REACHED");
             assertThat(branches.countByTenantIdAndStatusNot(tenant.getId(), BranchStatus.archived)).isEqualTo(1);
         } finally {
             start.countDown();

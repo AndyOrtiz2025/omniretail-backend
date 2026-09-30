@@ -190,7 +190,9 @@ class BranchControllerTest {
                         .content("""
                                 {"code":"NEXT","name":"Siguiente","type":"store"}
                                 """))
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("PLAN_LIMIT_EXCEEDED"));
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("LIMIT_REACHED"))
+                .andExpect(jsonPath("$.message").value("Alcanzaste el límite de tu plan actual."));
         mockMvc.perform(put(BASE_URL + "/" + existing.getId()).header("Authorization", bearer(token))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
