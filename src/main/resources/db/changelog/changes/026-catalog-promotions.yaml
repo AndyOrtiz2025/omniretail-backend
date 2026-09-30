@@ -1,0 +1,267 @@
+databaseChangeLog:
+  - changeSet:
+      id: 026-catalog-promotions
+      author: melbyn
+      changes:
+        - createTable:
+            tableName: promotions
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: name
+                  type: VARCHAR(200)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: discount_type
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: discount_value
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: starts_at
+                  type: TIMESTAMPTZ
+                  constraints:
+                    nullable: false
+              - column:
+                  name: ends_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  defaultValue: active
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_by_user_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: cancelled_by_user_id
+                  type: UUID
+              - column:
+                  name: cancelled_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: promotions
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_promotions_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: promotions
+            baseColumnNames: created_by_user_id
+            referencedTableName: users
+            referencedColumnNames: id
+            constraintName: fk_promotions_created_by
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: promotions
+            baseColumnNames: cancelled_by_user_id
+            referencedTableName: users
+            referencedColumnNames: id
+            constraintName: fk_promotions_cancelled_by
+            onDelete: RESTRICT
+        - sql:
+            sql: "ALTER TABLE promotions ADD CONSTRAINT ck_promotions_name CHECK (name = btrim(name) AND name <> '')"
+        - sql:
+            sql: "ALTER TABLE promotions ADD CONSTRAINT ck_promotions_discount_type CHECK (discount_type IN ('percentage', 'fixed_price'))"
+        - sql:
+            sql: "ALTER TABLE promotions ADD CONSTRAINT ck_promotions_status CHECK (status IN ('active', 'cancelled'))"
+        - sql:
+            sql: "ALTER TABLE promotions ADD CONSTRAINT ck_promotions_dates CHECK (ends_at IS NULL OR ends_at > starts_at)"
+        - sql:
+            sql: "ALTER TABLE promotions ADD CONSTRAINT ck_promotions_discount_value CHECK ((discount_type = 'percentage' AND discount_value > 0 AND discount_value <= 100) OR (discount_type = 'fixed_price' AND discount_value >= 0))"
+        - sql:
+            sql: "ALTER TABLE promotions ADD CONSTRAINT ck_promotions_cancellation CHECK ((status = 'active' AND cancelled_by_user_id IS NULL AND cancelled_at IS NULL) OR (status = 'cancelled' AND cancelled_by_user_id IS NOT NULL AND cancelled_at IS NOT NULL))"
+        - createIndex:
+            tableName: promotions
+            indexName: idx_promotions_tenant_status_dates
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: status
+              - column:
+                  name: starts_at
+              - column:
+                  name: ends_at
+        - addUniqueConstraint:
+            tableName: promotions
+            columnNames: tenant_id, id
+            constraintName: uk_promotions_tenant_id
+        - addUniqueConstraint:
+            tableName: products
+            columnNames: tenant_id, id
+            constraintName: uk_products_tenant_id
+
+        - createTable:
+            tableName: promotion_products
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: promotion_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: product_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: promotion_products
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_promotion_products_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: promotion_products
+            baseColumnNames: tenant_id, promotion_id
+            referencedTableName: promotions
+            referencedColumnNames: tenant_id, id
+            constraintName: fk_promotion_products_promotion
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: promotion_products
+            baseColumnNames: tenant_id, product_id
+            referencedTableName: products
+            referencedColumnNames: tenant_id, id
+            constraintName: fk_promotion_products_product
+            onDelete: RESTRICT
+        - addUniqueConstraint:
+            tableName: promotion_products
+            columnNames: tenant_id, promotion_id, product_id
+            constraintName: uk_promotion_products_tenant_promotion_product
+        - createIndex:
+            tableName: promotion_products
+            indexName: idx_promotion_products_tenant_product
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: product_id
+        - createIndex:
+            tableName: promotion_products
+            indexName: idx_promotion_products_tenant_promotion
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: promotion_id
+
+        - addColumn:
+            tableName: sale_items
+            columns:
+              - column:
+                  name: promotion_id
+                  type: UUID
+        - addForeignKeyConstraint:
+            baseTableName: sale_items
+            baseColumnNames: promotion_id
+            referencedTableName: promotions
+            referencedColumnNames: id
+            constraintName: fk_sale_items_promotion
+            onDelete: RESTRICT
+        - createIndex:
+            tableName: sale_items
+            indexName: idx_sale_items_promotion
+            columns:
+              - column:
+                  name: promotion_id
+
+        - addColumn:
+            tableName: order_items
+            columns:
+              - column:
+                  name: promotion_id
+                  type: UUID
+        - addForeignKeyConstraint:
+            baseTableName: order_items
+            baseColumnNames: promotion_id
+            referencedTableName: promotions
+            referencedColumnNames: id
+            constraintName: fk_order_items_promotion
+            onDelete: RESTRICT
+        - createIndex:
+            tableName: order_items
+            indexName: idx_order_items_promotion
+            columns:
+              - column:
+                  name: promotion_id
+
+  - changeSet:
+      id: 026-catalog-promotions-admin-role-permissions
+      author: melbyn
+      context: dev
+      changes:
+        - sql:
+            sql: |
+              UPDATE roles
+              SET permissions = array_cat(
+                permissions,
+                ARRAY[
+                  'catalog.promotions.read',
+                  'catalog.promotions.manage'
+                ]::text[]
+              )
+              WHERE id = '33333333-3333-3333-3333-333333333331'
+                AND NOT (
+                  permissions @> ARRAY[
+                    'catalog.promotions.read',
+                    'catalog.promotions.manage'
+                  ]::text[]
+                );

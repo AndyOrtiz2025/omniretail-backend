@@ -3,6 +3,7 @@ package com.omniretail.backend.catalog.repository;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductStatus;
 import jakarta.persistence.LockModeType;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -18,6 +19,8 @@ public interface ProductRepository extends JpaRepository<Product, UUID> {
     Page<Product> findByTenantId(UUID tenantId, Pageable pageable);
 
     List<Product> findByTenantId(UUID tenantId);
+
+    List<Product> findByTenantIdAndIdIn(UUID tenantId, Collection<UUID> ids);
 
     Optional<Product> findByTenantIdAndId(UUID tenantId, UUID id);
 

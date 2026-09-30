@@ -42,6 +42,9 @@ public class OrderItem {
     @Column(name = "product_id", nullable = false, updatable = false)
     private UUID productId;
 
+    @Column(name = "promotion_id", updatable = false)
+    private UUID promotionId;
+
     @NotBlank
     @Size(max = 50)
     @Column(name = "sku_snapshot", nullable = false, updatable = false)
