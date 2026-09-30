@@ -17,7 +17,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/admin/subscriptions")
-@RequirePermission("administration.subscriptions.manage")
+@RequirePermission("admin.subscriptions.manage")
 @RequiredArgsConstructor
 public class TenantSubscriptionController {
 

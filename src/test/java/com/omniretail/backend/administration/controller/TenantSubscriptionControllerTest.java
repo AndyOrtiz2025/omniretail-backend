@@ -41,7 +41,7 @@ import org.springframework.test.web.servlet.MockMvc;
 class TenantSubscriptionControllerTest {
 
     private static final String BASE_URL = "/api/v1/admin/subscriptions";
-    private static final String PERMISSION = "administration.subscriptions.manage";
+    private static final String PERMISSION = "admin.subscriptions.manage";
 
     @Autowired private MockMvc mockMvc;
     @Autowired private TenantRepository tenantRepository;

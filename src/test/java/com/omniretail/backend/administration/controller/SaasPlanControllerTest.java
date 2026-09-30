@@ -39,7 +39,8 @@ import org.springframework.test.web.servlet.MockMvc;
 class SaasPlanControllerTest {
 
     private static final String BASE_URL = "/api/v1/admin/plans";
-    private static final String PERMISSION = "administration.plans.manage";
+    private static final String PERMISSION_READ = "admin.plans.read";
+    private static final String PERMISSION_MANAGE = "admin.plans.manage";
     private static final UUID PLATFORM_TENANT_ID = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
 
     @Autowired private MockMvc mockMvc;
@@ -73,10 +74,29 @@ class SaasPlanControllerTest {
     }
 
     @Test
+    void readPermissionCanListPlansButCannotCreateOne() throws Exception {
+        Tenant tenant = tenantRepository.findById(PLATFORM_TENANT_ID).orElseThrow();
+        String token = tokenFor(tenant, List.of(PERMISSION_READ));
+
+        mockMvc.perform(get(BASE_URL).header("Authorization", bearer(token)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"code":"read-only-%s","name":"Read only","maxBranches":1,"maxUsers":1,
+                                 "maxProducts":1,"priceMonthly":1,"currency":"USD","capabilities":["pos"]}
+                                """.formatted(UUID.randomUUID())))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+    }
+
+    @Test
     void invalidCreateRequestReturnsBadRequest() throws Exception {
         Tenant tenant = tenantRepository.findById(PLATFORM_TENANT_ID).orElseThrow();
         mockMvc.perform(post(BASE_URL)
-                        .header("Authorization", bearer(tokenFor(tenant, List.of(PERMISSION))))
+                        .header("Authorization", bearer(tokenFor(tenant, List.of(PERMISSION_MANAGE))))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"code":"INVALID CODE","name":"","maxBranches":0,"maxUsers":0,
@@ -90,7 +110,7 @@ class SaasPlanControllerTest {
         Tenant tenant = tenantRepository.findById(PLATFORM_TENANT_ID).orElseThrow();
         String code = "plan-" + UUID.randomUUID();
         mockMvc.perform(post(BASE_URL)
-                        .header("Authorization", bearer(tokenFor(tenant, List.of(PERMISSION))))
+                        .header("Authorization", bearer(tokenFor(tenant, List.of(PERMISSION_MANAGE))))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"code":"%s","name":"Growth","description":"Plan growth",
@@ -115,7 +135,7 @@ class SaasPlanControllerTest {
         String code = "forbidden-" + UUID.randomUUID();
 
         mockMvc.perform(post(BASE_URL)
-                        .header("Authorization", bearer(tokenFor(ordinaryTenant, List.of(PERMISSION))))
+                        .header("Authorization", bearer(tokenFor(ordinaryTenant, List.of(PERMISSION_MANAGE))))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"code":"%s","name":"Forbidden","maxBranches":1,"maxUsers":1,

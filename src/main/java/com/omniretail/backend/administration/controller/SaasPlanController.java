@@ -23,43 +23,49 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/admin/plans")
-@RequirePermission("administration.plans.manage")
 @RequiredArgsConstructor
 public class SaasPlanController {
 
     private final SaasPlanService planService;
 
+    @RequirePermission("admin.plans.read")
     @GetMapping
     public List<SaasPlanResponse> list(@RequestParam(defaultValue = "false") boolean activeOnly) {
         return planService.list(activeOnly);
     }
 
+    @RequirePermission("admin.plans.read")
     @GetMapping("/{id}")
     public SaasPlanResponse get(@PathVariable UUID id) {
         return planService.get(id);
     }
 
+    @RequirePermission("admin.plans.manage")
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public SaasPlanResponse create(@Valid @RequestBody CreateSaasPlanRequest request) {
         return planService.create(request);
     }
 
+    @RequirePermission("admin.plans.manage")
     @PutMapping("/{id}")
     public SaasPlanResponse update(@PathVariable UUID id, @Valid @RequestBody UpdateSaasPlanRequest request) {
         return planService.update(id, request);
     }
 
+    @RequirePermission("admin.plans.manage")
     @PutMapping("/{id}/activate")
     public SaasPlanResponse activate(@PathVariable UUID id) {
         return planService.activate(id);
     }
 
+    @RequirePermission("admin.plans.manage")
     @PutMapping("/{id}/deactivate")
     public SaasPlanResponse deactivate(@PathVariable UUID id) {
         return planService.deactivate(id);
     }
 
+    @RequirePermission("admin.plans.manage")
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable UUID id) {
