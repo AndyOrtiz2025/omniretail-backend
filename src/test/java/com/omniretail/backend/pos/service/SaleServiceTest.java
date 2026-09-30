@@ -193,18 +193,47 @@ class SaleServiceTest {
     @Test
     void appliedDiscountIsCappedAtLineGross() {
         UUID promotionId = UUID.randomUUID();
-        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
-        when(productPriceResolver.resolveEffectivePrice(eq(tenant), any(Product.class), any(Instant.class)))
+        UUID additionalProductId = UUID.randomUUID();
+        Product discountedProduct = product();
+        Product additionalProduct = Product.builder()
+                .sku("SKU-2")
+                .name("Producto adicional")
+                .salePrice(new BigDecimal("1.00"))
+                .channelPos(true)
+                .build();
+        ReflectionTestUtils.setField(additionalProduct, "id", additionalProductId);
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(discountedProduct));
+        when(products.findByTenantIdAndId(tenant, additionalProductId)).thenReturn(Optional.of(additionalProduct));
+        when(productPriceResolver.resolveEffectivePrice(eq(tenant), eq(discountedProduct), any(Instant.class)))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("20.00"), BigDecimal.ZERO.setScale(2),
-                        new BigDecimal("25.00"), promotionId));
+                        new BigDecimal("20.00"), promotionId));
+        when(productPriceResolver.resolveEffectivePrice(eq(tenant), eq(additionalProduct), any(Instant.class)))
+                .thenReturn(new ResolvedProductPrice(
+                        new BigDecimal("1.00"), new BigDecimal("1.00"),
+                        BigDecimal.ZERO.setScale(2), null));
         stubSalePersistence();
 
-        service.create(request(BigDecimal.ZERO.setScale(2), BigDecimal.ONE, BigDecimal.ZERO));
+        CreateSaleRequest request = new CreateSaleRequest(
+                branch,
+                shiftId,
+                null,
+                BigDecimal.ZERO,
+                List.of(
+                        new CreateSaleRequest.Item(productId, BigDecimal.ONE, BigDecimal.ZERO),
+                        new CreateSaleRequest.Item(additionalProductId, BigDecimal.ONE, BigDecimal.ZERO)),
+                List.of(new CreateSaleRequest.PaymentLine(
+                        PaymentMethod.cash, new BigDecimal("1.00"), null)),
+                UUID.randomUUID());
 
+        var response = service.create(request);
+
+        assertThat(response.total()).isEqualByComparingTo("1.00");
         verify(items).save(argThat(item ->
-                item.getDiscount().compareTo(new BigDecimal("20.00")) == 0
-                        && item.getSubtotal().compareTo(BigDecimal.ZERO) == 0));
+                productId.equals(item.getProductId())
+                        && item.getDiscount().compareTo(new BigDecimal("20.00")) == 0
+                        && item.getSubtotal().compareTo(BigDecimal.ZERO) == 0
+                        && promotionId.equals(item.getPromotionId())));
     }
 
     @Test
