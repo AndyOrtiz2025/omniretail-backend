@@ -9,11 +9,13 @@ import com.omniretail.backend.catalog.dto.ProductTrackingDto;
 import com.omniretail.backend.catalog.dto.ProductUpdateRequest;
 import com.omniretail.backend.catalog.entity.CategoryStatus;
 import com.omniretail.backend.catalog.entity.Product;
+import com.omniretail.backend.catalog.entity.ProductPriceHistory;
 import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.entity.UnitStatus;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.catalog.repository.ProductPriceHistoryRepository;
 import com.omniretail.backend.catalog.repository.UnitConversionRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
 import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
@@ -43,6 +45,7 @@ public class ProductService {
     private static final String BARCODE_CONSTRAINT = "uk_products_tenant_barcode";
 
     private final ProductRepository productRepository;
+    private final ProductPriceHistoryRepository productPriceHistoryRepository;
     private final CategoryRepository categoryRepository;
     private final UnitRepository unitRepository;
     private final UnitConversionRepository unitConversionRepository;
@@ -69,7 +72,8 @@ public class ProductService {
 
     @Transactional
     public ProductDto create(ProductCreateRequest request) {
-        UUID tenantId = currentUser.require().tenantId();
+        var actor = currentUser.require();
+        UUID tenantId = actor.tenantId();
         String sku = normalizeSku(request.sku());
         String barcode = normalizeBarcode(request.barcode());
         validateSkuIsAvailable(tenantId, sku, null);
@@ -106,7 +110,16 @@ public class ProductService {
                 .channelMobileApp(request.channels().mobileApp())
                 .build();
         product.setTenantId(tenantId);
-        return toDto(saveWithUniqueTranslation(product));
+        Product saved = saveWithUniqueTranslation(product);
+        productPriceHistoryRepository.saveAndFlush(ProductPriceHistory.builder()
+                .tenantId(tenantId)
+                .productId(saved.getId())
+                .oldPrice(null)
+                .newPrice(saved.getSalePrice())
+                .changedByUserId(actor.userId())
+                .reason("Creación de producto")
+                .build());
+        return toDto(saved);
     }
 
     @Transactional
@@ -470,7 +483,7 @@ public class ProductService {
                 HttpStatus.BAD_REQUEST, "PRODUCT_CAPABILITY_DISABLED", message);
     }
 
-    private static ProductDto toDto(Product product) {
+    static ProductDto toDto(Product product) {
         return new ProductDto(
                 product.getId(),
                 product.getTenantId(),

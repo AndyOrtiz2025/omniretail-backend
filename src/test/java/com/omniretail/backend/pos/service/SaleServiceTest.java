@@ -12,7 +12,9 @@ import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.administration.repository.BankAccountRepository;
 import com.omniretail.backend.administration.repository.BusinessCapabilitiesConfigRepository;
 import com.omniretail.backend.catalog.entity.Product;
+import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
 import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.catalog.service.ProductPriceResolver;
 import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.inventory.service.InventoryStockService;
 import com.omniretail.backend.pos.dto.CreateSaleRequest;
@@ -44,6 +46,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -67,6 +70,7 @@ class SaleServiceTest {
     @Mock CashMovementRepository cashMovements;
     @Mock InventoryStockService inventory;
     @Mock DocumentCounterService counter;
+    @Mock ProductPriceResolver productPriceResolver;
     @InjectMocks SaleService service;
 
     private final UUID tenant = UUID.randomUUID();
@@ -87,6 +91,13 @@ class SaleServiceTest {
                 .name("Tenant").slug("tenant").status(TenantStatus.active).defaultCurrency("GTQ")
                 .timezone("America/Guatemala").build()));
         lenient().when(businessConfig.findByTenantId(tenant)).thenReturn(Optional.empty());
+        lenient().when(productPriceResolver.resolveEffectivePrice(
+                        eq(tenant), any(Product.class), any(Instant.class)))
+                .thenReturn(new ResolvedProductPrice(
+                        new BigDecimal("20.00"),
+                        new BigDecimal("20.00"),
+                        BigDecimal.ZERO.setScale(2),
+                        null));
     }
 
     @Test
@@ -109,12 +120,133 @@ class SaleServiceTest {
     }
 
     @Test
+    void promotionWinsAgainstZeroManualDiscountAndIsSnapshotted() {
+        UUID promotionId = UUID.randomUUID();
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+        when(productPriceResolver.resolveEffectivePrice(eq(tenant), any(Product.class), any(Instant.class)))
+                .thenReturn(new ResolvedProductPrice(
+                        new BigDecimal("20.00"), new BigDecimal("15.00"),
+                        new BigDecimal("5.00"), promotionId));
+        stubSalePersistence();
+
+        service.create(request(new BigDecimal("15.00"), BigDecimal.ONE, BigDecimal.ZERO));
+
+        ArgumentCaptor<SaleItem> saved = ArgumentCaptor.forClass(SaleItem.class);
+        verify(items).save(saved.capture());
+        assertThat(saved.getValue().getDiscount()).isEqualByComparingTo("5.00");
+        assertThat(saved.getValue().getSubtotal()).isEqualByComparingTo("15.00");
+        assertThat(saved.getValue().getPromotionId()).isEqualTo(promotionId);
+        assertThat(saved.getValue().getUnitPrice()).isEqualByComparingTo("20.00");
+    }
+
+    @Test
+    void greaterManualDiscountWinsAndClearsPromotionSnapshot() {
+        UUID promotionId = UUID.randomUUID();
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+        when(productPriceResolver.resolveEffectivePrice(eq(tenant), any(Product.class), any(Instant.class)))
+                .thenReturn(new ResolvedProductPrice(
+                        new BigDecimal("20.00"), new BigDecimal("15.00"),
+                        new BigDecimal("5.00"), promotionId));
+        stubSalePersistence();
+
+        service.create(request(new BigDecimal("13.00"), BigDecimal.ONE, new BigDecimal("7.00")));
+
+        ArgumentCaptor<SaleItem> saved = ArgumentCaptor.forClass(SaleItem.class);
+        verify(items).save(saved.capture());
+        assertThat(saved.getValue().getDiscount()).isEqualByComparingTo("7.00");
+        assertThat(saved.getValue().getPromotionId()).isNull();
+    }
+
+    @Test
+    void equalDiscountDeterministicallyPrefersPromotion() {
+        UUID promotionId = UUID.randomUUID();
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+        when(productPriceResolver.resolveEffectivePrice(eq(tenant), any(Product.class), any(Instant.class)))
+                .thenReturn(new ResolvedProductPrice(
+                        new BigDecimal("20.00"), new BigDecimal("15.00"),
+                        new BigDecimal("5.00"), promotionId));
+        stubSalePersistence();
+
+        service.create(request(new BigDecimal("15.00"), BigDecimal.ONE, new BigDecimal("5.00")));
+
+        verify(items).save(argThat(item -> promotionId.equals(item.getPromotionId())));
+    }
+
+    @Test
+    void comparesPromotionAndManualDiscountAtLineQuantity() {
+        UUID promotionId = UUID.randomUUID();
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+        when(productPriceResolver.resolveEffectivePrice(eq(tenant), any(Product.class), any(Instant.class)))
+                .thenReturn(new ResolvedProductPrice(
+                        new BigDecimal("20.00"), new BigDecimal("15.00"),
+                        new BigDecimal("5.00"), promotionId));
+        stubSalePersistence();
+
+        service.create(request(new BigDecimal("30.00"), new BigDecimal("2"), new BigDecimal("7.00")));
+
+        verify(items).save(argThat(item ->
+                promotionId.equals(item.getPromotionId())
+                        && item.getDiscount().compareTo(new BigDecimal("10.00")) == 0
+                        && item.getSubtotal().compareTo(new BigDecimal("30.00")) == 0));
+    }
+
+    @Test
+    void appliedDiscountIsCappedAtLineGross() {
+        UUID promotionId = UUID.randomUUID();
+        UUID additionalProductId = UUID.randomUUID();
+        Product discountedProduct = product();
+        Product additionalProduct = Product.builder()
+                .sku("SKU-2")
+                .name("Producto adicional")
+                .salePrice(new BigDecimal("1.00"))
+                .channelPos(true)
+                .build();
+        ReflectionTestUtils.setField(additionalProduct, "id", additionalProductId);
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(discountedProduct));
+        when(products.findByTenantIdAndId(tenant, additionalProductId)).thenReturn(Optional.of(additionalProduct));
+        when(productPriceResolver.resolveEffectivePrice(eq(tenant), eq(discountedProduct), any(Instant.class)))
+                .thenReturn(new ResolvedProductPrice(
+                        new BigDecimal("20.00"), BigDecimal.ZERO.setScale(2),
+                        new BigDecimal("20.00"), promotionId));
+        when(productPriceResolver.resolveEffectivePrice(eq(tenant), eq(additionalProduct), any(Instant.class)))
+                .thenReturn(new ResolvedProductPrice(
+                        new BigDecimal("1.00"), new BigDecimal("1.00"),
+                        BigDecimal.ZERO.setScale(2), null));
+        stubSalePersistence();
+
+        CreateSaleRequest request = new CreateSaleRequest(
+                branch,
+                shiftId,
+                null,
+                BigDecimal.ZERO,
+                List.of(
+                        new CreateSaleRequest.Item(productId, BigDecimal.ONE, BigDecimal.ZERO),
+                        new CreateSaleRequest.Item(additionalProductId, BigDecimal.ONE, BigDecimal.ZERO)),
+                List.of(new CreateSaleRequest.PaymentLine(
+                        PaymentMethod.cash, new BigDecimal("1.00"), null)),
+                UUID.randomUUID());
+
+        var response = service.create(request);
+
+        assertThat(response.total()).isEqualByComparingTo("1.00");
+        verify(items).save(argThat(item ->
+                productId.equals(item.getProductId())
+                        && item.getDiscount().compareTo(new BigDecimal("20.00")) == 0
+                        && item.getSubtotal().compareTo(BigDecimal.ZERO) == 0
+                        && promotionId.equals(item.getPromotionId())));
+    }
+
+    @Test
     void rejectsPaymentsThatDoNotMatchTotal() {
         when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
-        assertThatThrownBy(() -> service.create(request(new BigDecimal("19.99"), BigDecimal.ONE)))
+        CreateSaleRequest request = request(new BigDecimal("19.99"), BigDecimal.ONE);
+        assertThatThrownBy(() -> service.create(request))
                 .isInstanceOfSatisfying(BusinessException.class,
                         ex -> assertThat(ex.getCode()).isEqualTo("PAYMENT_TOTAL_MISMATCH"));
-        verifyNoInteractions(sales, inventory, items, payments);
+        verify(sales).findByTenantIdAndConfirmationId(tenant, request.confirmationId());
+        verify(sales, never()).save(any());
+        verify(sales, never()).saveAndFlush(any());
+        verifyNoInteractions(inventory, items, payments, cashMovements, counter);
     }
 
     @Test
@@ -132,7 +264,7 @@ class SaleServiceTest {
                 shiftId,
                 null,
                 new BigDecimal("99.99"),
-                List.of(new CreateSaleRequest.Item(productId, BigDecimal.ONE, new BigDecimal("10.00"))),
+                List.of(new CreateSaleRequest.Item(productId, BigDecimal.ONE, BigDecimal.ZERO)),
                 List.of(new CreateSaleRequest.PaymentLine(PaymentMethod.cash, new BigDecimal("20.00"), null)),
                 UUID.randomUUID());
 
@@ -145,6 +277,7 @@ class SaleServiceTest {
 
     @Test
     void rejectsSaleWithoutConfirmationId() {
+        reset(branchAccess);
         CreateSaleRequest request = new CreateSaleRequest(
                 branch,
                 shiftId,
@@ -262,6 +395,7 @@ class SaleServiceTest {
 
         assertThat(result.id()).isEqualTo(existing.getId());
         verifyNoInteractions(inventory, items, payments, cashMovements);
+        verifyNoInteractions(productPriceResolver);
     }
 
     @Test
@@ -318,10 +452,14 @@ class SaleServiceTest {
     @Test
     void rejectsProductUnavailableForPos() {
         when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.empty());
-        assertThatThrownBy(() -> service.create(request(new BigDecimal("20.00"), BigDecimal.ONE)))
+        CreateSaleRequest request = request(new BigDecimal("20.00"), BigDecimal.ONE);
+        assertThatThrownBy(() -> service.create(request))
                 .isInstanceOfSatisfying(BusinessException.class,
                         ex -> assertThat(ex.getCode()).isEqualTo("PRODUCT_NOT_FOUND"));
-        verifyNoInteractions(sales, inventory, items, payments);
+        verify(sales).findByTenantIdAndConfirmationId(tenant, request.confirmationId());
+        verify(sales, never()).save(any());
+        verify(sales, never()).saveAndFlush(any());
+        verifyNoInteractions(inventory, items, payments, cashMovements, counter);
     }
 
     @Test
@@ -417,9 +555,21 @@ class SaleServiceTest {
     }
 
     private CreateSaleRequest request(BigDecimal payment, BigDecimal quantity) {
+        return request(payment, quantity, BigDecimal.ZERO);
+    }
+
+    private CreateSaleRequest request(BigDecimal payment, BigDecimal quantity, BigDecimal manualDiscount) {
         return new CreateSaleRequest(branch, shiftId, null, BigDecimal.ZERO,
-                List.of(new CreateSaleRequest.Item(productId, quantity, BigDecimal.ZERO)),
+                List.of(new CreateSaleRequest.Item(productId, quantity, manualDiscount)),
                 List.of(new CreateSaleRequest.PaymentLine(PaymentMethod.cash, payment, null)), UUID.randomUUID());
+    }
+
+    private void stubSalePersistence() {
+        when(sales.saveAndFlush(any())).thenAnswer(invocation -> {
+            Sale sale = invocation.getArgument(0);
+            ReflectionTestUtils.setField(sale, "id", UUID.randomUUID());
+            return sale;
+        });
     }
 
     private CreateSaleRequest request(PaymentMethod paymentMethod, String reference) {

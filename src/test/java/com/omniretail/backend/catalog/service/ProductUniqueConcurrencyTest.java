@@ -51,7 +51,7 @@ class ProductUniqueConcurrencyTest {
     void setUp() {
         fixture = fixture();
         given(currentUser.require()).willReturn(new AuthenticatedUser(
-                UUID.randomUUID(), fixture.tenant(), UserType.employee,
+                fixture.user(), fixture.tenant(), UserType.employee,
                 null, null, UUID.randomUUID()));
         given(businessConfigService.getConfig()).willReturn(new BusinessConfigResponse(
                 fixture.tenant(), BusinessPreset.custom,
@@ -156,6 +156,7 @@ class ProductUniqueConcurrencyTest {
         UUID tenant = UUID.randomUUID();
         UUID category = UUID.randomUUID();
         UUID unit = UUID.randomUUID();
+        UUID user = UUID.randomUUID();
         jdbc.update("INSERT INTO tenants (id, name, slug) VALUES (?, 'Product race', ?)",
                 tenant, "product-race-" + tenant);
         jdbc.update("INSERT INTO categories (id, tenant_id, name, slug) VALUES (?, ?, 'Cat', ?)",
@@ -164,10 +165,14 @@ class ProductUniqueConcurrencyTest {
                 INSERT INTO units (id, tenant_id, code, name, symbol, category, allows_decimals, status)
                 VALUES (?, ?, ?, 'Unidad', 'u', 'unit', true, 'active')
                 """, unit, tenant, "U-" + unit.toString().substring(0, 8));
-        return new Fixture(tenant, category, unit);
+        jdbc.update("""
+                INSERT INTO users (id, tenant_id, name, email, type, status)
+                VALUES (?, ?, 'Product race actor', ?, 'employee', 'active')
+                """, user, tenant, "product-race-" + user + "@test.local");
+        return new Fixture(tenant, category, unit, user);
     }
 
-    private record Fixture(UUID tenant, UUID category, UUID unit) {}
+    private record Fixture(UUID tenant, UUID category, UUID unit, UUID user) {}
 
     private record Outcome(boolean success, String code) {}
 }

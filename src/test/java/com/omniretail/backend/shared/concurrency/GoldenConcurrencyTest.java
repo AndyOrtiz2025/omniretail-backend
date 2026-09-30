@@ -193,8 +193,9 @@ class GoldenConcurrencyTest {
         String body = """
                 {"branchId":"%s","cashShiftId":"%s",
                  "items":[{"productId":"%s","quantity":1}],
-                 "payments":[{"method":"cash","amount":%s}]}
-                """.formatted(store.branchId(), cashier.shiftId(), store.productId(), PRICE);
+                 "payments":[{"method":"cash","amount":%s}],
+                 "confirmationId":"%s"}
+                """.formatted(store.branchId(), cashier.shiftId(), store.productId(), PRICE, UUID.randomUUID());
         return outcome(mvc.perform(post("/api/v1/pos/sales").header("Authorization", cashier.bearer())
                 .contentType(APPLICATION_JSON).content(body)).andReturn());
     }

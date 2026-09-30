@@ -4,11 +4,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.catalog.entity.Category;
+import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
 import com.omniretail.backend.catalog.entity.CategoryStatus;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductStatus;
@@ -16,12 +19,15 @@ import com.omniretail.backend.catalog.entity.Unit;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
+import com.omniretail.backend.catalog.service.ProductPriceResolver;
 import com.omniretail.backend.shared.exception.BusinessException;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -34,8 +40,20 @@ class PublicStorefrontCatalogServiceTest {
     @Mock private ProductRepository productRepository;
     @Mock private CategoryRepository categoryRepository;
     @Mock private UnitRepository unitRepository;
+    @Mock private ProductPriceResolver productPriceResolver;
 
     @InjectMocks private PublicStorefrontCatalogService service;
+
+    @BeforeEach
+    void setUpPriceResolver() {
+        lenient().when(productPriceResolver.resolveEffectivePrice(
+                        any(), any(Product.class), any(Instant.class)))
+                .thenReturn(new ResolvedProductPrice(
+                        new BigDecimal("75.00"),
+                        new BigDecimal("75.00"),
+                        BigDecimal.ZERO.setScale(2),
+                        null));
+    }
 
     @Test
     void listsOnlyPublishedEcommerceProductsFromTheActiveStorefront() {
@@ -59,6 +77,43 @@ class PublicStorefrontCatalogServiceTest {
             assertThat(item.sku()).isEqualTo("HER-001");
             assertThat(item.categoryName()).isEqualTo("Herramientas");
             assertThat(item.saleUnitName()).isEqualTo("Unidad");
+        });
+    }
+
+    @Test
+    void storefrontExposesBaseAndEffectivePromotionalPriceWithoutReplacingSalePrice() {
+        UUID tenantId = UUID.randomUUID();
+        UUID productId = UUID.randomUUID();
+        UUID categoryId = UUID.randomUUID();
+        UUID unitId = UUID.randomUUID();
+        UUID promotionId = UUID.randomUUID();
+        Product product = product(productId, categoryId, unitId);
+        Tenant tenant = tenant(tenantId);
+        Category category = category(categoryId);
+        Unit unit = unit(unitId);
+        when(tenantRepository.findBySlug("ferreteria-los-simpson"))
+                .thenReturn(Optional.of(tenant));
+        when(categoryRepository.findByTenantIdAndStatus(tenantId, CategoryStatus.active))
+                .thenReturn(List.of(category));
+        when(unitRepository.findByTenantId(tenantId)).thenReturn(List.of(unit));
+        when(productRepository.findByTenantIdAndStatusAndChannelEcommerceTrue(
+                tenantId, ProductStatus.published)).thenReturn(List.of(product));
+        when(productPriceResolver.resolveEffectivePrice(
+                org.mockito.ArgumentMatchers.eq(tenantId),
+                org.mockito.ArgumentMatchers.eq(product),
+                any(Instant.class)))
+                .thenReturn(new ResolvedProductPrice(
+                        new BigDecimal("75.00"), new BigDecimal("60.00"),
+                        new BigDecimal("15.00"), promotionId));
+
+        var result = service.listProducts("ferreteria-los-simpson");
+
+        assertThat(result).singleElement().satisfies(item -> {
+            assertThat(item.salePrice()).isEqualByComparingTo("75.00");
+            assertThat(item.basePrice()).isEqualByComparingTo("75.00");
+            assertThat(item.effectivePrice()).isEqualByComparingTo("60.00");
+            assertThat(item.discountAmount()).isEqualByComparingTo("15.00");
+            assertThat(item.promotionId()).isEqualTo(promotionId);
         });
     }
 
