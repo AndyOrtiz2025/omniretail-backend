@@ -10,6 +10,8 @@ import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
+import com.omniretail.backend.catalog.service.ProductPriceResolver;
 import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.inventory.dto.DeductStockCommand;
 import com.omniretail.backend.inventory.dto.AddStockCommand;
@@ -73,6 +75,7 @@ public class SaleService {
     private final CashMovementRepository cashMovements;
     private final InventoryStockService inventory;
     private final DocumentCounterService counter;
+    private final ProductPriceResolver productPriceResolver;
 
     public SaleResponse create(CreateSaleRequest request) {
         AuthenticatedUser actor = currentUser.require();
@@ -110,7 +113,8 @@ public class SaleService {
         Tenant tenant = tenants.findById(actor.tenantId())
                 .orElseThrow(() -> notFound("TENANT_NOT_FOUND", "Negocio no encontrado."));
         Set<UUID> productIds = new HashSet<>();
-        List<Product> catalog = new ArrayList<>();
+        Instant pricingAt = Instant.now();
+        List<LinePricing> catalog = new ArrayList<>();
         BigDecimal subtotal = BigDecimal.ZERO;
         BigDecimal discount = BigDecimal.ZERO;
         for (var line : request.items()) {
@@ -124,14 +128,23 @@ public class SaleService {
                     .filter(found -> found.getStatus() == ProductStatus.published
                             && Boolean.TRUE.equals(found.getChannelPos()))
                     .orElseThrow(() -> notFound("PRODUCT_NOT_FOUND", "Producto no encontrado o no disponible para POS."));
-            BigDecimal lineDiscount = BigDecimal.ZERO;
-            BigDecimal lineSubtotal = product.getSalePrice().multiply(line.quantity())
-                    .setScale(2, RoundingMode.HALF_UP).subtract(lineDiscount)
-                    .setScale(2, RoundingMode.HALF_UP);
-            if (lineSubtotal.signum() < 0) {
+            BigDecimal gross = money(product.getSalePrice().multiply(line.quantity()));
+            BigDecimal manualDiscount = money(line.discount() == null ? BigDecimal.ZERO : line.discount());
+            if (manualDiscount.compareTo(gross) > 0) {
                 throw new BusinessException(HttpStatus.BAD_REQUEST, "INVALID_DISCOUNT", "El descuento supera el importe de la línea.");
             }
-            catalog.add(product);
+            ResolvedProductPrice resolved = productPriceResolver.resolveEffectivePrice(
+                    actor.tenantId(), product, pricingAt);
+            BigDecimal promotionDiscount = money(resolved.discountAmount().multiply(line.quantity()));
+            boolean usePromotion = resolved.promotionId() != null
+                    && promotionDiscount.compareTo(manualDiscount) >= 0;
+            BigDecimal lineDiscount = usePromotion ? promotionDiscount : manualDiscount;
+            if (lineDiscount.compareTo(gross) > 0) {
+                lineDiscount = gross;
+            }
+            BigDecimal lineSubtotal = money(gross.subtract(lineDiscount));
+            catalog.add(new LinePricing(
+                    product, lineDiscount, lineSubtotal, usePromotion ? resolved.promotionId() : null));
             subtotal = subtotal.add(lineSubtotal).setScale(2, RoundingMode.HALF_UP);
             discount = discount.add(lineDiscount).setScale(2, RoundingMode.HALF_UP);
         }
@@ -152,18 +165,16 @@ public class SaleService {
         sale = sales.saveAndFlush(sale);
         for (int index = 0; index < request.items().size(); index++) {
             var line = request.items().get(index);
-            Product product = catalog.get(index);
-            BigDecimal lineDiscount = BigDecimal.ZERO;
-            BigDecimal lineSubtotal = product.getSalePrice().multiply(line.quantity())
-                    .setScale(2, RoundingMode.HALF_UP).subtract(lineDiscount)
-                    .setScale(2, RoundingMode.HALF_UP);
+            LinePricing pricing = catalog.get(index);
+            Product product = pricing.product();
             if (Boolean.TRUE.equals(product.getTrackingStock()) && product.getProductType() == ProductType.physical) {
                 inventory.deductStock(new DeductStockCommand(actor.tenantId(), request.branchId(), product.getId(),
                         line.quantity(), "Venta POS #" + sale.getNumber(), "POS_SALE", sale.getId(), actor.userId()));
             }
             items.save(SaleItem.builder().saleId(sale.getId()).productId(product.getId()).skuSnapshot(product.getSku())
                     .nameSnapshot(product.getName()).quantity(line.quantity()).unitPrice(product.getSalePrice())
-                    .discount(lineDiscount).subtotal(lineSubtotal).build());
+                    .discount(pricing.discount()).subtotal(pricing.subtotal())
+                    .promotionId(pricing.promotionId()).build());
         }
         for (var paymentRequest : request.payments()) {
             UUID bankAccountId = paymentRequest.method() == PaymentMethod.transfer
@@ -327,7 +338,8 @@ public class SaleService {
         String payload = request.branchId()
                 + "|" + request.items().stream()
                         .map(item -> item.productId() + ":" + item.quantity().stripTrailingZeros().toPlainString()
-                                + ":0")
+                                + ":" + (item.discount() == null ? BigDecimal.ZERO : item.discount())
+                                        .stripTrailingZeros().toPlainString())
                         .sorted()
                         .collect(Collectors.joining(","))
                 + "|" + request.payments().stream()
@@ -346,4 +358,11 @@ public class SaleService {
             throw new IllegalStateException("SHA-256 no está disponible.", exception);
         }
     }
+
+    private static BigDecimal money(BigDecimal value) {
+        return value.setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private record LinePricing(
+            Product product, BigDecimal discount, BigDecimal subtotal, UUID promotionId) {}
 }

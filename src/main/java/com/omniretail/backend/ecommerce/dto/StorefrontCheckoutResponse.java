@@ -5,6 +5,7 @@ import com.omniretail.backend.pos.entity.PaymentStatus;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 public record StorefrontCheckoutResponse(
         String orderNumber,
@@ -19,5 +20,11 @@ public record StorefrontCheckoutResponse(
         List<Item> items) {
 
     public record Item(
-            String sku, String name, BigDecimal quantity, BigDecimal unitPrice, BigDecimal subtotal) {}
+            String sku,
+            String name,
+            BigDecimal quantity,
+            BigDecimal unitPrice,
+            BigDecimal discount,
+            BigDecimal subtotal,
+            UUID promotionId) {}
 }

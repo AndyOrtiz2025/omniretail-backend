@@ -11,12 +11,14 @@ import com.omniretail.backend.catalog.entity.Unit;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
+import com.omniretail.backend.catalog.service.ProductPriceResolver;
 import com.omniretail.backend.ecommerce.dto.PublicStorefrontProductResponse;
 import com.omniretail.backend.shared.exception.BusinessException;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Function;
+import java.time.Instant;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -32,6 +34,7 @@ public class PublicStorefrontCatalogService {
     private final ProductRepository productRepository;
     private final CategoryRepository categoryRepository;
     private final UnitRepository unitRepository;
+    private final ProductPriceResolver productPriceResolver;
 
     public List<PublicStorefrontProductResponse> listProducts(String slug) {
         UUID tenantId = resolveActiveTenant(slug).getId();
@@ -40,9 +43,10 @@ public class PublicStorefrontCatalogService {
                 .collect(java.util.stream.Collectors.toMap(Category::getId, Function.identity()));
         Map<UUID, Unit> units = unitRepository.findByTenantId(tenantId).stream()
                 .collect(java.util.stream.Collectors.toMap(Unit::getId, Function.identity()));
+        Instant pricingAt = Instant.now();
 
         return productRepository.findByTenantIdAndStatusAndChannelEcommerceTrue(tenantId, ProductStatus.published).stream()
-                .map(product -> toResponse(product, activeCategories, units))
+                .map(product -> toResponse(product, activeCategories, units, tenantId, pricingAt))
                 .toList();
     }
 
@@ -60,11 +64,20 @@ public class PublicStorefrontCatalogService {
                 .filter(found -> found.getTenantId().equals(tenantId))
                 .map(Unit::getName)
                 .orElse(null);
-        return PublicStorefrontProductResponse.from(product, categoryName, saleUnitId, saleUnitName);
+        return PublicStorefrontProductResponse.from(
+                product,
+                categoryName,
+                saleUnitId,
+                saleUnitName,
+                productPriceResolver.resolveEffectivePrice(tenantId, product, Instant.now()));
     }
 
     private PublicStorefrontProductResponse toResponse(
-            Product product, Map<UUID, Category> categories, Map<UUID, Unit> units) {
+            Product product,
+            Map<UUID, Category> categories,
+            Map<UUID, Unit> units,
+            UUID tenantId,
+            Instant pricingAt) {
         UUID saleUnitId = product.getSaleUnitId() != null ? product.getSaleUnitId() : product.getBaseUnitId();
         Unit saleUnit = units.get(saleUnitId);
         Category category = categories.get(product.getCategoryId());
@@ -72,7 +85,9 @@ public class PublicStorefrontCatalogService {
                 product,
                 category != null ? category.getName() : null,
                 saleUnitId,
-                saleUnit != null ? saleUnit.getName() : null);
+                saleUnit != null ? saleUnit.getName() : null,
+                productPriceResolver.resolveEffectivePrice(
+                        tenantId, product, pricingAt));
     }
 
     private Tenant resolveActiveTenant(String slug) {
