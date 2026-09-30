@@ -10,6 +10,7 @@ import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.inventory.dto.DeductStockCommand;
 import com.omniretail.backend.inventory.dto.AddStockCommand;
 import com.omniretail.backend.inventory.service.InventoryStockService;
@@ -40,7 +41,9 @@ import com.omniretail.backend.shared.security.TenantCapabilityGuard;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.time.Instant;
 import java.util.stream.Collectors;
@@ -61,6 +64,7 @@ public class SaleService {
     private final CashShiftRepository shifts;
     private final ProductRepository products;
     private final TenantRepository tenants;
+    private final CustomerRepository customers;
     private final BusinessCapabilitiesConfigRepository businessConfig;
     private final BankAccountRepository bankAccounts;
     private final SaleRepository sales;
@@ -73,39 +77,54 @@ public class SaleService {
     public SaleResponse create(CreateSaleRequest request) {
         AuthenticatedUser actor = currentUser.require();
         capability.ensureTenantCapability(actor.tenantId(), SaasCapability.pos);
+        if (request.confirmationId() == null) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "CONFIRMATION_ID_REQUIRED",
+                    "La confirmación de la venta es obligatoria.");
+        }
         if (!branchAccess.resolve(actor).allows(request.branchId())) {
             throw notFound("BRANCH_NOT_FOUND", "Sucursal no encontrada.");
         }
-        if (request.confirmationId() != null) {
-            var existing = sales.findByTenantIdAndConfirmationId(actor.tenantId(), request.confirmationId());
-            if (existing.isPresent()) {
-                String currentFingerprint = fingerprint(request);
-                if (existing.get().getConfirmationFingerprint() != null
-                        && !existing.get().getConfirmationFingerprint().equals(currentFingerprint)) {
-                    throw new BusinessException(
-                            HttpStatus.CONFLICT,
-                            "IDEMPOTENCY_KEY_REUSED",
-                            "La confirmación ya fue usada con una venta distinta.");
-                }
-                return SaleResponse.from(existing.get());
-            }
+        if (request.customerId() != null
+                && customers.findByTenantIdAndId(actor.tenantId(), request.customerId()).isEmpty()) {
+            throw notFound("CUSTOMER_NOT_FOUND", "Cliente no encontrado.");
         }
         var shift = shifts.findOwnedByIdForUpdate(
                         actor.tenantId(), actor.userId(), request.cashShiftId())
                 .filter(found -> found.getBranchId().equals(request.branchId())
                         && found.getStatus() == CashShiftStatus.open)
                 .orElseThrow(() -> notFound("CASH_SHIFT_NOT_FOUND", "Turno de caja no encontrado."));
+        var existing = sales.findByTenantIdAndConfirmationId(actor.tenantId(), request.confirmationId());
+        if (existing.isPresent()) {
+            String currentFingerprint = fingerprint(request);
+            if (existing.get().getConfirmationFingerprint() != null
+                    && !existing.get().getConfirmationFingerprint().equals(currentFingerprint)) {
+                throw new BusinessException(
+                        HttpStatus.CONFLICT,
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "La confirmación ya fue usada con una venta distinta.");
+            }
+            return SaleResponse.from(existing.get());
+        }
         Tenant tenant = tenants.findById(actor.tenantId())
                 .orElseThrow(() -> notFound("TENANT_NOT_FOUND", "Negocio no encontrado."));
+        Set<UUID> productIds = new HashSet<>();
         List<Product> catalog = new ArrayList<>();
         BigDecimal subtotal = BigDecimal.ZERO;
         BigDecimal discount = BigDecimal.ZERO;
         for (var line : request.items()) {
+            if (!productIds.add(line.productId())) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "DUPLICATE_PRODUCT",
+                        "No se permiten productos repetidos en una venta.");
+            }
             Product product = products.findByTenantIdAndId(actor.tenantId(), line.productId())
                     .filter(found -> found.getStatus() == ProductStatus.published
                             && Boolean.TRUE.equals(found.getChannelPos()))
                     .orElseThrow(() -> notFound("PRODUCT_NOT_FOUND", "Producto no encontrado o no disponible para POS."));
-            BigDecimal lineDiscount = line.discount() == null ? BigDecimal.ZERO : line.discount();
+            BigDecimal lineDiscount = BigDecimal.ZERO;
             BigDecimal lineSubtotal = product.getSalePrice().multiply(line.quantity())
                     .setScale(2, RoundingMode.HALF_UP).subtract(lineDiscount)
                     .setScale(2, RoundingMode.HALF_UP);
@@ -116,7 +135,7 @@ public class SaleService {
             subtotal = subtotal.add(lineSubtotal).setScale(2, RoundingMode.HALF_UP);
             discount = discount.add(lineDiscount).setScale(2, RoundingMode.HALF_UP);
         }
-        BigDecimal tax = request.taxTotal() == null ? BigDecimal.ZERO : request.taxTotal().setScale(2, RoundingMode.HALF_UP);
+        BigDecimal tax = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
         BigDecimal total = subtotal.add(tax).setScale(2, RoundingMode.HALF_UP);
         validatePayments(actor, request);
         BigDecimal paid = request.payments().stream().map(CreateSaleRequest.PaymentLine::amount)
@@ -134,7 +153,7 @@ public class SaleService {
         for (int index = 0; index < request.items().size(); index++) {
             var line = request.items().get(index);
             Product product = catalog.get(index);
-            BigDecimal lineDiscount = line.discount() == null ? BigDecimal.ZERO : line.discount();
+            BigDecimal lineDiscount = BigDecimal.ZERO;
             BigDecimal lineSubtotal = product.getSalePrice().multiply(line.quantity())
                     .setScale(2, RoundingMode.HALF_UP).subtract(lineDiscount)
                     .setScale(2, RoundingMode.HALF_UP);
@@ -148,12 +167,18 @@ public class SaleService {
         }
         for (var paymentRequest : request.payments()) {
             UUID bankAccountId = paymentRequest.method() == PaymentMethod.transfer
-                    ? UUID.fromString(paymentRequest.reference())
+                    ? paymentRequest.bankAccountId()
+                    : null;
+            Boolean externallyVerified = paymentRequest.method() == PaymentMethod.transfer
+                    ? paymentRequest.externallyVerified()
                     : null;
             Payment payment = Payment.builder().saleId(sale.getId()).method(paymentRequest.method())
                     .status(PaymentStatus.approved).amount(paymentRequest.amount().setScale(2, RoundingMode.HALF_UP))
                     .currency(tenant.getDefaultCurrency()).bankAccountId(bankAccountId)
-                    .reference(paymentRequest.reference()).build();
+                    .reference(paymentRequest.reference()).externallyVerified(externallyVerified)
+                    .verifiedByUserId(externallyVerified == null ? null : actor.userId())
+                    .verifiedAt(externallyVerified == null ? null : Instant.now())
+                    .build();
             payment.setTenantId(actor.tenantId());
             payments.save(payment);
             if (paymentRequest.method() == PaymentMethod.cash) {
@@ -244,6 +269,12 @@ public class SaleService {
     private void validatePayments(AuthenticatedUser actor, CreateSaleRequest request) {
         var config = businessConfig.findByTenantId(actor.tenantId()).orElse(null);
         for (CreateSaleRequest.PaymentLine payment : request.payments()) {
+            if (payment.amount().signum() <= 0) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "PAYMENT_AMOUNT_INVALID",
+                        "El monto del pago debe ser mayor que cero.");
+            }
             if (config != null && config.getAllowedPosPaymentMethods() != null
                     && !config.getAllowedPosPaymentMethods().isEmpty()
                     && !config.getAllowedPosPaymentMethods().contains(payment.method().name())) {
@@ -260,16 +291,25 @@ public class SaleService {
                         "La tarjeta requiere referencia.");
             }
             if (payment.method() == PaymentMethod.transfer) {
-                UUID bankAccountId;
-                try {
-                    bankAccountId = UUID.fromString(payment.reference());
-                } catch (IllegalArgumentException | NullPointerException exception) {
+                if (payment.bankAccountId() == null) {
                     throw new BusinessException(
                             HttpStatus.BAD_REQUEST,
                             "BANK_ACCOUNT_INVALID",
                             "La cuenta bancaria no es válida para la sucursal.");
                 }
-                boolean validAccount = bankAccounts.findByTenantIdAndId(actor.tenantId(), bankAccountId)
+                if (payment.reference() == null || payment.reference().isBlank()) {
+                    throw new BusinessException(
+                            HttpStatus.BAD_REQUEST,
+                            "PAYMENT_REFERENCE_REQUIRED",
+                            "La transferencia requiere el número de comprobante.");
+                }
+                if (payment.externallyVerified() == null) {
+                    throw new BusinessException(
+                            HttpStatus.BAD_REQUEST,
+                            "EXTERNAL_VERIFICATION_REQUIRED",
+                            "La transferencia requiere indicar su verificación externa.");
+                }
+                boolean validAccount = bankAccounts.findByTenantIdAndId(actor.tenantId(), payment.bankAccountId())
                         .filter(account -> account.getStatus() == BankAccountStatus.active)
                         .filter(account -> account.getBranchIds().contains(request.branchId()))
                         .isPresent();
@@ -287,15 +327,15 @@ public class SaleService {
         String payload = request.branchId()
                 + "|" + request.items().stream()
                         .map(item -> item.productId() + ":" + item.quantity().stripTrailingZeros().toPlainString()
-                                + ":" + (item.discount() == null
-                                ? "0"
-                                : item.discount().stripTrailingZeros().toPlainString()))
+                                + ":0")
                         .sorted()
                         .collect(Collectors.joining(","))
                 + "|" + request.payments().stream()
                         .map(payment -> payment.method() + ":"
                                 + payment.amount().stripTrailingZeros().toPlainString()
-                                + ":" + payment.reference())
+                                + ":" + payment.bankAccountId()
+                                + ":" + payment.reference()
+                                + ":" + payment.externallyVerified())
                         .sorted()
                         .collect(Collectors.joining(","));
         try {
