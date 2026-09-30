@@ -1,6 +1,6 @@
 databaseChangeLog:
   - changeSet:
-      id: 026-administration-plans-subscriptions
+      id: 028-administration-plans-subscriptions
       author: joga17000
       changes:
         - createTable:

@@ -11,8 +11,10 @@ import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.entity.ProductStatus;
+import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.UnitConversionRepository;
+import com.omniretail.backend.catalog.service.ProductPriceResolver;
 import com.omniretail.backend.ecommerce.dto.StorefrontCheckoutItemRequest;
 import com.omniretail.backend.ecommerce.dto.StorefrontCheckoutRequest;
 import com.omniretail.backend.ecommerce.dto.StorefrontCheckoutResponse;
@@ -44,6 +46,7 @@ import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -74,6 +77,7 @@ public class StorefrontCheckoutService {
     private final PaymentRepository paymentRepository;
     private final TenantCapabilityGuard capabilityGuard;
     private final UnitConversionRepository unitConversionRepository;
+    private final ProductPriceResolver productPriceResolver;
     private final JsonMapper jsonMapper;
 
     @Transactional
@@ -136,21 +140,30 @@ public class StorefrontCheckoutService {
             quantities.add(line.quantity().setScale(0, RoundingMode.UNNECESSARY));
         }
 
+        Instant pricingAt = Instant.now();
         BigDecimal subtotal = BigDecimal.ZERO;
+        BigDecimal discountTotal = BigDecimal.ZERO;
         List<OrderItem> items = new ArrayList<>();
         for (int i = 0; i < products.size(); i++) {
             Product product = products.get(i);
             BigDecimal quantity = quantities.get(i);
-            BigDecimal lineTotal = product.getSalePrice().multiply(quantity).setScale(2, RoundingMode.HALF_UP);
+            ResolvedProductPrice resolved = productPriceResolver.resolveEffectivePrice(
+                    tenantId, product, pricingAt);
+            BigDecimal lineDiscount = resolved.discountAmount().multiply(quantity)
+                    .setScale(2, RoundingMode.HALF_UP);
+            BigDecimal lineTotal = resolved.effectivePrice().multiply(quantity)
+                    .setScale(2, RoundingMode.HALF_UP);
             subtotal = subtotal.add(lineTotal);
+            discountTotal = discountTotal.add(lineDiscount);
             items.add(OrderItem.builder()
                     .productId(product.getId())
+                    .promotionId(resolved.promotionId())
                     .skuSnapshot(product.getSku())
                     .nameSnapshot(product.getName())
                     .quantity(quantity)
                     .inventoryQuantity(inventoryQuantity(tenantId, product, quantity))
                     .unitPrice(product.getSalePrice())
-                    .discount(BigDecimal.ZERO)
+                    .discount(lineDiscount)
                     .subtotal(lineTotal)
                     .build());
         }
@@ -169,7 +182,7 @@ public class StorefrontCheckoutService {
                 .notificationContact(json(Map.of(
                         "emailMode", "send", "email", request.email().trim().toLowerCase())))
                 .subtotal(subtotal)
-                .discountTotal(BigDecimal.ZERO)
+                .discountTotal(discountTotal)
                 .shippingTotal(BigDecimal.ZERO)
                 .total(subtotal)
                 .trackingToken(UUID.randomUUID().toString().replace("-", ""))
@@ -298,7 +311,14 @@ public class StorefrontCheckoutService {
                 order.getStatus(), payment.getStatus(), guestTrackingEnabled,
                 !reservationRepository.findByTenantIdAndOrderId(order.getTenantId(), order.getId()).isEmpty(),
                 confirmationAddress(readAddress(order.getDeliveryAddress())), false, items.stream()
-                        .map(item -> new StorefrontCheckoutResponse.Item(item.getSkuSnapshot(), item.getNameSnapshot(), item.getQuantity(), item.getUnitPrice(), item.getSubtotal()))
+                        .map(item -> new StorefrontCheckoutResponse.Item(
+                                item.getSkuSnapshot(),
+                                item.getNameSnapshot(),
+                                item.getQuantity(),
+                                item.getUnitPrice(),
+                                item.getDiscount(),
+                                item.getSubtotal(),
+                                item.getPromotionId()))
                         .toList());
     }
 
