@@ -21,8 +21,10 @@ import com.omniretail.backend.auth.repository.AuthAccountRepository;
 import com.omniretail.backend.auth.repository.EmployeeInvitationRepository;
 import com.omniretail.backend.shared.config.FrontendProperties;
 import com.omniretail.backend.shared.exception.BusinessException;
+import com.omniretail.backend.shared.exception.FieldValidationException;
 import com.omniretail.backend.shared.notification.EmailRequestedEvent;
 import com.omniretail.backend.shared.security.EmployeeInviteResult;
+import com.omniretail.backend.shared.security.SessionRevoker;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
@@ -64,6 +66,8 @@ class EmployeeInvitationServiceTest {
     private AuthAccountRepository accountRepository;
     @Mock
     private ApplicationEventPublisher eventPublisher;
+    @Mock
+    private SessionRevoker sessionRevoker;
 
     private BCryptPasswordEncoder passwordEncoder;
     private FrontendProperties frontendProperties;
@@ -74,7 +78,7 @@ class EmployeeInvitationServiceTest {
         passwordEncoder = spy(new BCryptPasswordEncoder());
         frontendProperties = new FrontendProperties("https://app.example.com/");
         service = new EmployeeInvitationService(userRepository, invitationRepository, accountRepository,
-                passwordEncoder, eventPublisher, frontendProperties);
+                passwordEncoder, eventPublisher, frontendProperties, sessionRevoker);
     }
 
     @Test
@@ -271,6 +275,257 @@ class EmployeeInvitationServiceTest {
         verify(accountRepository, never()).save(any(AuthAccount.class));
         verify(invitationRepository, never()).save(any(EmployeeInvitation.class));
         verifyNoInteractions(passwordEncoder, eventPublisher);
+    }
+
+    @Test
+    void activationLocksInvitationThenAccountAndActivatesWithBcryptAndSessionRevocation() {
+        EmployeeInvitation invitation = activationInvitation();
+        AuthAccount account = pendingAccount();
+        account.setFailedLoginAttempts(4);
+        account.setLockedUntil(Instant.now().plusSeconds(300));
+        stubActivation(invitation, account, employee());
+
+        Instant before = Instant.now();
+        var response = service.activateEmployeeAccount("activation-token", "NuevaSegura123!");
+        Instant after = Instant.now();
+
+        assertThat(response.message()).isEqualTo("Cuenta activada correctamente.");
+        assertThat(account.getPasswordHash()).startsWith("$2");
+        assertThat(passwordEncoder.matches("NuevaSegura123!", account.getPasswordHash())).isTrue();
+        assertThat(account.getStatus()).isEqualTo(AccountStatus.active);
+        assertThat(account.getPasswordChangedAt()).isBetween(before, after);
+        assertThat(account.getFailedLoginAttempts()).isZero();
+        assertThat(account.getLockedUntil()).isNull();
+        assertThat(invitation.getAcceptedAt()).isEqualTo(account.getPasswordChangedAt());
+        InOrder order = inOrder(invitationRepository, accountRepository, userRepository, sessionRevoker);
+        order.verify(invitationRepository).findByTokenHashForUpdate(AuthTokens.hash("activation-token"));
+        order.verify(accountRepository).findByUserIdForUpdate(USER_ID);
+        order.verify(userRepository).findById(USER_ID);
+        order.verify(sessionRevoker).revokeAllSessions(USER_ID);
+        verifyNoInteractions(eventPublisher);
+    }
+
+    @Test
+    void activationRequiresEmployeePolicyBeforeAnyMutationAndAllowsRetry() {
+        EmployeeInvitation invitation = activationInvitation();
+        AuthAccount account = pendingAccount();
+        account.setFailedLoginAttempts(4);
+        Instant lockedUntil = Instant.now().plusSeconds(300);
+        account.setLockedUntil(lockedUntil);
+        stubActivation(invitation, account, employee());
+
+        FieldValidationException error = assertThrows(FieldValidationException.class,
+                () -> service.activateEmployeeAccount("activation-token", "Nueva123!"));
+
+        assertThat(error.getFields()).containsOnlyKeys("newPassword")
+                .containsEntry("newPassword", PasswordPolicy.EMPLOYEE.requirementsMessage());
+        assertThat(account.getPasswordHash()).isEqualTo("existing-bcrypt-hash");
+        assertThat(account.getStatus()).isEqualTo(AccountStatus.password_reset_required);
+        assertThat(account.getPasswordChangedAt()).isNull();
+        assertThat(account.getFailedLoginAttempts()).isEqualTo(4);
+        assertThat(account.getLockedUntil()).isEqualTo(lockedUntil);
+        assertThat(invitation.getAcceptedAt()).isNull();
+        verifyNoInteractions(passwordEncoder, sessionRevoker, eventPublisher);
+
+        service.activateEmployeeAccount("activation-token", "NuevaSegura123!");
+        assertThat(invitation.getAcceptedAt()).isNotNull();
+    }
+
+    @Test
+    void activationReportsOnlyFirstPasswordPolicyErrorUsingAdministrativeEmail() {
+        User user = employee();
+        AuthAccount account = pendingAccount();
+        account.setEmail("outdated@example.com");
+        stubActivation(activationInvitation(), account, user);
+
+        FieldValidationException error = assertThrows(FieldValidationException.class,
+                () -> service.activateEmployeeAccount("activation-token", EMAIL));
+
+        assertThat(error.getFields()).containsOnlyKeys("newPassword")
+                .containsEntry("newPassword", "La contraseña no puede ser igual al correo electrónico.");
+        verifyNoInteractions(passwordEncoder, sessionRevoker);
+    }
+
+    @Test
+    void missingActivationTokenHashIsUniformlyRejected() {
+        when(invitationRepository.findByTokenHashForUpdate(AuthTokens.hash("activation-token")))
+                .thenReturn(Optional.empty());
+        assertInvalidActivation();
+        verifyNoInteractions(accountRepository, userRepository);
+    }
+
+    @Test
+    void acceptedActivationTokenIsUniformlyRejected() {
+        EmployeeInvitation invitation = activationInvitation();
+        invitation.setAcceptedAt(Instant.now());
+        stubActivationToken(invitation);
+        assertInvalidActivation();
+        verifyNoInteractions(accountRepository, userRepository);
+    }
+
+    @Test
+    void supersededActivationTokenIsUniformlyRejected() {
+        EmployeeInvitation invitation = activationInvitation();
+        invitation.setSupersededAt(Instant.now());
+        stubActivationToken(invitation);
+        assertInvalidActivation();
+        verifyNoInteractions(accountRepository, userRepository);
+    }
+
+    @Test
+    void expiredActivationTokenIsUniformlyRejected() {
+        EmployeeInvitation invitation = activationInvitation();
+        invitation.setExpiresAt(Instant.now().minusSeconds(1));
+        stubActivationToken(invitation);
+        assertInvalidActivation();
+        verifyNoInteractions(accountRepository, userRepository);
+    }
+
+    @Test
+    void activationTokenExpiringExactlyNowIsUniformlyRejected() {
+        Instant now = Instant.now();
+        EmployeeInvitation invitation = activationInvitation();
+        invitation.setExpiresAt(now);
+        stubActivationToken(invitation);
+        try (var clock = org.mockito.Mockito.mockStatic(Instant.class, org.mockito.Mockito.CALLS_REAL_METHODS)) {
+            clock.when(Instant::now).thenReturn(now);
+            assertInvalidActivation();
+        }
+        verifyNoInteractions(accountRepository, userRepository);
+    }
+
+    @Test
+    void missingActivationAccountIsUniformlyRejected() {
+        stubActivationToken(activationInvitation());
+        when(accountRepository.findByUserIdForUpdate(USER_ID)).thenReturn(Optional.empty());
+        assertInvalidActivation();
+        verifyNoInteractions(userRepository);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = AccountStatus.class, names = "password_reset_required", mode = EnumSource.Mode.EXCLUDE)
+    void nonPendingActivationAccountIsUniformlyRejected(AccountStatus status) {
+        stubActivationToken(activationInvitation());
+        AuthAccount account = pendingAccount();
+        account.setStatus(status);
+        when(accountRepository.findByUserIdForUpdate(USER_ID)).thenReturn(Optional.of(account));
+        assertInvalidActivation();
+        assertThat(account.getPasswordHash()).isEqualTo("existing-bcrypt-hash");
+        assertThat(account.getStatus()).isEqualTo(status);
+        verifyNoInteractions(userRepository);
+    }
+
+    @Test
+    void mismatchedActivationAccountUserIsUniformlyRejected() {
+        stubActivationToken(activationInvitation());
+        AuthAccount account = pendingAccount();
+        account.setUserId(UUID.randomUUID());
+        when(accountRepository.findByUserIdForUpdate(USER_ID)).thenReturn(Optional.of(account));
+        assertInvalidActivation();
+        verifyNoInteractions(userRepository);
+    }
+
+    @Test
+    void missingActivationUserIsUniformlyRejected() {
+        stubActivationToken(activationInvitation());
+        when(accountRepository.findByUserIdForUpdate(USER_ID)).thenReturn(Optional.of(pendingAccount()));
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.empty());
+        assertInvalidActivation();
+    }
+
+    @Test
+    void nonEmployeeActivationUserIsUniformlyRejected() {
+        User user = employee();
+        user.setType(UserType.customer);
+        stubActivation(activationInvitation(), pendingAccount(), user);
+        assertInvalidActivation();
+    }
+
+    @Test
+    void differentActivationTenantIsUniformlyRejected() {
+        User user = employee();
+        user.setTenantId(UUID.randomUUID());
+        stubActivation(activationInvitation(), pendingAccount(), user);
+        assertInvalidActivation();
+    }
+
+    @Test
+    void inconsistentActivationUserIdIsUniformlyRejected() {
+        User user = employee();
+        ReflectionTestUtils.setField(user, "id", UUID.randomUUID());
+        stubActivation(activationInvitation(), pendingAccount(), user);
+        assertInvalidActivation();
+    }
+
+    @Test
+    void consumedActivationTokenCannotBeUsedAgain() {
+        EmployeeInvitation invitation = activationInvitation();
+        AuthAccount account = pendingAccount();
+        stubActivation(invitation, account, employee());
+        service.activateEmployeeAccount("activation-token", "NuevaSegura123!");
+        String hash = account.getPasswordHash();
+        Instant acceptedAt = invitation.getAcceptedAt();
+
+        assertInvalidActivationError();
+
+        assertThat(account.getPasswordHash()).isEqualTo(hash);
+        assertThat(invitation.getAcceptedAt()).isEqualTo(acceptedAt);
+        verify(passwordEncoder, times(1)).encode("NuevaSegura123!");
+        verify(sessionRevoker, times(1)).revokeAllSessions(USER_ID);
+    }
+
+    @Test
+    void twoSimulatedSerializedActivationsProduceOneLogicalSuccess() {
+        EmployeeInvitation invitation = activationInvitation();
+        AuthAccount account = pendingAccount();
+        stubActivation(invitation, account, employee());
+        EmployeeInvitationService secondRequest = new EmployeeInvitationService(userRepository,
+                invitationRepository, accountRepository, passwordEncoder, eventPublisher,
+                frontendProperties, sessionRevoker);
+
+        service.activateEmployeeAccount("activation-token", "NuevaSegura123!");
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> secondRequest.activateEmployeeAccount("activation-token", "OtraSegura123!"));
+
+        assertUniformActivationError(error);
+        verify(invitationRepository, times(2)).findByTokenHashForUpdate(AuthTokens.hash("activation-token"));
+        verify(accountRepository, times(1)).findByUserIdForUpdate(USER_ID);
+        verify(passwordEncoder, times(1)).encode("NuevaSegura123!");
+        verify(passwordEncoder, never()).encode("OtraSegura123!");
+        verify(sessionRevoker, times(1)).revokeAllSessions(USER_ID);
+    }
+
+    private static EmployeeInvitation activationInvitation() {
+        return EmployeeInvitation.builder().userId(USER_ID).tenantId(TENANT_ID)
+                .tokenHash(AuthTokens.hash("activation-token")).createdAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(3600)).build();
+    }
+
+    private void stubActivationToken(EmployeeInvitation invitation) {
+        when(invitationRepository.findByTokenHashForUpdate(AuthTokens.hash("activation-token")))
+                .thenReturn(Optional.of(invitation));
+    }
+
+    private void stubActivation(EmployeeInvitation invitation, AuthAccount account, User user) {
+        stubActivationToken(invitation);
+        when(accountRepository.findByUserIdForUpdate(USER_ID)).thenReturn(Optional.of(account));
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(user));
+    }
+
+    private void assertInvalidActivation() {
+        assertInvalidActivationError();
+        verifyNoInteractions(passwordEncoder, sessionRevoker, eventPublisher);
+    }
+
+    private void assertInvalidActivationError() {
+        assertUniformActivationError(assertThrows(BusinessException.class,
+                () -> service.activateEmployeeAccount("activation-token", "NuevaSegura123!")));
+    }
+
+    private static void assertUniformActivationError(BusinessException exception) {
+        assertThat(exception.getStatus()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(exception.getCode()).isEqualTo("INVALID_OR_EXPIRED_TOKEN");
+        assertThat(exception.getMessage()).isEqualTo("Este enlace no es válido o ya expiró.");
     }
 
     private void stubEmployee() {

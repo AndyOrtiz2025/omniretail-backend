@@ -3,6 +3,7 @@ package com.omniretail.backend.auth.service;
 import com.omniretail.backend.administration.entity.User;
 import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.administration.repository.UserRepository;
+import com.omniretail.backend.auth.dto.ActivateEmployeeResponse;
 import com.omniretail.backend.auth.entity.AccountStatus;
 import com.omniretail.backend.auth.entity.AuthAccount;
 import com.omniretail.backend.auth.entity.EmployeeInvitation;
@@ -10,11 +11,13 @@ import com.omniretail.backend.auth.repository.AuthAccountRepository;
 import com.omniretail.backend.auth.repository.EmployeeInvitationRepository;
 import com.omniretail.backend.shared.config.FrontendProperties;
 import com.omniretail.backend.shared.exception.BusinessException;
+import com.omniretail.backend.shared.exception.FieldValidationException;
 import com.omniretail.backend.shared.notification.EmailMessage;
 import com.omniretail.backend.shared.notification.EmailRequestedEvent;
 import com.omniretail.backend.shared.security.EmployeeAuthSummary;
 import com.omniretail.backend.shared.security.EmployeeInvitationPort;
 import com.omniretail.backend.shared.security.EmployeeInviteResult;
+import com.omniretail.backend.shared.security.SessionRevoker;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
@@ -40,6 +43,7 @@ public class EmployeeInvitationService implements EmployeeInvitationPort {
     private final PasswordEncoder passwordEncoder;
     private final ApplicationEventPublisher eventPublisher;
     private final FrontendProperties frontendProperties;
+    private final SessionRevoker sessionRevoker;
 
     @Override
     @Transactional
@@ -78,6 +82,47 @@ public class EmployeeInvitationService implements EmployeeInvitationPort {
         eventPublisher.publishEvent(new EmailRequestedEvent(invitationEmail(user,
                 frontendProperties.link("/activar-cuenta/" + token))));
         return new EmployeeInviteResult(userId, token, expiresAt);
+    }
+
+    /** Consume una invitacion vigente y activa exclusivamente una cuenta pendiente de empleado. */
+    @Transactional
+    public ActivateEmployeeResponse activateEmployeeAccount(String token, String newPassword) {
+        if (token == null || token.isBlank()) {
+            throw invalidActivationToken();
+        }
+        Instant now = Instant.now();
+        // Mismo orden relativo que reinvite: invitaciones -> cuenta. El lock serializa el consumo.
+        EmployeeInvitation invitation = invitationRepository.findByTokenHashForUpdate(AuthTokens.hash(token))
+                .filter(found -> found.getAcceptedAt() == null && found.getSupersededAt() == null)
+                .filter(found -> now.isBefore(found.getExpiresAt()))
+                .orElseThrow(EmployeeInvitationService::invalidActivationToken);
+        AuthAccount account = accountRepository.findByUserIdForUpdate(invitation.getUserId())
+                .filter(found -> invitation.getUserId().equals(found.getUserId()))
+                .filter(found -> found.getStatus() == AccountStatus.password_reset_required)
+                .orElseThrow(EmployeeInvitationService::invalidActivationToken);
+        User user = userRepository.findById(invitation.getUserId())
+                .filter(found -> invitation.getUserId().equals(found.getId()))
+                .filter(found -> found.getType() == UserType.employee)
+                .filter(found -> invitation.getTenantId().equals(found.getTenantId()))
+                .orElseThrow(EmployeeInvitationService::invalidActivationToken);
+
+        PasswordPolicy.EMPLOYEE.validate(newPassword, user.getEmail()).ifPresent(message -> {
+            throw FieldValidationException.of("newPassword", message);
+        });
+
+        account.setPasswordHash(passwordEncoder.encode(newPassword));
+        account.setStatus(AccountStatus.active);
+        account.setPasswordChangedAt(now);
+        account.setFailedLoginAttempts(0);
+        account.setLockedUntil(null);
+        invitation.setAcceptedAt(now);
+        sessionRevoker.revokeAllSessions(user.getId());
+        return new ActivateEmployeeResponse("Cuenta activada correctamente.");
+    }
+
+    private static BusinessException invalidActivationToken() {
+        return new BusinessException(HttpStatus.BAD_REQUEST, "INVALID_OR_EXPIRED_TOKEN",
+                "Este enlace no es válido o ya expiró.");
     }
 
     @Override
