@@ -2,6 +2,7 @@ package com.omniretail.backend.auth.repository;
 
 import com.omniretail.backend.auth.entity.AuthAccount;
 import jakarta.persistence.LockModeType;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -14,6 +15,8 @@ public interface AuthAccountRepository extends JpaRepository<AuthAccount, UUID> 
     List<AuthAccount> findByEmail(String email);
 
     Optional<AuthAccount> findByUserId(UUID userId);
+
+    List<AuthAccount> findAllByUserIdIn(Collection<UUID> userIds);
 
     /** SELECT ... FOR UPDATE: evita perder incrementos de intentos fallidos con logins concurrentes. */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
