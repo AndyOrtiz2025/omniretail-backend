@@ -9,6 +9,7 @@ import com.omniretail.backend.administration.repository.BranchRepository;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.CurrentUser;
+import com.omniretail.backend.shared.validation.PhoneNormalizer;
 import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -62,7 +63,7 @@ public class BranchService {
                 .name(request.name().trim())
                 .type(request.type())
                 .address(request.address() != null ? request.address().trim() : null)
-                .phone(request.phone() != null ? request.phone().trim() : null)
+                .phone(PhoneNormalizer.normalize(request.phone()))
                 .email(request.email() != null ? request.email().trim().toLowerCase() : null)
                 .status(request.status() != null ? request.status() : BranchStatus.active)
                 .build();
@@ -89,7 +90,7 @@ public class BranchService {
         branch.setName(request.name().trim());
         branch.setType(request.type());
         branch.setAddress(request.address() != null ? request.address().trim() : null);
-        branch.setPhone(request.phone() != null ? request.phone().trim() : null);
+        branch.setPhone(PhoneNormalizer.normalize(request.phone()));
         branch.setEmail(request.email() != null ? request.email().trim().toLowerCase() : null);
         if (request.status() != null) {
             branch.setStatus(request.status());

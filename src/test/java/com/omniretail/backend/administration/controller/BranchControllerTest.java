@@ -81,7 +81,7 @@ class BranchControllerTest {
         String token = tokenFor(tenantA);
 
         String body = """
-                {"code":"centro","name":"Sucursal Centro","type":"main","address":"Zona 1, Guatemala"}
+                {"code":"centro","name":"Sucursal Centro","type":"main","address":"Zona 1, Guatemala","phone":"+502 2323-1232"}
                 """;
 
         mockMvc.perform(post(BASE_URL)
@@ -91,7 +91,47 @@ class BranchControllerTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.code").value("CENTRO"))
                 .andExpect(jsonPath("$.name").value("Sucursal Centro"))
+                .andExpect(jsonPath("$.phone").value("+502 2323-1232"))
                 .andExpect(jsonPath("$.tenantId").value(tenantA.getId().toString()));
+    }
+
+    @Test
+    void updateBranchAcceptsCanonicalPhone() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        Branch branch = Branch.builder()
+                .code("PHONE")
+                .name("Sucursal Teléfono")
+                .type(BranchType.store)
+                .status(BranchStatus.active)
+                .build();
+        branch.setTenantId(tenant.getId());
+        branch = branchRepository.save(branch);
+
+        mockMvc.perform(put(BASE_URL + "/" + branch.getId())
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Sucursal Teléfono","type":"store","phone":"+502 2323-1232"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.phone").value("+502 2323-1232"));
+    }
+
+    @Test
+    void invalidBranchPhoneReturnsValidationField() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+
+        mockMvc.perform(post(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"code":"INVALID","name":"Sucursal Inválida","type":"store","phone":"+502 2323-12321"}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.fields.phone").exists());
     }
 
     @Test
