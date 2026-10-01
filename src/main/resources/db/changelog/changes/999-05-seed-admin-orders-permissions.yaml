@@ -1,0 +1,17 @@
+databaseChangeLog:
+  - changeSet:
+      id: 999-05-seed-admin-orders-permissions
+      author: Mafer272
+      context: dev
+      changes:
+        - sql:
+            sql: |
+              UPDATE roles
+              SET permissions = (
+                SELECT ARRAY(
+                  SELECT DISTINCT permission
+                  FROM unnest(permissions || ARRAY['admin.orders.read', 'admin.orders.manage']::text[]) AS permission
+                  ORDER BY permission
+                )
+              )
+              WHERE name = 'Administrador' AND is_system = TRUE;
