@@ -23,6 +23,7 @@ import com.omniretail.backend.shared.config.FrontendProperties;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.exception.FieldValidationException;
 import com.omniretail.backend.shared.notification.EmailRequestedEvent;
+import com.omniretail.backend.shared.security.EmployeeAuthSummary;
 import com.omniretail.backend.shared.security.EmployeeInviteResult;
 import com.omniretail.backend.shared.security.SessionRevoker;
 import java.lang.reflect.Field;
@@ -515,6 +516,32 @@ class EmployeeInvitationServiceTest {
     private void assertInvalidActivation() {
         assertInvalidActivationError();
         verifyNoInteractions(passwordEncoder, sessionRevoker, eventPublisher);
+    }
+
+    @Test
+    void emptySummariesReturnImmediatelyWithoutQueries() {
+        assertThat(service.getAuthSummaries(TENANT_ID, List.of())).isEmpty();
+        verifyNoInteractions(userRepository, accountRepository);
+    }
+
+    @Test
+    void summariesUseTwoBatchQueriesAndReturnAccountStatus() {
+        User employee = employee();
+        AuthAccount account = pendingAccount();
+        when(userRepository.findAllByTenantIdAndTypeAndIdIn(
+                TENANT_ID, UserType.employee, List.of(USER_ID))).thenReturn(List.of(employee));
+        when(accountRepository.findAllByUserIdIn(List.of(USER_ID))).thenReturn(List.of(account));
+
+        List<EmployeeAuthSummary> summaries = service.getAuthSummaries(TENANT_ID, List.of(USER_ID, USER_ID));
+
+        assertThat(summaries).singleElement().satisfies(summary -> {
+            assertThat(summary.userId()).isEqualTo(USER_ID);
+            assertThat(summary.status()).isEqualTo(AccountStatus.password_reset_required.name());
+            assertThat(summary.mfaEnabled()).isFalse();
+            assertThat(summary.lastLoginAt()).isNull();
+        });
+        verify(userRepository).findAllByTenantIdAndTypeAndIdIn(TENANT_ID, UserType.employee, List.of(USER_ID));
+        verify(accountRepository).findAllByUserIdIn(List.of(USER_ID));
     }
 
     private void assertInvalidActivationError() {

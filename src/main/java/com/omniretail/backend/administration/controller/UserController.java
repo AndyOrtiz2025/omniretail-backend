@@ -1,16 +1,19 @@
 package com.omniretail.backend.administration.controller;
 
 import com.omniretail.backend.administration.dto.CreateUserRequest;
+import com.omniretail.backend.administration.dto.EmployeeAuthSummariesRequest;
 import com.omniretail.backend.administration.dto.UpdateUserRequest;
 import com.omniretail.backend.administration.dto.UserResponse;
 import com.omniretail.backend.administration.entity.UserStatus;
 import com.omniretail.backend.administration.service.UserService;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.security.CurrentUser;
+import com.omniretail.backend.shared.security.EmployeeAuthSummary;
 import com.omniretail.backend.shared.security.EmployeeInvitationPort;
 import com.omniretail.backend.shared.security.EmployeeInviteResult;
 import com.omniretail.backend.shared.security.RequirePermission;
 import jakarta.validation.Valid;
+import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Pageable;
@@ -77,5 +80,12 @@ public class UserController {
     @PostMapping("/{id}/resend-invite")
     public EmployeeInviteResult resendInvite(@PathVariable UUID id) {
         return employeeInvitationPort.inviteEmployee(currentUser.require().tenantId(), id);
+    }
+
+    @RequirePermission("admin.users.read")
+    @PostMapping("/auth-summaries")
+    public List<EmployeeAuthSummary> authSummaries(
+            @Valid @RequestBody EmployeeAuthSummariesRequest request) {
+        return employeeInvitationPort.getAuthSummaries(currentUser.require().tenantId(), request.userIds());
     }
 }

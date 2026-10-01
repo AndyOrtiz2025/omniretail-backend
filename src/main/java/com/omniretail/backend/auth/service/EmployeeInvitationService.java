@@ -21,7 +21,10 @@ import com.omniretail.backend.shared.security.SessionRevoker;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
@@ -127,8 +130,40 @@ public class EmployeeInvitationService implements EmployeeInvitationPort {
 
     @Override
     public List<EmployeeAuthSummary> getAuthSummaries(UUID tenantId, Collection<UUID> userIds) {
-        // Task 5 implementara el batch; no devolver resultados ficticios mientras tanto.
-        throw new UnsupportedOperationException("Consulta de autenticación pendiente de implementar en Task 5.");
+        if (userIds == null) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "INVALID_EMPLOYEE_SELECTION",
+                    "La selección de empleados no es válida.");
+        }
+        if (userIds.isEmpty()) {
+            return List.of();
+        }
+        if (userIds.size() > 100) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "INVALID_EMPLOYEE_SELECTION",
+                    "La selección de empleados no es válida.");
+        }
+
+        LinkedHashSet<UUID> requestedIds = new LinkedHashSet<>(userIds);
+        List<UUID> orderedIds = List.copyOf(requestedIds);
+        List<User> employees = userRepository.findAllByTenantIdAndTypeAndIdIn(
+                tenantId, UserType.employee, orderedIds);
+        if (employees.size() != requestedIds.size()) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "INVALID_EMPLOYEE_SELECTION",
+                    "La selección de empleados no es válida.");
+        }
+
+        List<AuthAccount> accounts = accountRepository.findAllByUserIdIn(orderedIds);
+        Map<UUID, AuthAccount> accountsByUserId = new LinkedHashMap<>();
+        accounts.forEach(account -> accountsByUserId.put(account.getUserId(), account));
+        return requestedIds.stream()
+                .map(userId -> summary(userId, accountsByUserId.get(userId)))
+                .toList();
+    }
+
+    private static EmployeeAuthSummary summary(UUID userId, AuthAccount account) {
+        if (account == null) {
+            return new EmployeeAuthSummary(userId, null, false, null);
+        }
+        return new EmployeeAuthSummary(userId, account.getStatus().name(), false, account.getLastLoginAt());
     }
 
     private AuthAccount createPendingAccount(User user) {
