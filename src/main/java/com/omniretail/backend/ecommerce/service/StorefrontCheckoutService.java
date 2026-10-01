@@ -33,6 +33,7 @@ import com.omniretail.backend.ecommerce.repository.OrderItemRepository;
 import com.omniretail.backend.ecommerce.repository.OrderRepository;
 import com.omniretail.backend.inventory.dto.ReserveInventoryCommand;
 import com.omniretail.backend.inventory.service.InventoryReservationLifecycleService;
+import com.omniretail.backend.logistics.service.PickingService;
 import com.omniretail.backend.pos.entity.Payment;
 import com.omniretail.backend.pos.entity.PaymentMethod;
 import com.omniretail.backend.pos.entity.PaymentStatus;
@@ -74,6 +75,7 @@ public class StorefrontCheckoutService {
     private final OrderItemRepository orderItemRepository;
     private final InventoryReservationRepository reservationRepository;
     private final InventoryReservationLifecycleService reservationLifecycleService;
+    private final PickingService pickingService;
     private final PaymentRepository paymentRepository;
     private final TenantCapabilityGuard capabilityGuard;
     private final UnitConversionRepository unitConversionRepository;
@@ -111,6 +113,7 @@ public class StorefrontCheckoutService {
                         "IDEMPOTENCY_KEY_REUSED",
                         "La llave de idempotencia ya fue usada con un carrito distinto.");
             }
+            pickingService.ensureForOrder(tenantId, existing.getId());
             Payment payment = paymentRepository.findByTenantIdAndOrderIdOrderByCreatedAtAscIdAsc(
                     tenantId, existing.getId()).stream().findFirst().orElseThrow();
             return response(
@@ -209,6 +212,7 @@ public class StorefrontCheckoutService {
                         savedItem.getInventoryQuantity()));
             }
         }
+        pickingService.ensureForOrder(tenantId, savedOrder.getId());
         Payment payment = Payment.builder()
                 .orderId(savedOrder.getId())
                 .method(PaymentMethod.card)

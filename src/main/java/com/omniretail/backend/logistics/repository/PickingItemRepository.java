@@ -1,14 +1,18 @@
 package com.omniretail.backend.logistics.repository;
 
 import com.omniretail.backend.logistics.entity.PickingItem;
+import jakarta.persistence.LockModeType;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 public interface PickingItemRepository extends JpaRepository<PickingItem, UUID> {
+
+    List<PickingItem> findByTenantIdAndPickingOrderId(UUID tenantId, UUID pickingOrderId);
 
     @Query("""
             select item from PickingItem item, PickingOrder picking
@@ -21,6 +25,22 @@ public interface PickingItemRepository extends JpaRepository<PickingItem, UUID> 
     Optional<PickingItem> findByScopeAndId(
             @Param("tenantId") UUID tenantId,
             @Param("branchId") UUID branchId,
+            @Param("id") UUID id);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            select item from PickingItem item, PickingOrder picking
+            where item.id = :id
+              and item.pickingOrderId = :pickingOrderId
+              and item.tenantId = :tenantId
+              and picking.id = item.pickingOrderId
+              and picking.tenantId = :tenantId
+              and picking.branchId = :branchId
+            """)
+    Optional<PickingItem> findByScopeAndIdForUpdate(
+            @Param("tenantId") UUID tenantId,
+            @Param("branchId") UUID branchId,
+            @Param("pickingOrderId") UUID pickingOrderId,
             @Param("id") UUID id);
 
     @Query("""

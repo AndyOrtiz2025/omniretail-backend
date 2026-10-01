@@ -40,6 +40,7 @@ import com.omniretail.backend.ecommerce.repository.OrderItemRepository;
 import com.omniretail.backend.ecommerce.repository.OrderRepository;
 import com.omniretail.backend.inventory.dto.ReserveInventoryCommand;
 import com.omniretail.backend.inventory.service.InventoryReservationLifecycleService;
+import com.omniretail.backend.logistics.service.PickingService;
 import com.omniretail.backend.pos.entity.Payment;
 import com.omniretail.backend.pos.entity.PaymentStatus;
 import com.omniretail.backend.pos.repository.PaymentRepository;
@@ -72,6 +73,7 @@ class StorefrontCheckoutServiceTest {
     @Mock private OrderItemRepository orderItemRepository;
     @Mock private InventoryReservationRepository reservationRepository;
     @Mock private InventoryReservationLifecycleService reservationLifecycleService;
+    @Mock private PickingService pickingService;
     @Mock private PaymentRepository paymentRepository;
     @Mock private TenantCapabilityGuard capabilityGuard;
     @Mock private UnitConversionRepository unitConversionRepository;
@@ -87,7 +89,8 @@ class StorefrontCheckoutServiceTest {
         service = new StorefrontCheckoutService(
                 tenantRepository, ecommerceConfigRepository, branchRepository, productRepository,
                 customerRepository, orderRepository, orderItemRepository, reservationRepository,
-                reservationLifecycleService, paymentRepository, capabilityGuard, unitConversionRepository,
+                reservationLifecycleService, pickingService, paymentRepository, capabilityGuard,
+                unitConversionRepository,
                 productPriceResolver,
                 JsonMapper.builder().build());
         tenantId = UUID.randomUUID();
@@ -166,6 +169,7 @@ class StorefrontCheckoutServiceTest {
         ArgumentCaptor<ReserveInventoryCommand> reservationCaptor =
                 ArgumentCaptor.forClass(ReserveInventoryCommand.class);
         verify(reservationLifecycleService).reserve(reservationCaptor.capture());
+        verify(pickingService).ensureForOrder(tenantId, orderId);
         assertThat(reservationCaptor.getValue().sourceType())
                 .isEqualTo(InventoryReservationSourceType.order);
         assertThat(reservationCaptor.getValue().sourceId()).isEqualTo(orderId);
