@@ -6,6 +6,9 @@ import com.omniretail.backend.administration.dto.UserResponse;
 import com.omniretail.backend.administration.entity.UserStatus;
 import com.omniretail.backend.administration.service.UserService;
 import com.omniretail.backend.shared.dto.PageResponse;
+import com.omniretail.backend.shared.security.CurrentUser;
+import com.omniretail.backend.shared.security.EmployeeInvitationPort;
+import com.omniretail.backend.shared.security.EmployeeInviteResult;
 import com.omniretail.backend.shared.security.RequirePermission;
 import jakarta.validation.Valid;
 import java.util.UUID;
@@ -29,6 +32,8 @@ import org.springframework.web.bind.annotation.RestController;
 public class UserController {
 
     private final UserService userService;
+    private final EmployeeInvitationPort employeeInvitationPort;
+    private final CurrentUser currentUser;
 
     @RequirePermission("admin.users.read")
     @GetMapping
@@ -60,5 +65,17 @@ public class UserController {
     @PutMapping("/{id}/status")
     public UserResponse updateStatus(@PathVariable UUID id, @RequestParam UserStatus status) {
         return userService.updateUserStatus(id, status);
+    }
+
+    @RequirePermission("admin.users.manage")
+    @PostMapping("/{id}/invite")
+    public EmployeeInviteResult invite(@PathVariable UUID id) {
+        return employeeInvitationPort.inviteEmployee(currentUser.require().tenantId(), id);
+    }
+
+    @RequirePermission("admin.users.manage")
+    @PostMapping("/{id}/resend-invite")
+    public EmployeeInviteResult resendInvite(@PathVariable UUID id) {
+        return employeeInvitationPort.inviteEmployee(currentUser.require().tenantId(), id);
     }
 }
