@@ -1,0 +1,63 @@
+databaseChangeLog:
+  - changeSet:
+      id: 031-auth-employee-invitations
+      author: joga17000
+      changes:
+        - createTable:
+            tableName: employee_invitations
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: user_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: users
+                    referencedColumnNames: id
+                    foreignKeyName: fk_employee_invitations_user
+                    deleteCascade: true
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_employee_invitations_tenant
+                    deleteCascade: true
+              - column:
+                  name: token_hash
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+                    unique: true
+                    uniqueConstraintName: uk_employee_invitations_token_hash
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: expires_at
+                  type: TIMESTAMPTZ
+                  constraints:
+                    nullable: false
+              - column:
+                  name: accepted_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: superseded_at
+                  type: TIMESTAMPTZ
+        - createIndex:
+            tableName: employee_invitations
+            indexName: idx_employee_invitations_user
+            columns:
+              - column:
+                  name: user_id
