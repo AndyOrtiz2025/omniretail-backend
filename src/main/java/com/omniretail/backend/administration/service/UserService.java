@@ -19,6 +19,7 @@ import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
 import com.omniretail.backend.shared.security.PermissionResolver;
 import com.omniretail.backend.shared.security.SessionRevoker;
+import com.omniretail.backend.shared.validation.PhoneNormalizer;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
@@ -84,7 +85,7 @@ public class UserService {
         User user = User.builder()
                 .name(request.name().trim())
                 .email(email)
-                .phone(normalizePhone(request.phone()))
+                .phone(PhoneNormalizer.normalize(request.phone()))
                 .employeeCode(employeeCode)
                 .type(UserType.employee)
                 .status(request.status() != null ? request.status() : UserStatus.active)
@@ -126,7 +127,7 @@ public class UserService {
         boolean branchesChanged = !sameBranchSet(previousBranchIds, request.allowedBranchIds());
 
         user.setName(request.name().trim());
-        user.setPhone(normalizePhone(request.phone()));
+        user.setPhone(PhoneNormalizer.normalize(request.phone()));
         user.setEmployeeCode(employeeCode);
         user.setRoleId(request.roleId());
         user.setBranchId(request.branchId());
@@ -182,10 +183,6 @@ public class UserService {
     private static boolean sameBranchSet(Set<UUID> previous, List<UUID> updated) {
         Set<UUID> updatedSet = updated != null ? new HashSet<>(updated) : Set.of();
         return previous.equals(updatedSet);
-    }
-
-    private static String normalizePhone(String phone) {
-        return phone != null && !phone.isBlank() ? phone.trim() : null;
     }
 
     /**

@@ -96,7 +96,7 @@ class UserControllerTest {
 
         String body =
                 """
-                {"name":"Empleado Nuevo","email":"NUEVO@Omniretail.Local","employeeCode":"EMP-001","roleId":"%s"}
+                {"name":"Empleado Nuevo","email":"NUEVO@Omniretail.Local","phone":"+502 2323-1232","employeeCode":"EMP-001","roleId":"%s"}
                 """
                         .formatted(role.getId());
 
@@ -107,6 +107,7 @@ class UserControllerTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.name").value("Empleado Nuevo"))
                 .andExpect(jsonPath("$.email").value("nuevo@omniretail.local"))
+                .andExpect(jsonPath("$.phone").value("+502 2323-1232"))
                 .andExpect(jsonPath("$.employeeCode").value("EMP-001"))
                 .andExpect(jsonPath("$.type").value("employee"))
                 .andExpect(jsonPath("$.status").value("active"))
@@ -341,6 +342,27 @@ class UserControllerTest {
     }
 
     @Test
+    void invalidUserPhoneReturnsValidationField() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        Role role = persistRole(tenant, List.of());
+
+        String body =
+                """
+                {"name":"Empleado Inválido","email":"telefono-invalido@omniretail.local","phone":"+502 2323-12321","employeeCode":"EMP-PHONE","roleId":"%s"}
+                """
+                        .formatted(role.getId());
+
+        mockMvc.perform(post(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.fields.phone").exists());
+    }
+
+    @Test
     void crossTenantIsolation() throws Exception {
         Tenant tenantA = persistTenant();
         Tenant tenantB = persistTenant();
@@ -381,7 +403,7 @@ class UserControllerTest {
 
         String updateBody =
                 """
-                {"name":"Nombre Actualizado","phone":"22345678","employeeCode":"EMP-200","roleId":"%s","status":"inactive"}
+                {"name":"Nombre Actualizado","phone":"+502 2323-1232","employeeCode":"EMP-200","roleId":"%s","status":"inactive"}
                 """
                         .formatted(role.getId());
 
@@ -391,7 +413,7 @@ class UserControllerTest {
                         .content(updateBody))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.name").value("Nombre Actualizado"))
-                .andExpect(jsonPath("$.phone").value("22345678"))
+                .andExpect(jsonPath("$.phone").value("+502 2323-1232"))
                 .andExpect(jsonPath("$.employeeCode").value("EMP-200"))
                 .andExpect(jsonPath("$.status").value("inactive"))
                 .andExpect(jsonPath("$.email").value("original@omniretail.local"))

@@ -1,0 +1,40 @@
+databaseChangeLog:
+  - changeSet:
+      id: 029-administration-phone-normalization
+      author: joga17000
+      validCheckSum:
+        - 9:83fa2e4ee9717538a18392da28288636
+        - 9:4d7969f87202a90deb8cf7b2ffac12f5
+        - ANY
+      changes:
+        - sql:
+            sql: |
+              UPDATE branches AS target
+              SET phone = '+502 ' || left(normalized.digits, 4) || '-' || right(normalized.digits, 4)
+              FROM (
+                SELECT id, right(regexp_replace(phone, '[^0-9]', '', 'g'), 8) AS digits
+                FROM branches
+                WHERE phone ~ '^([+]?502 ?)?[0-9]{4}-?[0-9]{4}$'
+              ) AS normalized
+              WHERE target.id = normalized.id;
+        - sql:
+            sql: |
+              UPDATE users AS target
+              SET phone = '+502 ' || left(normalized.digits, 4) || '-' || right(normalized.digits, 4)
+              FROM (
+                SELECT id, right(regexp_replace(phone, '[^0-9]', '', 'g'), 8) AS digits
+                FROM users
+                WHERE type = 'employee'
+                  AND phone ~ '^([+]?502 ?)?[0-9]{4}-?[0-9]{4}$'
+              ) AS normalized
+              WHERE target.id = normalized.id;
+        - sql:
+            sql: |
+              UPDATE suppliers AS target
+              SET phone = '+502 ' || left(normalized.digits, 4) || '-' || right(normalized.digits, 4)
+              FROM (
+                SELECT id, right(regexp_replace(phone, '[^0-9]', '', 'g'), 8) AS digits
+                FROM suppliers
+                WHERE phone ~ '^([+]?502 ?)?[0-9]{4}-?[0-9]{4}$'
+              ) AS normalized
+              WHERE target.id = normalized.id;

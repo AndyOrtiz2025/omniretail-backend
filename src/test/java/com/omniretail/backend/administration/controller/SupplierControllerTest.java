@@ -86,7 +86,7 @@ class SupplierControllerTest {
 
         String body =
                 """
-                {"name":"Distribuidora Central","legalName":"Distribuidora Central S.A.","taxId":"1234567-8","email":"CONTACTO@Proveedor.Com","phone":"22345678","address":"Zona 4, Guatemala","notes":"Entrega en 5 dias"}
+                {"name":"Distribuidora Central","legalName":"Distribuidora Central S.A.","taxId":"1234567-8","email":"CONTACTO@Proveedor.Com","phone":"+502 2323-1232","address":"Zona 4, Guatemala","notes":"Entrega en 5 dias"}
                 """;
 
         mockMvc.perform(post(BASE_URL)
@@ -98,7 +98,7 @@ class SupplierControllerTest {
                 .andExpect(jsonPath("$.legalName").value("Distribuidora Central S.A."))
                 .andExpect(jsonPath("$.taxId").value("1234567-8"))
                 .andExpect(jsonPath("$.email").value("contacto@proveedor.com"))
-                .andExpect(jsonPath("$.phone").value("22345678"))
+                .andExpect(jsonPath("$.phone").value("+502 2323-1232"))
                 .andExpect(jsonPath("$.address").value("Zona 4, Guatemala"))
                 .andExpect(jsonPath("$.notes").value("Entrega en 5 dias"))
                 .andExpect(jsonPath("$.status").value("active"))
@@ -287,7 +287,7 @@ class SupplierControllerTest {
         Supplier supplier = persistSupplier(tenant, "Proveedor Original", null, SupplierStatus.active);
 
         String updateBody = """
-                {"name":"Proveedor Actualizado","phone":"33445566","status":"inactive"}
+                {"name":"Proveedor Actualizado","phone":"+502 2323-1232","status":"inactive"}
                 """;
 
         mockMvc.perform(put(BASE_URL + "/" + supplier.getId())
@@ -296,7 +296,7 @@ class SupplierControllerTest {
                         .content(updateBody))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.name").value("Proveedor Actualizado"))
-                .andExpect(jsonPath("$.phone").value("33445566"))
+                .andExpect(jsonPath("$.phone").value("+502 2323-1232"))
                 .andExpect(jsonPath("$.status").value("inactive"));
     }
 
@@ -377,14 +377,16 @@ class SupplierControllerTest {
                 .andExpect(status().isBadRequest());
 
         String invalidPhoneBody = """
-                {"name":"Proveedor Telefono Invalido","phone":"123"}
+                {"name":"Proveedor Telefono Invalido","phone":"+502 2323-12321"}
                 """;
 
         mockMvc.perform(post(BASE_URL)
                         .header("Authorization", bearer(token))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(invalidPhoneBody))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.fields.phone").exists());
     }
 
     private Supplier persistSupplier(Tenant tenant, String name, String taxId, SupplierStatus status) {
