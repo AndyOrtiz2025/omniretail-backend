@@ -6,6 +6,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 
 import com.jayway.jsonpath.JsonPath;
 import com.omniretail.backend.TestcontainersConfiguration;
+import com.omniretail.backend.SubscriptionTestFixtures;
+import com.omniretail.backend.administration.repository.SaasPlanRepository;
+import com.omniretail.backend.administration.repository.TenantSubscriptionRepository;
 import com.omniretail.backend.administration.entity.User;
 import com.omniretail.backend.administration.repository.UserRepository;
 import com.omniretail.backend.auth.entity.Session;
@@ -52,6 +55,8 @@ class GoldenConcurrencyTest {
     private static final int ROUNDS = 5;
     private static final String PRICE = "10.00";
 
+    @Autowired private SaasPlanRepository saasPlans;
+    @Autowired private TenantSubscriptionRepository tenantSubscriptions;
     @Autowired private MockMvc mvc;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private JwtService jwtService;
@@ -193,8 +198,9 @@ class GoldenConcurrencyTest {
         String body = """
                 {"branchId":"%s","cashShiftId":"%s",
                  "items":[{"productId":"%s","quantity":1}],
-                 "payments":[{"method":"cash","amount":%s}]}
-                """.formatted(store.branchId(), cashier.shiftId(), store.productId(), PRICE);
+                 "payments":[{"method":"cash","amount":%s}],
+                 "confirmationId":"%s"}
+                """.formatted(store.branchId(), cashier.shiftId(), store.productId(), PRICE, UUID.randomUUID());
         return outcome(mvc.perform(post("/api/v1/pos/sales").header("Authorization", cashier.bearer())
                 .contentType(APPLICATION_JSON).content(body)).andReturn());
     }
@@ -305,6 +311,8 @@ class GoldenConcurrencyTest {
         String slug = "golden-" + suffix;
         jdbc.update("INSERT INTO tenants (id, name, slug, status, default_currency, timezone) "
                 + "VALUES (?, ?, ?, 'active', 'GTQ', 'America/Guatemala')", tenantId, "Tienda " + suffix, slug);
+        SubscriptionTestFixtures.provisionBasic(tenantSubscriptions, saasPlans, tenantId,
+                List.of("ecommerce_delivery"));
         jdbc.update("INSERT INTO branches (id, tenant_id, code, name, type, status) VALUES (?, ?, ?, ?, 'main', 'active')",
                 branchId, tenantId, "MAIN-" + suffix, "Principal " + suffix);
         jdbc.update("INSERT INTO ecommerce_configs (tenant_id, enabled, store_name, require_account_for_checkout, "

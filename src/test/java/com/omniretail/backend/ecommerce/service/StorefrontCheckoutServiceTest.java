@@ -20,10 +20,12 @@ import com.omniretail.backend.administration.repository.BranchRepository;
 import com.omniretail.backend.administration.repository.EcommerceConfigRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.catalog.entity.Product;
+import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
 import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.UnitConversionRepository;
+import com.omniretail.backend.catalog.service.ProductPriceResolver;
 import com.omniretail.backend.ecommerce.dto.StorefrontCheckoutItemRequest;
 import com.omniretail.backend.ecommerce.dto.StorefrontCheckoutRequest;
 import com.omniretail.backend.ecommerce.dto.StorefrontCheckoutResponse;
@@ -72,6 +74,7 @@ class StorefrontCheckoutServiceTest {
     @Mock private PaymentRepository paymentRepository;
     @Mock private TenantCapabilityGuard capabilityGuard;
     @Mock private UnitConversionRepository unitConversionRepository;
+    @Mock private ProductPriceResolver productPriceResolver;
 
     private StorefrontCheckoutService service;
     private UUID tenantId;
@@ -84,10 +87,18 @@ class StorefrontCheckoutServiceTest {
                 tenantRepository, ecommerceConfigRepository, branchRepository, productRepository,
                 customerRepository, orderRepository, orderItemRepository, reservationRepository,
                 balanceRepository, paymentRepository, capabilityGuard, unitConversionRepository,
+                productPriceResolver,
                 JsonMapper.builder().build());
         tenantId = UUID.randomUUID();
         branchId = UUID.randomUUID();
         productId = UUID.randomUUID();
+        lenient().when(productPriceResolver.resolveEffectivePrice(
+                        eq(tenantId), any(Product.class), any()))
+                .thenReturn(new ResolvedProductPrice(
+                        new BigDecimal("20.00"),
+                        new BigDecimal("20.00"),
+                        BigDecimal.ZERO.setScale(2),
+                        null));
         Tenant tenant = mock(Tenant.class);
         when(tenant.getId()).thenReturn(tenantId);
         when(tenant.getStatus()).thenReturn(TenantStatus.active);
@@ -162,6 +173,55 @@ class StorefrontCheckoutServiceTest {
         assertThat(reservationCaptor.getValue().getAllocations())
                 .contains("\"id\"", balanceId.toString(), "\"locationId\":null",
                         "\"reservedQuantity\":1", "\"consumedQuantity\":0");
+    }
+
+    @Test
+    void checkoutRecalculatesPromotionAndStoresOrderItemSnapshot() {
+        UUID promotionId = UUID.randomUUID();
+        Product product = product(false, ProductType.service);
+        when(productRepository.findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
+                tenantId, productId, ProductStatus.published)).thenReturn(Optional.of(product));
+        when(productPriceResolver.resolveEffectivePrice(eq(tenantId), any(Product.class), any()))
+                .thenReturn(new ResolvedProductPrice(
+                        new BigDecimal("20.00"), new BigDecimal("12.00"),
+                        new BigDecimal("8.00"), promotionId));
+        Order savedOrder = mock(Order.class);
+        UUID orderId = UUID.randomUUID();
+        when(savedOrder.getId()).thenReturn(orderId);
+        when(savedOrder.getOrderNumber()).thenReturn("WEB-PROMO");
+        when(savedOrder.getTrackingToken()).thenReturn("promo-tracking");
+        when(savedOrder.getTotal()).thenReturn(new BigDecimal("24.00"));
+        when(savedOrder.getStatus()).thenReturn(OrderStatus.confirmed);
+        when(savedOrder.getDeliveryAddress()).thenReturn(
+                "{\"recipientName\":\"Maria\",\"line1\":\"7a Avenida\","
+                        + "\"line2\":null,\"city\":\"Guatemala\","
+                        + "\"stateOrDepartment\":null,\"recipientPhone\":\"55551234\"}");
+        when(savedOrder.getTenantId()).thenReturn(tenantId);
+        when(orderRepository.save(any(Order.class))).thenReturn(savedOrder);
+        Payment payment = mock(Payment.class);
+        when(payment.getStatus()).thenReturn(PaymentStatus.approved);
+        when(paymentRepository.save(any(Payment.class))).thenReturn(payment);
+        when(reservationRepository.findByTenantIdAndOrderId(tenantId, orderId)).thenReturn(List.of());
+
+        StorefrontCheckoutResponse response = service.checkout(
+                "ferreteria", "checkout-1", request(new BigDecimal("2")));
+
+        ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
+        verify(orderRepository).save(orderCaptor.capture());
+        assertThat(orderCaptor.getValue().getSubtotal()).isEqualByComparingTo("24.00");
+        assertThat(orderCaptor.getValue().getDiscountTotal()).isEqualByComparingTo("16.00");
+        assertThat(orderCaptor.getValue().getTotal()).isEqualByComparingTo("24.00");
+        ArgumentCaptor<com.omniretail.backend.ecommerce.entity.OrderItem> itemCaptor =
+                ArgumentCaptor.forClass(com.omniretail.backend.ecommerce.entity.OrderItem.class);
+        verify(orderItemRepository).save(itemCaptor.capture());
+        assertThat(itemCaptor.getValue().getUnitPrice()).isEqualByComparingTo("20.00");
+        assertThat(itemCaptor.getValue().getDiscount()).isEqualByComparingTo("16.00");
+        assertThat(itemCaptor.getValue().getSubtotal()).isEqualByComparingTo("24.00");
+        assertThat(itemCaptor.getValue().getPromotionId()).isEqualTo(promotionId);
+        assertThat(response.items()).singleElement().satisfies(item -> {
+            assertThat(item.discount()).isEqualByComparingTo("16.00");
+            assertThat(item.promotionId()).isEqualTo(promotionId);
+        });
     }
 
     @Test

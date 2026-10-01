@@ -4,11 +4,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.BDDMockito.given;
 
 import com.omniretail.backend.TestcontainersConfiguration;
+import com.omniretail.backend.SubscriptionTestFixtures;
+import com.omniretail.backend.administration.repository.SaasPlanRepository;
+import com.omniretail.backend.administration.repository.TenantSubscriptionRepository;
 import com.omniretail.backend.administration.dto.BusinessConfigResponse;
 import com.omniretail.backend.administration.entity.BusinessPreset;
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.entity.UserType;
+import com.omniretail.backend.administration.entity.User;
+import com.omniretail.backend.administration.repository.UserRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.administration.service.BusinessConfigService;
 import com.omniretail.backend.catalog.dto.ProductChannelsDto;
@@ -31,6 +36,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.context.ActiveProfiles;
@@ -49,11 +55,20 @@ class ProductServiceIntegrationTest {
     @Autowired
     private TenantRepository tenantRepository;
 
+    @Autowired private SaasPlanRepository planRepository;
+    @Autowired private TenantSubscriptionRepository subscriptionRepository;
+
     @Autowired
     private CategoryRepository categoryRepository;
 
     @Autowired
     private UnitRepository unitRepository;
+
+    @Autowired
+    private UserRepository userRepository;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     @MockitoBean
     private BusinessConfigService businessConfigService;
@@ -72,6 +87,7 @@ class ProductServiceIntegrationTest {
                 .defaultCurrency("GTQ")
                 .timezone("America/Guatemala")
                 .build());
+        SubscriptionTestFixtures.provisionBasic(subscriptionRepository, planRepository, tenant.getId());
         Category category = Category.builder()
                 .name("Categoria")
                 .slug("categoria-" + UUID.randomUUID())
@@ -86,7 +102,14 @@ class ProductServiceIntegrationTest {
                 .build();
         unit.setTenantId(tenant.getId());
         unit = unitRepository.saveAndFlush(unit);
-        authenticate(tenant.getId());
+        User actor = User.builder()
+                .name("Usuario catalogo")
+                .email("catalogo-" + UUID.randomUUID() + "@test.local")
+                .type(UserType.employee)
+                .build();
+        actor.setTenantId(tenant.getId());
+        actor = userRepository.saveAndFlush(actor);
+        authenticate(actor.getId(), tenant.getId());
         given(businessConfigService.getConfig()).willReturn(new BusinessConfigResponse(
                 tenant.getId(), BusinessPreset.custom,
                 true, true, true, true, true, true, true, true, true,
@@ -112,11 +135,20 @@ class ProductServiceIntegrationTest {
 
         assertThat(created.createdAt()).isNotNull();
         assertThat(created.updatedAt()).isNotNull();
+        var initialHistory = jdbcTemplate.queryForMap("""
+                SELECT old_price, new_price, changed_by_user_id, reason
+                FROM product_price_history
+                WHERE tenant_id = ? AND product_id = ?
+                """, tenant.getId(), created.id());
+        assertThat(initialHistory.get("old_price")).isNull();
+        assertThat((BigDecimal) initialHistory.get("new_price")).isEqualByComparingTo("10.00");
+        assertThat(initialHistory.get("changed_by_user_id")).isEqualTo(actor.getId());
+        assertThat(initialHistory.get("reason")).isEqualTo("Creación de producto");
     }
 
-    private static void authenticate(UUID tenantId) {
+    private static void authenticate(UUID userId, UUID tenantId) {
         AuthenticatedUser user = new AuthenticatedUser(
-                UUID.randomUUID(), tenantId, UserType.employee, null, null, UUID.randomUUID());
+                userId, tenantId, UserType.employee, null, null, UUID.randomUUID());
         SecurityContextHolder.getContext()
                 .setAuthentication(new UsernamePasswordAuthenticationToken(user, null, List.of()));
     }

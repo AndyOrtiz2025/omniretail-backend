@@ -1,0 +1,241 @@
+databaseChangeLog:
+  - changeSet:
+      id: 025-catalog-pricing-attributes
+      author: melbyn
+      changes:
+        - createTable:
+            tableName: product_price_history
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: product_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: old_price
+                  type: NUMERIC(12,2)
+              - column:
+                  name: new_price
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: changed_by_user_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: reason
+                  type: VARCHAR(200)
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: product_price_history
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_product_price_history_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: product_price_history
+            baseColumnNames: product_id
+            referencedTableName: products
+            referencedColumnNames: id
+            constraintName: fk_product_price_history_product
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: product_price_history
+            baseColumnNames: changed_by_user_id
+            referencedTableName: users
+            referencedColumnNames: id
+            constraintName: fk_product_price_history_user
+            onDelete: RESTRICT
+        - createIndex:
+            tableName: product_price_history
+            indexName: idx_product_price_history_tenant_product_created
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: product_id
+              - column:
+                  name: created_at
+        - sql:
+            sql: "ALTER TABLE product_price_history ADD CONSTRAINT ck_product_price_history_new_price CHECK (new_price >= 0)"
+
+        - createTable:
+            tableName: attribute_definitions
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: code
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: name
+                  type: VARCHAR(200)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: data_type
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  defaultValue: active
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: attribute_definitions
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_attribute_definitions_tenant
+            onDelete: RESTRICT
+        - sql:
+            sql: "CREATE UNIQUE INDEX uk_attribute_definitions_tenant_code_ci ON attribute_definitions (tenant_id, lower(code))"
+        - sql:
+            sql: "ALTER TABLE attribute_definitions ADD CONSTRAINT ck_attribute_definitions_data_type CHECK (data_type IN ('TEXT', 'NUMBER', 'BOOLEAN'))"
+        - sql:
+            sql: "ALTER TABLE attribute_definitions ADD CONSTRAINT ck_attribute_definitions_status CHECK (status IN ('active', 'archived'))"
+
+        - createTable:
+            tableName: product_attribute_values
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: product_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: attribute_definition_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: value_string
+                  type: VARCHAR(500)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: product_attribute_values
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_product_attribute_values_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: product_attribute_values
+            baseColumnNames: product_id
+            referencedTableName: products
+            referencedColumnNames: id
+            constraintName: fk_product_attribute_values_product
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: product_attribute_values
+            baseColumnNames: attribute_definition_id
+            referencedTableName: attribute_definitions
+            referencedColumnNames: id
+            constraintName: fk_product_attribute_values_definition
+            onDelete: RESTRICT
+        - addUniqueConstraint:
+            tableName: product_attribute_values
+            columnNames: tenant_id, product_id, attribute_definition_id
+            constraintName: uk_product_attribute_values_tenant_product_definition
+        - createIndex:
+            tableName: product_attribute_values
+            indexName: idx_product_attribute_values_tenant_product
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: product_id
+
+  - changeSet:
+      id: 025-catalog-attributes-admin-role-permissions
+      author: melbyn
+      context: dev
+      changes:
+        - sql:
+            sql: |
+              UPDATE roles
+              SET permissions = array_cat(
+                permissions,
+                ARRAY[
+                  'catalog.attributes.read',
+                  'catalog.attributes.manage'
+                ]::text[]
+              )
+              WHERE id = '33333333-3333-3333-3333-333333333331'
+                AND NOT (
+                  permissions @> ARRAY[
+                    'catalog.attributes.read',
+                    'catalog.attributes.manage'
+                  ]::text[]
+                );

@@ -25,6 +25,7 @@ public class BranchService {
 
     private final BranchRepository branchRepository;
     private final CurrentUser currentUser;
+    private final PlanLimitGuard planLimitGuard;
 
     public PageResponse<BranchResponse> listBranches(BranchStatus status, Pageable pageable) {
         UUID tenantId = currentUser.require().tenantId();
@@ -50,6 +51,7 @@ public class BranchService {
 
     public BranchResponse createBranch(CreateBranchRequest request) {
         UUID tenantId = currentUser.require().tenantId();
+        planLimitGuard.ensureBranchCreationAllowed(tenantId);
         String code = request.code().trim().toUpperCase();
         if (branchRepository.existsByTenantIdAndCodeIgnoreCase(tenantId, code)) {
             throw new BusinessException(

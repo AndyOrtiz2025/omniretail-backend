@@ -1,0 +1,200 @@
+databaseChangeLog:
+  - changeSet:
+      id: 028-administration-plans-subscriptions
+      author: joga17000
+      changes:
+        - createTable:
+            tableName: saas_plans
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: code
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+                    unique: true
+                    uniqueConstraintName: uk_saas_plans_code
+              - column:
+                  name: name
+                  type: VARCHAR(100)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: description
+                  type: TEXT
+              - column:
+                  name: max_branches
+                  type: INT
+              - column:
+                  name: max_employees
+                  type: INT
+              - column:
+                  name: monthly_quetzales
+                  type: NUMERIC(12,2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: capabilities
+                  type: text[]
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  defaultValue: active
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - createTable:
+            tableName: tenant_subscriptions
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: plan_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: started_at
+                  type: TIMESTAMPTZ
+                  constraints:
+                    nullable: false
+              - column:
+                  name: current_period_start
+                  type: TIMESTAMPTZ
+                  constraints:
+                    nullable: false
+              - column:
+                  name: current_period_end
+                  type: TIMESTAMPTZ
+                  constraints:
+                    nullable: false
+              - column:
+                  name: addon_codes
+                  type: text[]
+                  defaultValueComputed: "ARRAY[]::text[]"
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: tenant_subscriptions
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_tenant_subscriptions_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: tenant_subscriptions
+            baseColumnNames: plan_id
+            referencedTableName: saas_plans
+            referencedColumnNames: id
+            constraintName: fk_tenant_subscriptions_plan
+            onDelete: RESTRICT
+        - createIndex:
+            tableName: tenant_subscriptions
+            indexName: idx_tenant_subscriptions_tenant
+            columns:
+              - column:
+                  name: tenant_id
+        - createIndex:
+            tableName: tenant_subscriptions
+            indexName: idx_tenant_subscriptions_plan
+            columns:
+              - column:
+                  name: plan_id
+        - sql:
+            sql: "ALTER TABLE saas_plans ADD CONSTRAINT ck_saas_plans_max_branches CHECK (max_branches > 0)"
+        - sql:
+            sql: "ALTER TABLE saas_plans ADD CONSTRAINT ck_saas_plans_max_employees CHECK (max_employees > 0)"
+        - sql:
+            sql: "ALTER TABLE saas_plans ADD CONSTRAINT ck_saas_plans_monthly_quetzales CHECK (monthly_quetzales >= 0)"
+        - sql:
+            sql: "ALTER TABLE saas_plans ADD CONSTRAINT ck_saas_plans_status CHECK (status IN ('active', 'archived'))"
+        - sql:
+            sql: "ALTER TABLE tenant_subscriptions ADD CONSTRAINT ck_tenant_subscriptions_status CHECK (status IN ('active', 'suspended', 'cancelled'))"
+        - sql:
+            sql: "ALTER TABLE tenant_subscriptions ADD CONSTRAINT ck_tenant_subscriptions_period CHECK (current_period_end > current_period_start)"
+        - sql:
+            sql: "CREATE UNIQUE INDEX uq_tenant_subscriptions_current ON tenant_subscriptions (tenant_id) WHERE status IN ('active', 'suspended')"
+        - sql:
+            sql: |
+              ALTER TABLE tenant_subscriptions ADD CONSTRAINT uq_tenant_subscriptions_tenant_id UNIQUE (tenant_id, id);
+              CREATE TABLE subscription_invoices (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+                subscription_id UUID NOT NULL,
+                cycle_start TIMESTAMPTZ NOT NULL,
+                cycle_end TIMESTAMPTZ NOT NULL,
+                addon_codes TEXT[] NOT NULL DEFAULT ARRAY[]::text[],
+                base_quetzales NUMERIC(12,2) NOT NULL CHECK (base_quetzales >= 0),
+                total_quetzales NUMERIC(12,2) NOT NULL CHECK (total_quetzales >= base_quetzales),
+                addon_lines JSONB NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(addon_lines) = 'array'),
+                status VARCHAR(20) NOT NULL DEFAULT 'simulated' CHECK (status = 'simulated'),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                CONSTRAINT fk_subscription_invoices_tenant_subscription FOREIGN KEY (tenant_id, subscription_id)
+                  REFERENCES tenant_subscriptions(tenant_id, id) ON DELETE RESTRICT,
+                CONSTRAINT ck_subscription_invoices_cycle CHECK (cycle_end > cycle_start),
+                CONSTRAINT uq_subscription_invoices_cycle UNIQUE (subscription_id, cycle_start)
+              );
+              CREATE INDEX idx_subscription_invoices_tenant ON subscription_invoices(tenant_id);
+              CREATE INDEX idx_subscription_invoices_subscription ON subscription_invoices(subscription_id);
+        - sql:
+            sql: |
+              INSERT INTO saas_plans (id, code, name, description, monthly_quetzales, capabilities, status)
+              VALUES ('00000000-0000-0000-0000-000000000199', 'basic', 'Plan Básico',
+                      'Plan base sin límites de empleados ni sucursales', 199.00,
+                      ARRAY['inventory','purchasing','receiving','pos','traceability.lots',
+                            'traceability.expiration','traceability.serials']::text[], 'active');
+        - sql:
+            sql: |
+              INSERT INTO tenant_subscriptions (tenant_id, plan_id, status, started_at,
+                                                current_period_start, current_period_end, addon_codes)
+              SELECT t.id, p.id, 'active', now(), now(), now() + INTERVAL '1 month', ARRAY[]::text[]
+              FROM tenants t CROSS JOIN saas_plans p
+              WHERE p.code = 'basic'
+                AND NOT EXISTS (SELECT 1 FROM tenant_subscriptions s WHERE s.tenant_id = t.id);
