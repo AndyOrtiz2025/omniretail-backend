@@ -8,6 +8,7 @@ import com.omniretail.backend.TestcontainersConfiguration;
 import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.administration.service.BranchAccessResolver;
 import com.omniretail.backend.administration.service.BranchAccessResolver.BranchAccess;
+import com.omniretail.backend.logistics.dto.PickingActionResponse;
 import com.omniretail.backend.logistics.dto.PickingLineResponse;
 import com.omniretail.backend.logistics.dto.UpdatePickingItemRequest;
 import com.omniretail.backend.logistics.entity.PickingSourceType;
@@ -94,6 +95,50 @@ class PickingServiceConcurrencyTest {
         }
     }
 
+    @Test
+    void concurrentCompletionCreatesOneCanonicalPacking() throws Exception {
+        Fixture fixture = fixture();
+        given(branchAccessResolver.resolve(any())).willReturn(new BranchAccess(true, Set.of()));
+        given(currentUser.require()).willReturn(new AuthenticatedUser(
+                fixture.userId(), fixture.tenantId(), UserType.employee,
+                null, fixture.branchId(), UUID.randomUUID()));
+        UUID pickingId = service.ensureForOrder(fixture.tenantId(), fixture.orderId())
+                .orElseThrow()
+                .getId();
+        service.assign(fixture.branchId(), pickingId);
+        UUID itemId = pickingItems.findByTenantIdAndPickingOrderId(fixture.tenantId(), pickingId)
+                .getFirst()
+                .getId();
+        service.updateItem(
+                fixture.branchId(), pickingId, itemId,
+                new UpdatePickingItemRequest(new BigDecimal("5.000"), null, "complete-item"));
+
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<PickingActionResponse> first = executor.submit(
+                    () -> complete(fixture, pickingId, ready, start));
+            Future<PickingActionResponse> second = executor.submit(
+                    () -> complete(fixture, pickingId, ready, start));
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            assertThat(List.of(
+                            first.get(20, TimeUnit.SECONDS), second.get(20, TimeUnit.SECONDS)))
+                    .extracting(PickingActionResponse::idempotent)
+                    .containsExactlyInAnyOrder(false, true);
+            assertThat(jdbc.queryForObject(
+                    "SELECT count(*) FROM packings WHERE tenant_id = ? AND picking_order_id = ?",
+                    Long.class,
+                    fixture.tenantId(),
+                    pickingId))
+                    .isOne();
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
     private PickingLineResponse update(
             Fixture fixture,
             UUID pickingId,
@@ -110,6 +155,18 @@ class PickingServiceConcurrencyTest {
                 itemId,
                 new UpdatePickingItemRequest(
                         new BigDecimal("2.000"), null, "concurrent-operation"));
+    }
+
+    private PickingActionResponse complete(
+            Fixture fixture,
+            UUID pickingId,
+            CountDownLatch ready,
+            CountDownLatch start) throws InterruptedException {
+        ready.countDown();
+        if (!start.await(10, TimeUnit.SECONDS)) {
+            throw new IllegalStateException("Las finalizaciones de Picking no iniciaron a tiempo.");
+        }
+        return service.complete(fixture.branchId(), pickingId);
     }
 
     private Fixture fixture() {

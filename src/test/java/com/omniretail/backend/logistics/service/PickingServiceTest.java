@@ -18,6 +18,7 @@ import com.omniretail.backend.logistics.entity.PickingItemStatus;
 import com.omniretail.backend.logistics.entity.PickingOrder;
 import com.omniretail.backend.logistics.entity.PickingSourceType;
 import com.omniretail.backend.logistics.entity.PickingStatus;
+import com.omniretail.backend.logistics.repository.PackingRepository;
 import com.omniretail.backend.logistics.repository.PickingItemRepository;
 import com.omniretail.backend.logistics.repository.PickingOrderRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
@@ -45,6 +46,7 @@ import org.springframework.transaction.annotation.Transactional;
 class PickingServiceTest {
 
     @Autowired private PickingService service;
+    @Autowired private PackingRepository packings;
     @Autowired private PickingOrderRepository pickingOrders;
     @Autowired private PickingItemRepository pickingItems;
     @Autowired private JdbcTemplate jdbc;
@@ -78,6 +80,11 @@ class PickingServiceTest {
                 Long.class,
                 fixture.tenantId(),
                 fixture.orderId())).isOne();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM packings WHERE tenant_id = ? AND source_id = ?",
+                Long.class,
+                fixture.tenantId(),
+                fixture.orderId())).isZero();
     }
 
     @Test
@@ -265,7 +272,17 @@ class PickingServiceTest {
         assertThat(reservedQuantity(fixture)).isEqualByComparingTo("5.000");
         assertThat(reservationStatus(fixture)).isEqualTo(InventoryReservationStatus.active.name());
         assertThat(movementCount(fixture)).isZero();
-        assertThat(orderStatus(fixture)).isEqualTo("picking");
+        assertThat(orderStatus(fixture)).isEqualTo("packing");
+        assertThat(packings.findByTenantIdAndBranchIdAndPickingOrderId(
+                        fixture.tenantId(), fixture.branchId(), pickingId))
+                .isPresent();
+        service.complete(fixture.branchId(), pickingId);
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM packings WHERE tenant_id = ? AND picking_order_id = ?",
+                Long.class,
+                fixture.tenantId(),
+                pickingId))
+                .isOne();
     }
 
     @Test

@@ -32,6 +32,8 @@ import com.omniretail.backend.logistics.dto.PickingProgressResponse;
 import com.omniretail.backend.logistics.dto.PickingQueueResponse;
 import com.omniretail.backend.logistics.dto.PickingReleaseResponse;
 import com.omniretail.backend.logistics.dto.UpdatePickingItemRequest;
+import com.omniretail.backend.logistics.entity.Packing;
+import com.omniretail.backend.logistics.entity.PackingSourceType;
 import com.omniretail.backend.logistics.entity.PickingAssignmentRelease;
 import com.omniretail.backend.logistics.entity.PickingIncident;
 import com.omniretail.backend.logistics.entity.PickingIncidentStatus;
@@ -42,6 +44,7 @@ import com.omniretail.backend.logistics.entity.PickingOrder;
 import com.omniretail.backend.logistics.entity.PickingPriority;
 import com.omniretail.backend.logistics.entity.PickingSourceType;
 import com.omniretail.backend.logistics.entity.PickingStatus;
+import com.omniretail.backend.logistics.repository.PackingRepository;
 import com.omniretail.backend.logistics.repository.PickingAssignmentReleaseRepository;
 import com.omniretail.backend.logistics.repository.PickingIncidentRepository;
 import com.omniretail.backend.logistics.repository.PickingItemRepository;
@@ -83,6 +86,7 @@ public class PickingService {
             new TypeReference<>() {};
 
     private final PickingOrderRepository pickingOrderRepository;
+    private final PackingRepository packingRepository;
     private final PickingItemRepository pickingItemRepository;
     private final PickingIncidentRepository pickingIncidentRepository;
     private final PickingAssignmentReleaseRepository releaseRepository;
@@ -385,7 +389,10 @@ public class PickingService {
         Order order = lockOrder(picking);
         requireOrderSource(picking);
         requireTraceabilitySupported(actor.tenantId(), picking.getId());
-        if (picking.getStatus() == PickingStatus.completed) return action(picking, order, true);
+        if (picking.getStatus() == PickingStatus.completed) {
+            ensurePacking(picking, order, actor.userId());
+            return action(picking, order, true);
+        }
         requireNonTerminal(picking);
         requireAssignedActor(picking, actor);
         if (picking.getStatus() != PickingStatus.in_progress) {
@@ -405,9 +412,44 @@ public class PickingService {
         if (order.getStatus() != OrderStatus.picking) {
             throw conflict("INVALID_ORDER_STATUS_TRANSITION", "El pedido no se encuentra en Picking.");
         }
+        Instant completedAt = Instant.now();
         picking.setStatus(PickingStatus.completed);
-        picking.setCompletedAt(Instant.now());
-        return action(pickingOrderRepository.saveAndFlush(picking), order, false);
+        picking.setCompletedAt(completedAt);
+        order.setStatus(OrderStatus.packing);
+        orderRepository.save(order);
+        picking = pickingOrderRepository.saveAndFlush(picking);
+        ensurePacking(picking, order, actor.userId());
+        return action(picking, order, false);
+    }
+
+    private Packing ensurePacking(PickingOrder picking, Order order, UUID actorUserId) {
+        Optional<Packing> existing = packingRepository.findByTenantIdAndBranchIdAndPickingOrderId(
+                picking.getTenantId(), picking.getBranchId(), picking.getId());
+        if (existing.isPresent()) {
+            Packing packing = existing.get();
+            if (packing.getSourceType() != PackingSourceType.order
+                    || !order.getId().equals(packing.getSourceId())
+                    || !order.getId().equals(packing.getOrderId())) {
+                throw conflict("PACKING_SOURCE_CONFLICT", "Packing no coincide con su pedido.");
+            }
+            return packing;
+        }
+        if (picking.getStatus() != PickingStatus.completed || order.getStatus() != OrderStatus.packing) {
+            throw conflict(
+                    "PACKING_NOT_ELIGIBLE",
+                    "Packing requiere un Picking completado y un pedido en Packing.");
+        }
+        Packing packing = Packing.builder()
+                .branchId(picking.getBranchId())
+                .sourceType(PackingSourceType.order)
+                .sourceId(order.getId())
+                .orderId(order.getId())
+                .pickingOrderId(picking.getId())
+                .startedByUserId(actorUserId)
+                .startedAt(Instant.now())
+                .build();
+        packing.setTenantId(picking.getTenantId());
+        return packingRepository.saveAndFlush(packing);
     }
 
     private AuthenticatedUser actorForBranch(UUID branchId) {
