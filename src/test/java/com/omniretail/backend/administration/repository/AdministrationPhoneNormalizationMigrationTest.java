@@ -46,6 +46,12 @@ class AdministrationPhoneNormalizationMigrationTest {
                 "phone-" + tenantId + "@example.com",
                 "2323-1232");
         jdbc.update(
+                "INSERT INTO users (tenant_id, name, email, phone, type) VALUES (?, ?, ?, ?, 'customer')",
+                tenantId,
+                "Cliente teléfono",
+                "customer-" + tenantId + "@example.com",
+                "23231232");
+        jdbc.update(
                 "INSERT INTO suppliers (tenant_id, name, phone) VALUES (?, ?, ?)",
                 tenantId,
                 "Proveedor teléfono",
@@ -57,8 +63,14 @@ class AdministrationPhoneNormalizationMigrationTest {
         assertThat(phones("branches", tenantId))
                 .containsEntry("DIGITS", "+502 2323-1232")
                 .containsEntry("INVALID", "+503 2323-1232");
-        assertThat(phone("users", tenantId)).isEqualTo("+502 2323-1232");
+        assertThat(userPhone(tenantId, "employee")).isEqualTo("+502 2323-1232");
+        assertThat(userPhone(tenantId, "customer")).isEqualTo("23231232");
         assertThat(phone("suppliers", tenantId)).isEqualTo("+502 2323-1232");
+    }
+
+    private String userPhone(UUID tenantId, String type) {
+        return jdbc.queryForObject(
+                "SELECT phone FROM users WHERE tenant_id = ? AND type = ?", String.class, tenantId, type);
     }
 
     private void insertBranch(UUID tenantId, String code, String phone) {

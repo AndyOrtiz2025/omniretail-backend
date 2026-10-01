@@ -20,7 +20,8 @@ databaseChangeLog:
               FROM (
                 SELECT id, right(regexp_replace(phone, '[^0-9]', '', 'g'), 8) AS digits
                 FROM users
-                WHERE phone ~ '^([+]?502 ?)?[0-9]{4}-?[0-9]{4}$'
+                WHERE type = 'employee'
+                  AND phone ~ '^([+]?502 ?)?[0-9]{4}-?[0-9]{4}$'
               ) AS normalized
               WHERE target.id = normalized.id;
         - sql:
