@@ -6,6 +6,7 @@ import static org.mockito.BDDMockito.given;
 
 import com.omniretail.backend.TestcontainersConfiguration;
 import com.omniretail.backend.administration.entity.UserType;
+import com.omniretail.backend.ecommerce.dto.CustomerOrderDetailResponse;
 import com.omniretail.backend.ecommerce.dto.CustomerOrderResponse;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.exception.BusinessException;
@@ -51,6 +52,35 @@ class CustomerOrderServiceTest {
             assertThat(order.status()).isEqualTo("preparing");
             assertThat(order.itemCount()).isEqualTo(2);
         });
+    }
+
+    @Test
+    void getsOrderDetailForAuthenticatedCustomer() {
+        Fixture fixture = fixture();
+        UUID ownOrder = order(fixture, fixture.customerId(), "WEB-DETAIL", "picking", "ecommerce");
+        orderItem(fixture, ownOrder, "SKU-DETAIL");
+        actor(fixture);
+
+        CustomerOrderDetailResponse response = service.getById(ownOrder);
+
+        assertThat(response.orderNumber()).isEqualTo("WEB-DETAIL");
+        assertThat(response.status()).isEqualTo("preparing");
+        assertThat(response.items()).singleElement().satisfies(item -> {
+            assertThat(item.sku()).isEqualTo("SKU-DETAIL");
+            assertThat(item.quantity()).isEqualByComparingTo("1.000");
+        });
+    }
+
+    @Test
+    void rejectsOrderDetailWhenOrderBelongsToAnotherCustomer() {
+        Fixture fixture = fixture();
+        UUID otherCustomerId = customer(fixture, null, "OTRO-DETAIL");
+        UUID otherOrder = order(fixture, otherCustomerId, "WEB-OTHER", "confirmed", "ecommerce");
+        actor(fixture);
+
+        assertThatThrownBy(() -> service.getById(otherOrder))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getCode()).isEqualTo("ORDER_NOT_FOUND"));
     }
 
     @Test

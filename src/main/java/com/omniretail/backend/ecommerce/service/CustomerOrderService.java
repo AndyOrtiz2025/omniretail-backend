@@ -1,14 +1,21 @@
 package com.omniretail.backend.ecommerce.service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.omniretail.backend.administration.entity.UserType;
+import com.omniretail.backend.ecommerce.dto.CustomerOrderDetailResponse;
 import com.omniretail.backend.ecommerce.dto.CustomerOrderResponse;
 import com.omniretail.backend.ecommerce.entity.Customer;
 import com.omniretail.backend.ecommerce.entity.CustomerStatus;
 import com.omniretail.backend.ecommerce.entity.Order;
+import com.omniretail.backend.ecommerce.entity.OrderItem;
 import com.omniretail.backend.ecommerce.entity.OrderSource;
+import com.omniretail.backend.ecommerce.entity.OrderStatus;
 import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.ecommerce.repository.OrderItemRepository;
 import com.omniretail.backend.ecommerce.repository.OrderRepository;
+import com.omniretail.backend.pos.entity.Payment;
+import com.omniretail.backend.pos.repository.PaymentRepository;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
@@ -34,6 +41,8 @@ public class CustomerOrderService {
     private final CustomerRepository customerRepository;
     private final OrderRepository orderRepository;
     private final OrderItemRepository orderItemRepository;
+    private final PaymentRepository paymentRepository;
+    private final ObjectMapper objectMapper;
 
     public PageResponse<CustomerOrderResponse> list(Pageable pageable) {
         AuthenticatedUser actor = currentUser.require();
@@ -49,7 +58,7 @@ public class CustomerOrderService {
         Map<UUID, Integer> itemCounts = orderItemRepository
                 .findByOrderIdIn(orders.getContent().stream().map(Order::getId).toList())
                 .stream()
-                .collect(Collectors.groupingBy(item -> item.getOrderId(), Collectors.summingInt(item -> 1)));
+                .collect(Collectors.groupingBy(OrderItem::getOrderId, Collectors.summingInt(item -> 1)));
 
         return new PageResponse<>(
                 orders.getContent().stream()
@@ -61,6 +70,72 @@ public class CustomerOrderService {
                 orders.getTotalPages());
     }
 
+    public CustomerOrderDetailResponse getById(UUID id) {
+        AuthenticatedUser actor = currentUser.require();
+        Customer customer = currentCustomer(actor);
+        Order order = orderRepository.findByTenantIdAndId(actor.tenantId(), id)
+                .orElseThrow(() -> new BusinessException(HttpStatus.NOT_FOUND, "ORDER_NOT_FOUND", "Pedido no encontrado."));
+
+        if (order.getCustomerId() == null || !order.getCustomerId().equals(customer.getId()) || order.getSource() != OrderSource.ecommerce) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "ORDER_NOT_FOUND", "Pedido no encontrado.");
+        }
+
+        List<OrderItem> items = orderItemRepository.findByOrderId(order.getId());
+        List<Payment> payments = paymentRepository.findByTenantIdAndOrderIdOrderByCreatedAtAscIdAsc(actor.tenantId(), order.getId());
+        Payment primaryPayment = payments.isEmpty() ? null : payments.getFirst();
+
+        CustomerOrderDetailResponse.PaymentDto paymentDto = primaryPayment == null ? null :
+                new CustomerOrderDetailResponse.PaymentDto(
+                        primaryPayment.getMethod().name(),
+                        primaryPayment.getStatus().name(),
+                        primaryPayment.getReference());
+
+        List<CustomerOrderDetailResponse.ItemDto> itemDtos = items.stream()
+                .map(item -> new CustomerOrderDetailResponse.ItemDto(
+                        item.getSkuSnapshot(),
+                        item.getNameSnapshot(),
+                        item.getQuantity(),
+                        item.getUnitPrice(),
+                        item.getSubtotal()))
+                .toList();
+
+        return new CustomerOrderDetailResponse(
+                order.getOrderNumber(),
+                customerStatus(order.getStatus()),
+                order.getCreatedAt(),
+                order.getTrackingToken(),
+                order.getSubtotal(),
+                order.getShippingTotal(),
+                order.getTotal(),
+                parseAddress(order.getDeliveryAddress()),
+                itemDtos,
+                paymentDto);
+    }
+
+    private CustomerOrderDetailResponse.DeliveryAddressDto parseAddress(String rawJson) {
+        if (rawJson == null || rawJson.isBlank()) {
+            return null;
+        }
+        try {
+            Map<String, Object> map = objectMapper.readValue(rawJson, new TypeReference<>() {});
+            return new CustomerOrderDetailResponse.DeliveryAddressDto(
+                    stringValue(map.get("recipientName")),
+                    stringValue(map.get("recipientPhone")),
+                    stringValue(map.get("line1")),
+                    stringValue(map.get("line2")),
+                    stringValue(map.get("city")),
+                    map.get("stateOrDepartment") != null ? stringValue(map.get("stateOrDepartment")) : stringValue(map.get("department")),
+                    stringValue(map.get("country")),
+                    stringValue(map.get("references")));
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static String stringValue(Object obj) {
+        return obj != null ? obj.toString() : null;
+    }
+
     private Customer currentCustomer(AuthenticatedUser actor) {
         if (actor.userType() != UserType.customer) {
             throw new BusinessException(HttpStatus.FORBIDDEN, "CUSTOMER_ACCOUNT_REQUIRED",
@@ -70,5 +145,16 @@ public class CustomerOrderService {
                         actor.tenantId(), actor.userId(), CustomerStatus.active)
                 .orElseThrow(() -> new BusinessException(HttpStatus.FORBIDDEN, "CUSTOMER_ACCOUNT_REQUIRED",
                         "No se encontró una cuenta de cliente activa para la sesión."));
+    }
+
+    private static String customerStatus(OrderStatus status) {
+        return switch (status) {
+            case pending -> "pending";
+            case confirmed -> "confirmed";
+            case preparing, picking, packing, ready_for_pickup, ready_for_dispatch -> "preparing";
+            case dispatched -> "sent";
+            case delivered -> "delivered";
+            case cancelled -> "cancelled";
+        };
     }
 }
