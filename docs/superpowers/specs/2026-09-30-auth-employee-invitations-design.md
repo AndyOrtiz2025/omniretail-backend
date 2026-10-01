@@ -28,7 +28,7 @@ La entidad asigna `createdAt` explícitamente para consistencia de dominio. El r
 
 **Activar:** bloquear invitación por hash y después cuenta por usuario. Token ausente, aceptado, reemplazado, vencido o cuenta no pendiente produce el mismo `400 INVALID_OR_EXPIRED_TOKEN`. Verificar usuario empleado y tenant coincidente; validar `PasswordPolicy.EMPLOYEE`, convirtiendo el primer error en `FieldValidationException.of("newPassword", message)`. Actualizar hash, estado `active`, `passwordChangedAt`, limpiar intentos/bloqueo, marcar `acceptedAt` y revocar sesiones mediante `SessionRevoker`. Todo confirma o revierte junto.
 
-**Resúmenes:** deduplicar IDs preservando orden; rechazar vacío o más de 100. Ejecutar exactamente dos consultas (`users` por tenant/tipo/IDs y `auth_accounts` por `userId IN`), sin N+1. Si cualquier ID falta/no pertenece/no es empleado, responder `400 INVALID_EMPLOYEE_SELECTION` sin identificar el ID. Recomponer en orden; sin cuenta: `status=null`, `lastLoginAt=null`, `mfaEnabled=false`.
+**Resúmenes:** si la lista está vacía, retornar inmediatamente `200 OK` con `[]`, sin consultar la base de datos. Para listas no vacías, deduplicar IDs preservando orden y rechazar únicamente cantidades mayores de 100. Ejecutar exactamente dos consultas (`users` por tenant/tipo/IDs y `auth_accounts` por `userId IN`), sin N+1. Si cualquier ID falta/no pertenece/no es empleado, responder `400 INVALID_EMPLOYEE_SELECTION` sin identificar el ID. Recomponer en orden; sin cuenta: `status=null`, `lastLoginAt=null`, `mfaEnabled=false`.
 
 ## API y errores
 
@@ -47,7 +47,7 @@ Crear migración, entidad/repositorio/servicio/controlador y DTOs de activación
 
 ## Estrategia de pruebas
 
-Se escribirán, pero NO se ejecutarán builds ni tests. Unitarias: alta de cuenta/evento, reinvitación y supersesión, sincronización de email, activación, token vencido/reutilizado, política de contraseña y aislamiento/batch sin N+1. Controller tests: permisos, contratos invite/resend/batch, límite 100 y activación pública. Integración de repositorio: locks y constraints del changeset.
+Se escribirán, pero NO se ejecutarán builds ni tests. Unitarias: alta de cuenta/evento, reinvitación y supersesión, sincronización de email, activación, token vencido/reutilizado, política de contraseña, lista batch vacía sin consultas y aislamiento/batch sin N+1. Controller tests: permisos, contratos invite/resend/batch, lista vacía, límite 100 y activación pública. Integración de repositorio: locks y constraints del changeset.
 
 ## Riesgos y no alcance
 
