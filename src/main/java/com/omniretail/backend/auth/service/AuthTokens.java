@@ -8,8 +8,10 @@ import java.util.Base64;
 import java.util.HexFormat;
 
 /**
- * Tokens de un solo uso para enlaces por correo (verificacion y recuperacion). En la BD solo se guarda
- * {@link #hash(String)}; el token en claro viaja unicamente en el correo, nunca en una respuesta HTTP.
+ * Tokens de un solo uso para enlaces por correo (verificacion, recuperacion e invitacion). En la BD
+ * solo se guarda {@link #hash(String)}; nunca se persisten ni registran tokens en claro. El token claro
+ * viaja por correo; como excepcion controlada, el de invitacion tambien se devuelve en la respuesta
+ * administrativa. Los de verificacion y recuperacion no se devuelven en respuestas HTTP.
  */
 final class AuthTokens {
 
