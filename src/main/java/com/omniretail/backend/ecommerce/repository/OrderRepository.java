@@ -24,4 +24,12 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     List<Order> findByTenantIdAndCustomerIdAndStatusNot(UUID tenantId, UUID customerId, OrderStatus status);
 
     List<Order> findByTenantId(UUID tenantId);
+
+    Optional<Order> findByTenantIdAndId(UUID tenantId, UUID id);
+
+    List<Order> findByTenantIdAndSourceOrderByCreatedAtDesc(
+            UUID tenantId, OrderSource source);
+
+    List<Order> findByTenantIdAndSourceAndStatusOrderByCreatedAtDesc(
+            UUID tenantId, OrderSource source, OrderStatus status);
 }
