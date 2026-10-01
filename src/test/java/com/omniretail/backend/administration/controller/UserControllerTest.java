@@ -1,5 +1,6 @@
 package com.omniretail.backend.administration.controller;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -8,6 +9,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.jayway.jsonpath.JsonPath;
 import com.omniretail.backend.TestcontainersConfiguration;
 import com.omniretail.backend.SubscriptionTestFixtures;
 import com.omniretail.backend.administration.repository.SaasPlanRepository;
@@ -25,14 +27,22 @@ import com.omniretail.backend.administration.repository.BranchRepository;
 import com.omniretail.backend.administration.repository.RoleRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.administration.repository.UserRepository;
+import com.omniretail.backend.auth.entity.AccountStatus;
+import com.omniretail.backend.auth.entity.AuthAccount;
+import com.omniretail.backend.auth.entity.EmployeeInvitation;
 import com.omniretail.backend.auth.entity.Session;
+import com.omniretail.backend.auth.repository.AuthAccountRepository;
+import com.omniretail.backend.auth.repository.EmployeeInvitationRepository;
 import com.omniretail.backend.auth.repository.SessionRepository;
 import com.omniretail.backend.auth.service.JwtService;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -73,6 +83,164 @@ class UserControllerTest {
     @Autowired
     private SessionRepository sessionRepository;
 
+    @Autowired
+    private AuthAccountRepository accountRepository;
+
+    @Autowired
+    private EmployeeInvitationRepository invitationRepository;
+
+    // Escritas antes de las rutas; RED/GREEN no ejecutados por restriccion explicita.
+    @ParameterizedTest
+    @ValueSource(strings = {"invite", "resend-invite"})
+    void invitationWithoutTokenReturnsUnauthorized(String endpoint) throws Exception {
+        mockMvc.perform(post(BASE_URL + "/" + UUID.randomUUID() + "/" + endpoint))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"invite", "resend-invite"})
+    void invitationWithoutManagePermissionReturnsForbidden(String endpoint) throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant, List.of("admin.users.read"));
+        Role role = persistRole(tenant, List.of());
+        User employee = persistEmployee(tenant, "no-invite-" + UUID.randomUUID() + "@test.local", role.getId());
+
+        mockMvc.perform(post(BASE_URL + "/" + employee.getId() + "/" + endpoint)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        assertThat(accountRepository.findByUserId(employee.getId())).isEmpty();
+        assertThat(invitationRepository.findTopByUserIdOrderByCreatedAtDesc(employee.getId())).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"invite", "resend-invite"})
+    void invitationCreatesPendingAccountAndReturnsToken(String endpoint) throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant, List.of("admin.users.manage"));
+        Role role = persistRole(tenant, List.of());
+        User employee = persistEmployee(tenant, "invite-" + UUID.randomUUID() + "@test.local", role.getId());
+
+        String response = mockMvc.perform(post(BASE_URL + "/" + employee.getId() + "/" + endpoint)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.userId").value(employee.getId().toString()))
+                .andExpect(jsonPath("$.invitationToken").isNotEmpty())
+                .andExpect(jsonPath("$.expiresAt").isNotEmpty())
+                .andReturn().getResponse().getContentAsString();
+
+        String invitationToken = JsonPath.read(response, "$.invitationToken");
+        String expiresAt = JsonPath.read(response, "$.expiresAt");
+        assertThat(invitationToken).matches("[A-Za-z0-9_-]{43}");
+        EmployeeInvitation invitation = invitationRepository
+                .findTopByUserIdOrderByCreatedAtDesc(employee.getId()).orElseThrow();
+        assertThat(invitation.getTenantId()).isEqualTo(tenant.getId());
+        // PostgreSQL conserva microsegundos; la respuesta puede contener nanosegundos.
+        assertThat(Duration.between(Instant.parse(expiresAt), invitation.getExpiresAt()).abs())
+                .isLessThan(Duration.ofNanos(1_001));
+        assertThat(invitation.getAcceptedAt()).isNull();
+        assertThat(invitation.getSupersededAt()).isNull();
+        assertThat(accountRepository.findByUserId(employee.getId()).orElseThrow().getStatus())
+                .isEqualTo(AccountStatus.password_reset_required);
+    }
+
+    @Test
+    void resendInvitationReplacesTokenAndSupersedesPreviousInvitation() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        Role role = persistRole(tenant, List.of());
+        User employee = persistEmployee(tenant, "reinvite-" + UUID.randomUUID() + "@test.local", role.getId());
+
+        String firstResponse = mockMvc.perform(post(BASE_URL + "/" + employee.getId() + "/invite")
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String firstToken = JsonPath.read(firstResponse, "$.invitationToken");
+        EmployeeInvitation previous = invitationRepository
+                .findTopByUserIdOrderByCreatedAtDesc(employee.getId()).orElseThrow();
+
+        String nextResponse = mockMvc.perform(post(BASE_URL + "/" + employee.getId() + "/resend-invite")
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.userId").value(employee.getId().toString()))
+                .andExpect(jsonPath("$.invitationToken").isNotEmpty())
+                .andExpect(jsonPath("$.expiresAt").isNotEmpty())
+                .andReturn().getResponse().getContentAsString();
+        String nextToken = JsonPath.read(nextResponse, "$.invitationToken");
+        assertThat(nextToken).matches("[A-Za-z0-9_-]{43}").isNotEqualTo(firstToken);
+
+        EmployeeInvitation superseded = invitationRepository.findById(previous.getId()).orElseThrow();
+        EmployeeInvitation latest = invitationRepository
+                .findTopByUserIdOrderByCreatedAtDesc(employee.getId()).orElseThrow();
+        assertThat(superseded.getSupersededAt()).isNotNull().isEqualTo(latest.getCreatedAt());
+        assertThat(superseded.getAcceptedAt()).isNull();
+        assertThat(latest.getId()).isNotEqualTo(previous.getId());
+        assertThat(latest.getTokenHash()).isNotEqualTo(previous.getTokenHash());
+        assertThat(latest.getSupersededAt()).isNull();
+        assertThat(latest.getAcceptedAt()).isNull();
+        String expiresAt = JsonPath.read(nextResponse, "$.expiresAt");
+        assertThat(Duration.between(Instant.parse(expiresAt), latest.getExpiresAt()).abs())
+                .isLessThan(Duration.ofNanos(1_001));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"invite", "resend-invite"})
+    void invitationForAnotherTenantReturnsUserNotFound(String endpoint) throws Exception {
+        Tenant employeeTenant = persistTenant();
+        Role role = persistRole(employeeTenant, List.of());
+        User employee = persistEmployee(employeeTenant,
+                "foreign-invite-" + UUID.randomUUID() + "@test.local", role.getId());
+        String token = tokenFor(persistTenant());
+
+        mockMvc.perform(post(BASE_URL + "/" + employee.getId() + "/" + endpoint)
+                        .header("Authorization", bearer(token))
+                        .param("tenantId", employeeTenant.getId().toString()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("USER_NOT_FOUND"));
+
+        assertThat(accountRepository.findByUserId(employee.getId())).isEmpty();
+        assertThat(invitationRepository.findTopByUserIdOrderByCreatedAtDesc(employee.getId())).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"invite", "resend-invite"})
+    void invitationForActiveAccountReturnsConflict(String endpoint) throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        Role role = persistRole(tenant, List.of());
+        User employee = persistEmployee(tenant, "active-invite-" + UUID.randomUUID() + "@test.local", role.getId());
+        persistAccount(employee, AccountStatus.active);
+
+        mockMvc.perform(post(BASE_URL + "/" + employee.getId() + "/" + endpoint)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("ACCOUNT_ALREADY_ACTIVE"));
+
+        assertThat(invitationRepository.findTopByUserIdOrderByCreatedAtDesc(employee.getId())).isEmpty();
+        assertThat(accountRepository.findByUserId(employee.getId()).orElseThrow().getStatus())
+                .isEqualTo(AccountStatus.active);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"invite", "resend-invite"})
+    void invitationForIneligibleAccountReturnsBadRequest(String endpoint) throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        Role role = persistRole(tenant, List.of());
+        User employee = persistEmployee(tenant, "disabled-invite-" + UUID.randomUUID() + "@test.local", role.getId());
+        persistAccount(employee, AccountStatus.disabled);
+
+        mockMvc.perform(post(BASE_URL + "/" + employee.getId() + "/" + endpoint)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVITATION_NOT_ALLOWED"));
+
+        assertThat(invitationRepository.findTopByUserIdOrderByCreatedAtDesc(employee.getId())).isEmpty();
+        assertThat(accountRepository.findByUserId(employee.getId()).orElseThrow().getStatus())
+                .isEqualTo(AccountStatus.disabled);
+    }
+
     @Test
     void withoutTokenReturnsUnauthorized() throws Exception {
         mockMvc.perform(get(BASE_URL)).andExpect(status().isUnauthorized());
@@ -86,6 +254,19 @@ class UserControllerTest {
         mockMvc.perform(get(BASE_URL).header("Authorization", bearer(token)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+    }
+
+    @Test
+    void emptyAuthSummariesReturnOkWithoutEmployees() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant, List.of("admin.users.read"));
+
+        mockMvc.perform(post(BASE_URL + "/auth-summaries")
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"userIds\":[]}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$").isEmpty());
     }
 
     @Test
@@ -664,6 +845,15 @@ class UserControllerTest {
 
         mockMvc.perform(get(BASE_URL).header("Authorization", bearer(employeeToken)))
                 .andExpect(status().isOk());
+    }
+
+    private void persistAccount(User employee, AccountStatus status) {
+        accountRepository.save(AuthAccount.builder()
+                .userId(employee.getId())
+                .email(employee.getEmail())
+                .passwordHash("unused-password-hash")
+                .status(status)
+                .build());
     }
 
     private User persistEmployee(Tenant tenant, String email, UUID roleId) {
