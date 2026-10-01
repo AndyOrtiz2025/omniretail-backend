@@ -2,6 +2,7 @@ package com.omniretail.backend.pos.repository;
 
 import com.omniretail.backend.pos.entity.Payment;
 import java.util.List;
+import java.util.Collection;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -13,6 +14,9 @@ public interface PaymentRepository extends JpaRepository<Payment, UUID> {
     List<Payment> findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(UUID tenantId, UUID saleId);
 
     List<Payment> findByTenantIdAndOrderIdOrderByCreatedAtAscIdAsc(UUID tenantId, UUID orderId);
+
+    List<Payment> findByTenantIdAndOrderIdInOrderByCreatedAtAscIdAsc(
+            UUID tenantId, Collection<UUID> orderIds);
 
     List<Payment> findByTenantIdOrderByCreatedAtDesc(UUID tenantId);
 }
