@@ -257,6 +257,19 @@ class UserControllerTest {
     }
 
     @Test
+    void emptyAuthSummariesReturnOkWithoutEmployees() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant, List.of("admin.users.read"));
+
+        mockMvc.perform(post(BASE_URL + "/auth-summaries")
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"userIds\":[]}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$").isEmpty());
+    }
+
+    @Test
     void createUserSuccess() throws Exception {
         Tenant tenant = persistTenant();
         String token = tokenFor(tenant);
