@@ -9,6 +9,7 @@ import com.omniretail.backend.administration.repository.SupplierRepository;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.CurrentUser;
+import com.omniretail.backend.shared.validation.PhoneNormalizer;
 import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -70,7 +71,7 @@ public class SupplierService {
                 .legalName(normalize(request.legalName()))
                 .taxId(taxId)
                 .email(normalizeEmail(request.email()))
-                .phone(normalize(request.phone()))
+                .phone(PhoneNormalizer.normalize(request.phone()))
                 .address(normalize(request.address()))
                 .notes(normalize(request.notes()))
                 .status(request.status() != null ? request.status() : SupplierStatus.active)
@@ -105,7 +106,7 @@ public class SupplierService {
         supplier.setLegalName(normalize(request.legalName()));
         supplier.setTaxId(taxId);
         supplier.setEmail(normalizeEmail(request.email()));
-        supplier.setPhone(normalize(request.phone()));
+        supplier.setPhone(PhoneNormalizer.normalize(request.phone()));
         supplier.setAddress(normalize(request.address()));
         supplier.setNotes(normalize(request.notes()));
         supplier.setStatus(request.status());

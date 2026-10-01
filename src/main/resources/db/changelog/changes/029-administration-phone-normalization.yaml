@@ -1,0 +1,35 @@
+databaseChangeLog:
+  - changeSet:
+      id: 029-administration-phone-normalization
+      author: joga17000
+      changes:
+        - sql:
+            sql: |
+              UPDATE branches AS target
+              SET phone = '+502 ' || left(normalized.digits, 4) || '-' || right(normalized.digits, 4)
+              FROM (
+                SELECT id, right(regexp_replace(phone, '[^0-9]', '', 'g'), 8) AS digits
+                FROM branches
+                WHERE phone ~ '^([+]?502 ?)?[0-9]{4}-?[0-9]{4}$'
+              ) AS normalized
+              WHERE target.id = normalized.id;
+        - sql:
+            sql: |
+              UPDATE users AS target
+              SET phone = '+502 ' || left(normalized.digits, 4) || '-' || right(normalized.digits, 4)
+              FROM (
+                SELECT id, right(regexp_replace(phone, '[^0-9]', '', 'g'), 8) AS digits
+                FROM users
+                WHERE phone ~ '^([+]?502 ?)?[0-9]{4}-?[0-9]{4}$'
+              ) AS normalized
+              WHERE target.id = normalized.id;
+        - sql:
+            sql: |
+              UPDATE suppliers AS target
+              SET phone = '+502 ' || left(normalized.digits, 4) || '-' || right(normalized.digits, 4)
+              FROM (
+                SELECT id, right(regexp_replace(phone, '[^0-9]', '', 'g'), 8) AS digits
+                FROM suppliers
+                WHERE phone ~ '^([+]?502 ?)?[0-9]{4}-?[0-9]{4}$'
+              ) AS normalized
+              WHERE target.id = normalized.id;
