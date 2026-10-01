@@ -4,11 +4,14 @@ import com.omniretail.backend.administration.dto.OrderAdminResponse;
 import com.omniretail.backend.administration.dto.UpdateOrderStatusRequest;
 import com.omniretail.backend.administration.service.OrderAdminService;
 import com.omniretail.backend.ecommerce.entity.OrderStatus;
+import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.security.RequirePermission;
 import jakarta.validation.Valid;
-import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -26,8 +29,10 @@ public class OrderAdminController {
 
     @GetMapping
     @RequirePermission("admin.orders.read")
-    public List<OrderAdminResponse> list(@RequestParam(required = false) OrderStatus status) {
-        return orderAdminService.list(status);
+    public PageResponse<OrderAdminResponse> list(
+            @RequestParam(required = false) OrderStatus status,
+            @PageableDefault(size = 20, sort = {"createdAt", "id"}, direction = Sort.Direction.DESC) Pageable pageable) {
+        return orderAdminService.list(status, pageable);
     }
 
     @GetMapping("/{id}")

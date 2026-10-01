@@ -1,0 +1,22 @@
+databaseChangeLog:
+  - changeSet:
+      id: 025-admin-orders-permissions
+      author: Mafer272
+      changes:
+        - sql:
+            sql: |
+              UPDATE roles
+              SET permissions = (
+                SELECT ARRAY(
+                  SELECT DISTINCT permission
+                  FROM unnest(permissions || ARRAY['admin.orders.read', 'admin.orders.manage']::text[]) AS permission
+                  ORDER BY permission
+                )
+              )
+              WHERE name = 'Administrador' AND is_system = TRUE;
+      rollback:
+        - sql:
+            sql: |
+              UPDATE roles
+              SET permissions = array_remove(array_remove(permissions, 'admin.orders.read'), 'admin.orders.manage')
+              WHERE name = 'Administrador' AND is_system = TRUE;

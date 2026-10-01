@@ -7,6 +7,8 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface OrderRepository extends JpaRepository<Order, UUID> {
@@ -27,9 +29,9 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
 
     Optional<Order> findByTenantIdAndId(UUID tenantId, UUID id);
 
-    List<Order> findByTenantIdAndSourceOrderByCreatedAtDesc(
-            UUID tenantId, OrderSource source);
+    Page<Order> findByTenantIdAndSource(
+            UUID tenantId, OrderSource source, Pageable pageable);
 
-    List<Order> findByTenantIdAndSourceAndStatusOrderByCreatedAtDesc(
-            UUID tenantId, OrderSource source, OrderStatus status);
+    Page<Order> findByTenantIdAndSourceAndStatus(
+            UUID tenantId, OrderSource source, OrderStatus status, Pageable pageable);
 }
