@@ -7,6 +7,7 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
 import jakarta.validation.constraints.NotNull;
+import java.math.BigDecimal;
 import java.util.UUID;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -16,7 +17,7 @@ import lombok.Setter;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
-/** Reserva de inventario de una línea de pedido; sus asignaciones se materializan en fase posterior. */
+/** Reserva de inventario asociada a una línea de una fuente de fulfillment. */
 @Entity
 @Table(name = "inventory_reservations")
 @Getter
@@ -52,6 +53,10 @@ public class InventoryReservation extends TenantScopedEntity {
     @NotNull
     @Column(name = "product_id", nullable = false, updatable = false)
     private UUID productId;
+
+    @NotNull
+    @Column(name = "quantity", nullable = false, updatable = false, precision = 12, scale = 3)
+    private BigDecimal quantity;
 
     @NotNull
     @Builder.Default

@@ -55,4 +55,28 @@ public class InventoryBalance extends TenantScopedEntity {
         }
         this.quantity = resultingQuantity;
     }
+
+    public void reserve(BigDecimal quantity) {
+        BigDecimal availableQuantity = this.quantity.subtract(this.reservedQuantity);
+        if (quantity.compareTo(availableQuantity) > 0) {
+            throw new IllegalStateException("Stock disponible insuficiente.");
+        }
+        this.reservedQuantity = this.reservedQuantity.add(quantity);
+    }
+
+    public void consumeReservation(BigDecimal quantity) {
+        if (quantity.compareTo(this.reservedQuantity) > 0
+                || quantity.compareTo(this.quantity) > 0) {
+            throw new IllegalStateException("La reserva excede el balance de inventario.");
+        }
+        this.reservedQuantity = this.reservedQuantity.subtract(quantity);
+        this.quantity = this.quantity.subtract(quantity);
+    }
+
+    public void releaseReservation(BigDecimal quantity) {
+        if (quantity.compareTo(this.reservedQuantity) > 0) {
+            throw new IllegalStateException("La reserva excede el stock reservado.");
+        }
+        this.reservedQuantity = this.reservedQuantity.subtract(quantity);
+    }
 }

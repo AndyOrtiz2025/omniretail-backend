@@ -21,7 +21,6 @@ import com.omniretail.backend.ecommerce.dto.StorefrontCheckoutResponse;
 import com.omniretail.backend.ecommerce.entity.Customer;
 import com.omniretail.backend.ecommerce.entity.CustomerStatus;
 import com.omniretail.backend.ecommerce.entity.DeliveryMethod;
-import com.omniretail.backend.ecommerce.entity.InventoryReservation;
 import com.omniretail.backend.ecommerce.entity.InventoryReservationSourceType;
 import com.omniretail.backend.ecommerce.entity.Order;
 import com.omniretail.backend.ecommerce.entity.OrderItem;
@@ -32,8 +31,8 @@ import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.ecommerce.repository.InventoryReservationRepository;
 import com.omniretail.backend.ecommerce.repository.OrderItemRepository;
 import com.omniretail.backend.ecommerce.repository.OrderRepository;
-import com.omniretail.backend.inventory.entity.InventoryBalance;
-import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
+import com.omniretail.backend.inventory.dto.ReserveInventoryCommand;
+import com.omniretail.backend.inventory.service.InventoryReservationLifecycleService;
 import com.omniretail.backend.pos.entity.Payment;
 import com.omniretail.backend.pos.entity.PaymentMethod;
 import com.omniretail.backend.pos.entity.PaymentStatus;
@@ -74,7 +73,7 @@ public class StorefrontCheckoutService {
     private final OrderRepository orderRepository;
     private final OrderItemRepository orderItemRepository;
     private final InventoryReservationRepository reservationRepository;
-    private final InventoryBalanceRepository balanceRepository;
+    private final InventoryReservationLifecycleService reservationLifecycleService;
     private final PaymentRepository paymentRepository;
     private final TenantCapabilityGuard capabilityGuard;
     private final UnitConversionRepository unitConversionRepository;
@@ -198,20 +197,16 @@ public class StorefrontCheckoutService {
             OrderItem savedItem = orderItemRepository.save(item);
             Product product = products.get(i);
             if (shouldReserve(product)) {
-                ReservationAllocation allocation = reserve(
-                        tenantId, branch.getId(), product.getId(), savedItem.getInventoryQuantity());
-                InventoryReservation reservation = InventoryReservation.builder()
-                        .branchId(branch.getId())
-                    .sourceType(InventoryReservationSourceType.order)
-                    .sourceId(savedOrder.getId())
-                    .sourceLineId(savedItem.getId())
-                        .orderId(savedOrder.getId())
-                        .orderItemId(savedItem.getId())
-                        .productId(product.getId())
-                        .allocations(json(List.of(allocationJson(allocation))))
-                        .build();
-                reservation.setTenantId(tenantId);
-                reservationRepository.save(reservation);
+                reservationLifecycleService.reserve(new ReserveInventoryCommand(
+                        tenantId,
+                        branch.getId(),
+                        product.getId(),
+                        InventoryReservationSourceType.order,
+                        savedOrder.getId(),
+                        savedItem.getId(),
+                        savedOrder.getId(),
+                        savedItem.getId(),
+                        savedItem.getInventoryQuantity()));
             }
         }
         Payment payment = Payment.builder()
@@ -225,18 +220,6 @@ public class StorefrontCheckoutService {
         payment.setTenantId(tenantId);
         payment = paymentRepository.save(payment);
         return response(savedOrder, payment, items, config.isGuestTrackingEnabled());
-    }
-
-    private ReservationAllocation reserve(UUID tenantId, UUID branchId, UUID productId, BigDecimal quantity) {
-        InventoryBalance balance = balanceRepository
-                .findByTenantIdAndBranchIdAndProductIdAndLocationIdIsNull(tenantId, branchId, productId)
-                .orElseThrow(() -> BusinessException.conflict("INSUFFICIENT_STOCK", "Stock insuficiente."));
-        BigDecimal available = balance.getQuantity().subtract(balance.getReservedQuantity());
-        if (quantity.compareTo(available) > 0) {
-            throw BusinessException.conflict("INSUFFICIENT_STOCK", "Stock insuficiente.");
-        }
-        balance.setReservedQuantity(balance.getReservedQuantity().add(quantity));
-        return new ReservationAllocation(balance.getId(), quantity);
     }
 
     private Customer authenticatedCustomer(UUID tenantId) {
@@ -341,15 +324,4 @@ public class StorefrontCheckoutService {
         return response;
     }
 
-    private static Map<String, Object> allocationJson(ReservationAllocation allocation) {
-        Map<String, Object> value = new LinkedHashMap<>();
-        value.put("id", UUID.randomUUID());
-        value.put("balanceId", allocation.balanceId());
-        value.put("locationId", null);
-        value.put("reservedQuantity", allocation.quantity());
-        value.put("consumedQuantity", BigDecimal.ZERO);
-        return value;
-    }
-
-    private record ReservationAllocation(UUID balanceId, BigDecimal quantity) {}
 }

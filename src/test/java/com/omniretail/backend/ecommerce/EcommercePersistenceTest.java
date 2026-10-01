@@ -131,6 +131,7 @@ class EcommercePersistenceTest {
                 .orderId(order.getId())
                 .orderItemId(item.getId())
                 .productId(fixture.productId())
+                .quantity(item.getInventoryQuantity())
                 .build();
         reservation.setTenantId(fixture.tenantId());
         entityManager.persist(reservation);

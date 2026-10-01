@@ -27,6 +27,7 @@ class InventoryReservationJpaMappingTest {
         assertRequiredImmutableColumn("sourceType", "source_type");
         assertRequiredImmutableColumn("sourceId", "source_id");
         assertRequiredImmutableColumn("sourceLineId", "source_line_id");
+        assertRequiredImmutableColumn("quantity", "quantity");
 
         Enumerated enumerated = InventoryReservation.class
                 .getDeclaredField("sourceType")
@@ -50,6 +51,7 @@ class InventoryReservationJpaMappingTest {
                 .sourceType(InventoryReservationSourceType.transfer)
                 .sourceId(transferId)
                 .sourceLineId(transferItemId)
+                .quantity(java.math.BigDecimal.ONE)
                 .build();
 
         assertThat(reservation.getSourceType()).isEqualTo(InventoryReservationSourceType.transfer);
