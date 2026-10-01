@@ -1,21 +1,19 @@
 package com.omniretail.backend.administration.service;
 
 import com.omniretail.backend.administration.dto.OrderAdminResponse;
+import com.omniretail.backend.ecommerce.entity.InventoryReservation;
+import com.omniretail.backend.ecommerce.entity.InventoryReservationStatus;
 import com.omniretail.backend.ecommerce.entity.Order;
 import com.omniretail.backend.ecommerce.entity.OrderSource;
 import com.omniretail.backend.ecommerce.entity.OrderStatus;
-import com.omniretail.backend.ecommerce.entity.InventoryReservation;
-import com.omniretail.backend.ecommerce.entity.InventoryReservationStatus;
 import com.omniretail.backend.ecommerce.repository.InventoryReservationRepository;
 import com.omniretail.backend.ecommerce.repository.OrderItemRepository;
 import com.omniretail.backend.ecommerce.repository.OrderRepository;
-import com.omniretail.backend.inventory.entity.InventoryBalance;
-import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
+import com.omniretail.backend.inventory.service.InventoryReservationLifecycleService;
 import com.omniretail.backend.pos.repository.PaymentRepository;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.CurrentUser;
-import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -25,7 +23,6 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.json.JsonMapper;
 
 @Service
@@ -33,13 +30,11 @@ import tools.jackson.databind.json.JsonMapper;
 @RequiredArgsConstructor
 public class OrderAdminService {
 
-    private static final TypeReference<List<ReservationAllocation>> ALLOCATIONS_TYPE = new TypeReference<>() {};
-
     private final OrderRepository orderRepository;
     private final OrderItemRepository orderItemRepository;
     private final PaymentRepository paymentRepository;
     private final InventoryReservationRepository reservationRepository;
-    private final InventoryBalanceRepository inventoryBalanceRepository;
+    private final InventoryReservationLifecycleService reservationLifecycleService;
     private final CurrentUser currentUser;
     private final JsonMapper jsonMapper;
 
@@ -114,28 +109,9 @@ public class OrderAdminService {
 
     private void releaseReservations(UUID tenantId, UUID orderId) {
         for (InventoryReservation reservation : reservationRepository.findByTenantIdAndOrderId(tenantId, orderId)) {
-            if (reservation.getStatus() != InventoryReservationStatus.active) {
-                continue;
+            if (reservation.getStatus() == InventoryReservationStatus.active) {
+                reservationLifecycleService.release(tenantId, reservation.getId());
             }
-            for (ReservationAllocation allocation : jsonMapper.readValue(reservation.getAllocations(), ALLOCATIONS_TYPE)) {
-                BigDecimal remaining = allocation.reservedQuantity().subtract(
-                        allocation.consumedQuantity() == null ? BigDecimal.ZERO : allocation.consumedQuantity());
-                if (remaining.signum() <= 0) {
-                    continue;
-                }
-                InventoryBalance balance = inventoryBalanceRepository.findByTenantIdAndId(tenantId, allocation.balanceId())
-                        .orElseThrow(() -> new BusinessException(HttpStatus.CONFLICT, "INVENTORY_BALANCE_NOT_FOUND",
-                                "No se encontró el balance reservado para el pedido."));
-                BigDecimal released = balance.getReservedQuantity().subtract(remaining);
-                if (released.signum() < 0) {
-                    throw new BusinessException(HttpStatus.CONFLICT, "INVALID_INVENTORY_RESERVATION",
-                            "La reserva del pedido no coincide con el inventario actual.");
-                }
-                balance.setReservedQuantity(released);
-                inventoryBalanceRepository.save(balance);
-            }
-            reservation.setStatus(InventoryReservationStatus.released);
-            reservationRepository.save(reservation);
         }
     }
 
@@ -146,7 +122,4 @@ public class OrderAdminService {
         }
         return current == OrderStatus.pending && next == OrderStatus.confirmed;
     }
-
-    private record ReservationAllocation(UUID id, UUID balanceId, UUID locationId,
-            BigDecimal reservedQuantity, BigDecimal consumedQuantity) {}
 }

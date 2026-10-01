@@ -8,6 +8,7 @@ import com.omniretail.backend.inventory.dto.ReserveInventoryCommand;
 import com.omniretail.backend.inventory.entity.InventoryBalance;
 import com.omniretail.backend.shared.exception.BusinessException;
 import java.math.BigDecimal;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -18,11 +19,14 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.json.JsonMapper;
 
 @Service
 @RequiredArgsConstructor
 public class InventoryReservationLifecycleService {
+
+    private static final TypeReference<List<ReservationAllocation>> ALLOCATIONS_TYPE = new TypeReference<>() {};
 
     private final InventoryReservationRepository reservationRepository;
     private final InventoryStockService inventoryStockService;
@@ -86,13 +90,38 @@ public class InventoryReservationLifecycleService {
             throw invalidTransition("Una reserva consumida no puede liberarse.");
         }
 
-        inventoryStockService.releaseReservedStock(
-                tenantId,
-                reservation.getBranchId(),
-                reservation.getProductId(),
-                reservation.getQuantity());
+        releaseAllocations(tenantId, reservation);
         reservation.setStatus(InventoryReservationStatus.released);
         return reservation;
+    }
+
+    private void releaseAllocations(UUID tenantId, InventoryReservation reservation) {
+        List<ReservationAllocation> allocations = jsonMapper.readValue(reservation.getAllocations(), ALLOCATIONS_TYPE);
+        if (allocations.isEmpty()) {
+            inventoryStockService.releaseReservedStock(
+                    tenantId, reservation.getBranchId(), reservation.getProductId(), reservation.getQuantity());
+            return;
+        }
+        if (allocations.stream().anyMatch(allocation -> allocation.balanceId() == null)) {
+            throw invalidTransition("La reserva no contiene un balance válido.");
+        }
+        for (ReservationAllocation allocation : allocations.stream()
+                .sorted(Comparator.comparing(ReservationAllocation::balanceId)).toList()) {
+            if (allocation.reservedQuantity() == null || allocation.reservedQuantity().signum() < 0) {
+                throw invalidTransition("La reserva no contiene una cantidad reservada válida.");
+            }
+            BigDecimal consumed = allocation.consumedQuantity() == null
+                    ? BigDecimal.ZERO : allocation.consumedQuantity();
+            BigDecimal unconsumed = allocation.reservedQuantity().subtract(consumed);
+            if (unconsumed.signum() < 0) {
+                throw invalidTransition("La cantidad consumida excede la cantidad reservada.");
+            }
+            if (unconsumed.signum() > 0) {
+                inventoryStockService.releaseReservedStock(
+                        tenantId, reservation.getBranchId(), reservation.getProductId(),
+                        allocation.balanceId(), unconsumed);
+            }
+        }
     }
 
     private InventoryReservation requireLocked(UUID tenantId, UUID reservationId) {
@@ -150,4 +179,7 @@ public class InventoryReservationLifecycleService {
     private static BusinessException invalidTransition(String message) {
         return BusinessException.conflict("INVALID_INVENTORY_RESERVATION_STATE", message);
     }
+
+    private record ReservationAllocation(UUID id, UUID balanceId, UUID locationId,
+            BigDecimal reservedQuantity, BigDecimal consumedQuantity) {}
 }

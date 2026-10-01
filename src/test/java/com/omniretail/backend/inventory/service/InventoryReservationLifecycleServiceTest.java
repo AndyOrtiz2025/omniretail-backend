@@ -104,6 +104,22 @@ class InventoryReservationLifecycleServiceTest {
     }
 
     @Test
+    void releaseOnlySubtractsTheUnconsumedAllocationQuantity() {
+        Fixture fixture = createFixture("5.000", "0.000");
+        InventoryReservation reservation = lifecycleService.reserve(command(fixture, "5.000"));
+        jdbcTemplate.update("""
+                UPDATE inventory_reservations
+                SET allocations = jsonb_set(allocations, '{0,consumedQuantity}', '2.000'::jsonb)
+                WHERE id = ?
+                """, reservation.getId());
+
+        lifecycleService.release(fixture.tenantId(), reservation.getId());
+
+        assertBalance(fixture, "5.000", "2.000");
+        assertStatus(reservation.getId(), InventoryReservationStatus.released);
+    }
+
+    @Test
     void releasedReservationCannotBeConsumed() {
         Fixture fixture = createFixture("5.000", "0.000");
         InventoryReservation reservation = lifecycleService.reserve(command(fixture, "2.000"));

@@ -150,6 +150,22 @@ public class InventoryStockService {
         }
     }
 
+    @Transactional
+    public void releaseReservedStock(
+            UUID tenantId, UUID branchId, UUID productId, UUID balanceId, BigDecimal quantity) {
+        validateQuantity(quantity);
+        InventoryBalance balance = inventoryBalanceRepository.findByTenantIdAndId(tenantId, balanceId)
+                .orElseThrow(InventoryStockService::inconsistentReservation);
+        if (!balance.getBranchId().equals(branchId) || !balance.getProductId().equals(productId)) {
+            throw inconsistentReservation();
+        }
+        try {
+            balance.releaseReservation(quantity);
+        } catch (IllegalStateException exception) {
+            throw inconsistentReservation();
+        }
+    }
+
     private InventoryMovement saveInboundMovement(
             AddStockCommand command, InventoryBalance balance, BigDecimal quantityBefore) {
         return inventoryMovementRepository.save(InventoryMovement.builder()

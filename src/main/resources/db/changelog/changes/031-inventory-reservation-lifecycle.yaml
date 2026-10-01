@@ -1,6 +1,6 @@
 databaseChangeLog:
   - changeSet:
-      id: 030-inventory-reservation-lifecycle
+      id: 031-inventory-reservation-lifecycle
       author: omniretail
       changes:
         - addColumn:
