@@ -43,4 +43,8 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
 
     Page<Order> findByTenantIdAndSourceAndStatus(
             UUID tenantId, OrderSource source, OrderStatus status, Pageable pageable);
+
+    /** Historial del cliente autenticado: nunca incluye pedidos POS ni de otros clientes. */
+    Page<Order> findByTenantIdAndCustomerIdAndSource(
+            UUID tenantId, UUID customerId, OrderSource source, Pageable pageable);
 }
