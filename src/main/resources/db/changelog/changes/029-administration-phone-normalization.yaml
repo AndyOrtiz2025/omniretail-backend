@@ -2,6 +2,10 @@ databaseChangeLog:
   - changeSet:
       id: 029-administration-phone-normalization
       author: joga17000
+      validCheckSum:
+        - 9:83fa2e4ee9717538a18392da28288636
+        - 9:4d7969f87202a90deb8cf7b2ffac12f5
+        - ANY
       changes:
         - sql:
             sql: |
