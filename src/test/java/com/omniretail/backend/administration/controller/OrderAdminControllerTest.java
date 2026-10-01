@@ -62,7 +62,8 @@ class OrderAdminControllerTest {
                 .andExpect(jsonPath("$.pageSize").value(1))
                 .andExpect(jsonPath("$.totalItems").value(2))
                 .andExpect(jsonPath("$.items.length()").value(1))
-                .andExpect(jsonPath("$.items[0].orderNumber").value(org.hamcrest.Matchers.startsWith("WEB-A-")));
+                .andExpect(jsonPath("$.items[0].orderNumber").value(org.hamcrest.Matchers.startsWith("WEB-A-")))
+                .andExpect(jsonPath("$.items[0].guestCustomer").isMap());
     }
 
     @Test

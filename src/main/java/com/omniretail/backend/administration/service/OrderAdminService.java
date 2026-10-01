@@ -61,7 +61,7 @@ public class OrderAdminService {
                 .collect(java.util.stream.Collectors.groupingBy(com.omniretail.backend.pos.entity.Payment::getOrderId));
         return new PageResponse<>(orders.getContent().stream()
                 .map(order -> OrderAdminResponse.of(order, items.getOrDefault(order.getId(), List.of()),
-                        payments.getOrDefault(order.getId(), List.of())))
+                        payments.getOrDefault(order.getId(), List.of()), jsonMapper))
                 .toList(), orders.getNumber() + 1, orders.getSize(), orders.getTotalElements(), orders.getTotalPages());
     }
 
@@ -74,7 +74,7 @@ public class OrderAdminService {
     @Transactional
     public OrderAdminResponse updateStatus(UUID id, OrderStatus nextStatus) {
         UUID tenantId = currentUser.require().tenantId();
-        Order order = findOrder(tenantId, id);
+        Order order = findOrderForUpdate(tenantId, id);
         OrderStatus current = order.getStatus();
         if (!isAllowed(current, nextStatus)) {
             throw new BusinessException(HttpStatus.CONFLICT, "INVALID_ORDER_STATUS_TRANSITION",
@@ -97,9 +97,19 @@ public class OrderAdminService {
         return order;
     }
 
+    private Order findOrderForUpdate(UUID tenantId, UUID id) {
+        Order order = orderRepository.findByTenantIdAndIdForUpdate(tenantId, id)
+                .orElseThrow(() -> new BusinessException(HttpStatus.NOT_FOUND, "ORDER_NOT_FOUND",
+                        "Pedido no encontrado."));
+        if (order.getSource() != OrderSource.ecommerce) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "ORDER_NOT_FOUND", "Pedido no encontrado.");
+        }
+        return order;
+    }
+
     private OrderAdminResponse toResponse(UUID tenantId, Order order) {
         return OrderAdminResponse.of(order, orderItemRepository.findByOrderId(order.getId()),
-                paymentRepository.findByTenantIdAndOrderIdOrderByCreatedAtAscIdAsc(tenantId, order.getId()));
+                paymentRepository.findByTenantIdAndOrderIdOrderByCreatedAtAscIdAsc(tenantId, order.getId()), jsonMapper);
     }
 
     private void releaseReservations(UUID tenantId, UUID orderId) {

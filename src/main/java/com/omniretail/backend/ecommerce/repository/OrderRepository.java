@@ -7,9 +7,13 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 public interface OrderRepository extends JpaRepository<Order, UUID> {
 
@@ -28,6 +32,11 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     List<Order> findByTenantId(UUID tenantId);
 
     Optional<Order> findByTenantIdAndId(UUID tenantId, UUID id);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT o FROM Order o WHERE o.tenantId = :tenantId AND o.id = :id")
+    Optional<Order> findByTenantIdAndIdForUpdate(
+            @Param("tenantId") UUID tenantId, @Param("id") UUID id);
 
     Page<Order> findByTenantIdAndSource(
             UUID tenantId, OrderSource source, Pageable pageable);

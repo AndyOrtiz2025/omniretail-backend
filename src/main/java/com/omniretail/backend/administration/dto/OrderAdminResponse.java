@@ -11,18 +11,20 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 public record OrderAdminResponse(
         UUID id,
         String orderNumber,
         UUID branchId,
         UUID customerId,
-        String guestCustomer,
+        JsonNode guestCustomer,
         OrderStatus status,
         DeliveryMethod deliveryMethod,
-        String deliveryAddress,
-        String storePickupContact,
-        String notificationContact,
+        JsonNode deliveryAddress,
+        JsonNode storePickupContact,
+        JsonNode notificationContact,
         BigDecimal subtotal,
         BigDecimal discountTotal,
         BigDecimal shippingTotal,
@@ -40,10 +42,12 @@ public record OrderAdminResponse(
             BigDecimal amount, String currency, UUID bankAccountId, String reference,
             Boolean externallyVerified) {}
 
-    public static OrderAdminResponse of(Order order, List<OrderItem> items, List<Payment> payments) {
+    public static OrderAdminResponse of(
+            Order order, List<OrderItem> items, List<Payment> payments, JsonMapper jsonMapper) {
         return new OrderAdminResponse(order.getId(), order.getOrderNumber(), order.getBranchId(),
-                order.getCustomerId(), order.getGuestCustomer(), order.getStatus(), order.getDeliveryMethod(),
-                order.getDeliveryAddress(), order.getStorePickupContact(), order.getNotificationContact(),
+                order.getCustomerId(), json(order.getGuestCustomer(), jsonMapper), order.getStatus(), order.getDeliveryMethod(),
+                json(order.getDeliveryAddress(), jsonMapper), json(order.getStorePickupContact(), jsonMapper),
+                json(order.getNotificationContact(), jsonMapper),
                 order.getSubtotal(), order.getDiscountTotal(), order.getShippingTotal(), order.getTotal(),
                 order.getTrackingToken(), order.getCreatedAt(), order.getUpdatedAt(),
                 items.stream().map(item -> new Item(item.getId(), item.getProductId(), item.getSkuSnapshot(),
@@ -52,5 +56,9 @@ public record OrderAdminResponse(
                 payments.stream().map(payment -> new PaymentLine(payment.getId(), payment.getMethod(),
                         payment.getStatus(), payment.getAmount(), payment.getCurrency(), payment.getBankAccountId(),
                         payment.getReference(), payment.getExternallyVerified())).toList());
+    }
+
+    private static JsonNode json(String value, JsonMapper jsonMapper) {
+        return value == null ? null : jsonMapper.readTree(value);
     }
 }
