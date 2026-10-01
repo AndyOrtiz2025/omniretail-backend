@@ -1,6 +1,6 @@
 databaseChangeLog:
   - changeSet:
-      id: 030-auth-employee-invitations
+      id: 031-auth-employee-invitations
       author: joga17000
       changes:
         - createTable:
