@@ -1,5 +1,7 @@
 package com.omniretail.backend.ecommerce.service;
 
+import com.omniretail.backend.ecommerce.entity.InventoryReservationSourceType;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -170,6 +172,12 @@ class StorefrontCheckoutServiceTest {
         ArgumentCaptor<com.omniretail.backend.ecommerce.entity.InventoryReservation> reservationCaptor =
                 ArgumentCaptor.forClass(com.omniretail.backend.ecommerce.entity.InventoryReservation.class);
         verify(reservationRepository).save(reservationCaptor.capture());
+        assertThat(reservationCaptor.getValue().getSourceType())
+                .isEqualTo(InventoryReservationSourceType.order);
+        assertThat(reservationCaptor.getValue().getSourceId())
+                .isEqualTo(reservationCaptor.getValue().getOrderId());
+        assertThat(reservationCaptor.getValue().getSourceLineId())
+                .isEqualTo(reservationCaptor.getValue().getOrderItemId());
         assertThat(reservationCaptor.getValue().getAllocations())
                 .contains("\"id\"", balanceId.toString(), "\"locationId\":null",
                         "\"reservedQuantity\":1", "\"consumedQuantity\":0");

@@ -22,6 +22,7 @@ import com.omniretail.backend.ecommerce.entity.Customer;
 import com.omniretail.backend.ecommerce.entity.CustomerStatus;
 import com.omniretail.backend.ecommerce.entity.DeliveryMethod;
 import com.omniretail.backend.ecommerce.entity.InventoryReservation;
+import com.omniretail.backend.ecommerce.entity.InventoryReservationSourceType;
 import com.omniretail.backend.ecommerce.entity.Order;
 import com.omniretail.backend.ecommerce.entity.OrderItem;
 import com.omniretail.backend.ecommerce.entity.OrderSource;
@@ -201,6 +202,9 @@ public class StorefrontCheckoutService {
                         tenantId, branch.getId(), product.getId(), savedItem.getInventoryQuantity());
                 InventoryReservation reservation = InventoryReservation.builder()
                         .branchId(branch.getId())
+                    .sourceType(InventoryReservationSourceType.order)
+                    .sourceId(savedOrder.getId())
+                    .sourceLineId(savedItem.getId())
                         .orderId(savedOrder.getId())
                         .orderItemId(savedItem.getId())
                         .productId(product.getId())

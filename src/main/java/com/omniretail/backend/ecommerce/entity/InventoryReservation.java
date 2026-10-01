@@ -31,11 +31,22 @@ public class InventoryReservation extends TenantScopedEntity {
     private UUID branchId;
 
     @NotNull
-    @Column(name = "order_id", nullable = false, updatable = false)
-    private UUID orderId;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "source_type", nullable = false, updatable = false, length = 20)
+    private InventoryReservationSourceType sourceType;
 
     @NotNull
-    @Column(name = "order_item_id", nullable = false, updatable = false)
+    @Column(name = "source_id", nullable = false, updatable = false)
+    private UUID sourceId;
+
+    @NotNull
+    @Column(name = "source_line_id", nullable = false, updatable = false)
+    private UUID sourceLineId;
+
+    @Column(name = "order_id", updatable = false)
+    private UUID orderId;
+
+    @Column(name = "order_item_id", updatable = false)
     private UUID orderItemId;
 
     @NotNull
