@@ -29,4 +29,51 @@ public record PickingDetailResponse(
         Instant updatedAt,
         List<PickingLineResponse> lines,
         List<PickingIncidentResponse> incidents,
-        List<PickingReleaseResponse> releases) {}
+        List<PickingReleaseResponse> releases,
+        String sourceReference) {
+
+    public PickingDetailResponse(
+            UUID pickingOrderId,
+            UUID orderId,
+            String orderReference,
+            String customerName,
+            JsonNode storePickupContact,
+            DeliveryMethod deliveryMethod,
+            PickingSourceType sourceType,
+            UUID sourceId,
+            UUID branchId,
+            PickingStatus status,
+            PickingPriority priority,
+            UUID assignedUserId,
+            PickingProgressResponse progress,
+            Instant startedAt,
+            Instant completedAt,
+            Instant createdAt,
+            Instant updatedAt,
+            List<PickingLineResponse> lines,
+            List<PickingIncidentResponse> incidents,
+            List<PickingReleaseResponse> releases) {
+        this(
+                pickingOrderId,
+                orderId,
+                orderReference,
+                customerName,
+                storePickupContact,
+                deliveryMethod,
+                sourceType,
+                sourceId,
+                branchId,
+                status,
+                priority,
+                assignedUserId,
+                progress,
+                startedAt,
+                completedAt,
+                createdAt,
+                updatedAt,
+                lines,
+                incidents,
+                releases,
+                orderReference);
+    }
+}

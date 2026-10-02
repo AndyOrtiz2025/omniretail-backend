@@ -7,6 +7,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.omniretail.backend.logistics.dto.ConfirmDispatchRequest;
+import com.omniretail.backend.logistics.dto.ConfirmTransferDispatchRequest;
 import com.omniretail.backend.logistics.service.DispatchService;
 import com.omniretail.backend.shared.exception.GlobalExceptionHandler;
 import com.omniretail.backend.shared.security.RequirePermission;
@@ -23,6 +24,21 @@ class DispatchControllerContractTest {
         permission("queue", "logistics.dispatch.read", UUID.class);
         permission("detail", "logistics.dispatch.read", UUID.class, UUID.class);
         permission("confirm", "logistics.dispatch.confirm", UUID.class, UUID.class, ConfirmDispatchRequest.class);
+        permission("transferDetail", "logistics.dispatch.read", UUID.class, UUID.class);
+        permission(
+                "confirmTransfer",
+                "logistics.dispatch.confirm",
+                UUID.class,
+                UUID.class,
+                ConfirmTransferDispatchRequest.class);
+    }
+    @Test void invalidTransferConfirmRequestIsRejectedBeforeService() throws Exception {
+        mvc.perform(post("/logistics/dispatch/transfers/{transfer}/confirm", UUID.randomUUID())
+                        .param("branchId", UUID.randomUUID().toString())
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"operationId\":\" \"}"))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(service);
     }
     @Test void invalidConfirmRequestIsRejectedBeforeService() throws Exception {
         mvc.perform(post("/logistics/dispatch/{order}/confirm", UUID.randomUUID()).param("branchId", UUID.randomUUID().toString()).contentType(APPLICATION_JSON).content("{\"operationId\":\" \",\"packages\":[]}"))

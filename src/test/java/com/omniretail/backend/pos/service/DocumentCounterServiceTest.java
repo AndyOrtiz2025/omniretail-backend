@@ -8,6 +8,8 @@ import com.omniretail.backend.TestcontainersConfiguration;
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.repository.TenantRepository;
+import java.time.Year;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -32,6 +34,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 class DocumentCounterServiceTest {
 
     private static final String POS_SALE_COUNTER_KEY = "pos_sale";
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("America/Guatemala");
 
     @Autowired
     private DocumentCounterService documentCounterService;
@@ -70,6 +73,29 @@ class DocumentCounterServiceTest {
         assertThat(documentCounterService.nextPurchaseOrderNumber(tenantId)).isEqualTo("OC-001");
         assertThat(documentCounterService.nextPurchaseOrderNumber(tenantId)).isEqualTo("OC-002");
         assertThat(documentCounterService.nextPosSaleNumber(tenantId)).isEqualTo("POS-002");
+    }
+
+    @Test
+    void inventoryTransfersUseTenantAndYearCounterWithFiveDigitSequence() {
+        UUID firstTenantId = createTenant();
+        UUID secondTenantId = createTenant();
+        int year = Year.now(BUSINESS_ZONE).getValue();
+
+        assertThat(documentCounterService.nextInventoryTransferNumber(firstTenantId))
+                .isEqualTo("TR-" + year + "-00001");
+        assertThat(documentCounterService.nextInventoryTransferNumber(firstTenantId))
+                .isEqualTo("TR-" + year + "-00002");
+        assertThat(documentCounterService.nextInventoryTransferNumber(secondTenantId))
+                .isEqualTo("TR-" + year + "-00001");
+        assertThat(jdbcTemplate.queryForObject(
+                        """
+                        SELECT count(*) FROM document_counters
+                        WHERE tenant_id = ? AND counter_key = ?
+                        """,
+                        Integer.class,
+                        firstTenantId,
+                        "inventory_transfer:" + year))
+                .isOne();
     }
 
     @Test

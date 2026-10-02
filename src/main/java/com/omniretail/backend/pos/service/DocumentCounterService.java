@@ -2,6 +2,8 @@ package com.omniretail.backend.pos.service;
 
 import com.omniretail.backend.pos.entity.DocumentCounter;
 import com.omniretail.backend.pos.repository.DocumentCounterRepository;
+import java.time.Year;
+import java.time.ZoneId;
 import java.util.Locale;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -20,6 +22,9 @@ public class DocumentCounterService {
     private static final String GOODS_RECEIPT_PREFIX = "REC-";
     private static final String CUSTOMER_COUNTER_KEY = "customer";
     private static final String CUSTOMER_PREFIX = "CLI-";
+    private static final String INVENTORY_TRANSFER_COUNTER_KEY_PREFIX = "inventory_transfer:";
+    private static final String INVENTORY_TRANSFER_PREFIX = "TR-";
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("America/Guatemala");
 
     private final DocumentCounterRepository documentCounterRepository;
 
@@ -45,7 +50,23 @@ public class DocumentCounterService {
         return nextNumber(tenantId, CUSTOMER_COUNTER_KEY, CUSTOMER_PREFIX, "de clientes");
     }
 
+    @Transactional
+    public String nextInventoryTransferNumber(UUID tenantId) {
+        int year = Year.now(BUSINESS_ZONE).getValue();
+        return nextNumber(
+                tenantId,
+                INVENTORY_TRANSFER_COUNTER_KEY_PREFIX + year,
+                INVENTORY_TRANSFER_PREFIX + year + "-",
+                "de transferencias de inventario",
+                5);
+    }
+
     private String nextNumber(UUID tenantId, String counterKey, String prefix, String label) {
+        return nextNumber(tenantId, counterKey, prefix, label, 3);
+    }
+
+    private String nextNumber(
+            UUID tenantId, String counterKey, String prefix, String label, int minimumDigits) {
         if (tenantId == null) {
             throw new IllegalArgumentException("tenantId es requerido.");
         }
@@ -59,6 +80,6 @@ public class DocumentCounterService {
         counter.setLastValue(nextValue);
         documentCounterRepository.flush();
 
-        return prefix + String.format(Locale.ROOT, "%03d", nextValue);
+        return prefix + String.format(Locale.ROOT, "%0" + minimumDigits + "d", nextValue);
     }
 }

@@ -11,6 +11,9 @@ import com.omniretail.backend.ecommerce.entity.OrderSource;
 import com.omniretail.backend.ecommerce.entity.OrderStatus;
 import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.ecommerce.repository.OrderRepository;
+import com.omniretail.backend.inventory.entity.InventoryTransfer;
+import com.omniretail.backend.inventory.entity.InventoryTransferStatus;
+import com.omniretail.backend.inventory.repository.InventoryTransferRepository;
 import com.omniretail.backend.logistics.dto.PackingActionResponse;
 import com.omniretail.backend.logistics.dto.PackingChecklistResponse;
 import com.omniretail.backend.logistics.dto.PackingDetailResponse;
@@ -36,6 +39,8 @@ import com.omniretail.backend.logistics.repository.PickingOrderRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
+import com.omniretail.backend.shared.security.SaasCapability;
+import com.omniretail.backend.shared.security.TenantCapabilityGuard;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -66,10 +71,12 @@ public class PackingService {
     private final PickingOrderRepository pickingOrderRepository;
     private final PickingItemRepository pickingItemRepository;
     private final OrderRepository orderRepository;
+    private final InventoryTransferRepository transferRepository;
     private final ProductRepository productRepository;
     private final CustomerRepository customerRepository;
     private final BranchAccessResolver branchAccessResolver;
     private final CurrentUser currentUser;
+    private final TenantCapabilityGuard tenantCapabilityGuard;
     private final JsonMapper jsonMapper;
 
     public List<PackingQueueResponse> getQueue(UUID branchId) {
@@ -120,7 +127,7 @@ public class PackingService {
         packing = packingRepository.saveAndFlush(packing);
 
         PackingActionResponse response = new PackingActionResponse(
-                detail(actor.tenantId(), packing, context.order(), context.picking()), false);
+                detail(actor.tenantId(), packing, context), false);
         recordOperation(actor, packing, operationId, PackingOperationType.save_preparation,
                 fingerprint, response);
         return response;
@@ -144,13 +151,13 @@ public class PackingService {
         long nextVersion = packing.getVersion() + 1L;
         Instant now = Instant.now();
         packing.setLabelGenerationId(UUID.randomUUID().toString());
-        packing.setLabelCode("LBL-" + context.order().getOrderNumber() + "-" + nextVersion);
+        packing.setLabelCode("LBL-" + context.sourceReference() + "-" + nextVersion);
         packing.setLabelGeneratedAt(now);
         packing.setLabelPrintedAt(null);
         packing = packingRepository.saveAndFlush(packing);
 
         PackingActionResponse response = new PackingActionResponse(
-                detail(actor.tenantId(), packing, context.order(), context.picking()), false);
+                detail(actor.tenantId(), packing, context), false);
         recordOperation(actor, packing, operationId, PackingOperationType.generate_label,
                 fingerprint, response);
         return response;
@@ -183,7 +190,7 @@ public class PackingService {
         }
 
         PackingActionResponse response = new PackingActionResponse(
-                detail(actor.tenantId(), packing, context.order(), context.picking()), false);
+                detail(actor.tenantId(), packing, context), false);
         recordOperation(actor, packing, operationId, PackingOperationType.register_label_print,
                 fingerprint, response);
         return response;
@@ -215,14 +222,17 @@ public class PackingService {
         packing.setStatus(PackingStatus.finalized);
         packing.setFinalizedByUserId(actor.userId());
         packing.setFinalizedAt(now);
-        context.order().setStatus(OrderStatus.ready_for_dispatch);
-        orderRepository.save(context.order());
+        if (context.order() != null) {
+            context.order().setStatus(OrderStatus.ready_for_dispatch);
+            orderRepository.save(context.order());
+        }
         packing = packingRepository.saveAndFlush(packing);
 
         PackingFinalizeResponse response = new PackingFinalizeResponse(
-                detail(actor.tenantId(), packing, context.order(), context.picking()),
+                detail(actor.tenantId(), packing, context),
                 false,
-                context.order().getStatus());
+                context.order() == null ? null : context.order().getStatus(),
+                context.transfer() == null ? null : context.transfer().getStatus());
         recordOperation(actor, packing, operationId, PackingOperationType.finalize,
                 fingerprint, response);
         return response;
@@ -237,11 +247,15 @@ public class PackingService {
             throw conflict("INVALID_PACKING_STATE", "El Packing se encuentra en un estado terminal.");
         }
         PickingOrder picking = requirePicking(packing);
-        Order order = lockOrder(packing);
-        if (order.getStatus() != OrderStatus.packing) {
-            throw conflict("INVALID_ORDER_STATUS_TRANSITION", "El pedido no se encuentra en Packing.");
+        if (packing.getSourceType() == PackingSourceType.order) {
+            Order order = lockOrder(packing);
+            if (order.getStatus() != OrderStatus.packing) {
+                throw conflict("INVALID_ORDER_STATUS_TRANSITION", "El pedido no se encuentra en Packing.");
+            }
+            return new MutationContext(order, null, picking, order.getOrderNumber());
         }
-        return new MutationContext(order, picking);
+        InventoryTransfer transfer = lockTransfer(packing);
+        return new MutationContext(null, transfer, picking, transfer.getNumber());
     }
 
     private Order lockOrder(Packing packing) {
@@ -252,14 +266,32 @@ public class PackingService {
         return order;
     }
 
+    private InventoryTransfer lockTransfer(Packing packing) {
+        tenantCapabilityGuard.ensureTenantCapability(
+                packing.getTenantId(), SaasCapability.inventory);
+        InventoryTransfer transfer = transferRepository
+                .findForUpdateByTenantIdAndId(packing.getTenantId(), packing.getSourceId())
+                .orElseThrow(() -> notFound(
+                        "INVENTORY_TRANSFER_NOT_FOUND", "Transferencia no encontrada."));
+        requireMatchingTransfer(packing, transfer);
+        if (transfer.getStatus() != InventoryTransferStatus.preparing) {
+            throw conflict(
+                    "PACKING_TRANSFER_STATE_CONFLICT",
+                    "La transferencia no se encuentra en preparación.");
+        }
+        return transfer;
+    }
+
     private PickingOrder requirePicking(Packing packing) {
         PickingOrder picking = pickingOrderRepository
                 .findByTenantIdAndBranchIdAndId(
                         packing.getTenantId(), packing.getBranchId(), packing.getPickingOrderId())
                 .orElseThrow(() -> notFound("PICKING_NOT_FOUND", "Picking no encontrado."));
+        PickingSourceType expectedSource = PickingSourceType.valueOf(packing.getSourceType().name());
         if (picking.getStatus() != PickingStatus.completed
-                || picking.getSourceType() != PickingSourceType.order
-                || !packing.getSourceId().equals(picking.getSourceId())) {
+                || picking.getSourceType() != expectedSource
+                || !packing.getSourceId().equals(picking.getSourceId())
+                || !java.util.Objects.equals(packing.getOrderId(), picking.getOrderId())) {
             throw conflict("PACKING_PICKING_CONFLICT", "Packing requiere un Picking completado válido.");
         }
         return picking;
@@ -267,43 +299,90 @@ public class PackingService {
 
     private PackingDetailResponse detail(UUID tenantId, Packing packing) {
         requireSupportedSource(packing);
-        Order order = orderRepository.findByTenantIdAndId(tenantId, packing.getOrderId())
-                .orElseThrow(() -> notFound("ORDER_NOT_FOUND", "Pedido no encontrado."));
-        requireMatchingOrder(packing, order);
-        return detail(tenantId, packing, order, requirePicking(packing));
+        PickingOrder picking = requirePicking(packing);
+        if (packing.getSourceType() == PackingSourceType.order) {
+            Order order = orderRepository.findByTenantIdAndId(tenantId, packing.getOrderId())
+                    .orElseThrow(() -> notFound("ORDER_NOT_FOUND", "Pedido no encontrado."));
+            requireMatchingOrder(packing, order);
+            return detail(
+                    tenantId,
+                    packing,
+                    new MutationContext(order, null, picking, order.getOrderNumber()));
+        }
+        InventoryTransfer transfer = transferRepository
+                .findByTenantIdAndId(tenantId, packing.getSourceId())
+                .orElseThrow(() -> notFound(
+                        "INVENTORY_TRANSFER_NOT_FOUND", "Transferencia no encontrada."));
+        tenantCapabilityGuard.ensureTenantCapability(tenantId, SaasCapability.inventory);
+        requireMatchingTransfer(packing, transfer);
+        return detail(
+                tenantId,
+                packing,
+                new MutationContext(null, transfer, picking, transfer.getNumber()));
     }
 
     private PackingDetailResponse detail(
-            UUID tenantId, Packing packing, Order order, PickingOrder picking) {
-        PackingQueueResponse queue = queueResponse(tenantId, packing, order);
+            UUID tenantId, Packing packing, MutationContext context) {
+        PackingQueueResponse queue = queueResponse(tenantId, packing, context);
         return new PackingDetailResponse(
                 queue.packingId(), queue.orderId(), queue.orderReference(), queue.customerName(),
                 queue.storePickupContact(), queue.deliveryMethod(), queue.sourceType(), queue.sourceId(),
                 queue.status(), queue.version(), queue.startedAt(), queue.updatedAt(),
-                picking.getId(), order.getStatus(), json(order.getDeliveryAddress()),
+                context.picking().getId(),
+                context.order() == null ? null : context.order().getStatus(),
+                context.order() == null ? null : json(context.order().getDeliveryAddress()),
                 new PackingChecklistResponse(
                         packing.isPackageProtectionChecked(),
                         packing.isDocumentIncludedChecked(),
                         packing.isRecipientVerifiedChecked()),
                 packing.getTotalWeight(), packing.getPackageCount(), packing.getLabelGenerationId(),
                 packing.getLabelCode(), packing.getLabelGeneratedAt(), packing.getLabelPrintedAt(),
-                packing.getFinalizedAt(), preparedContents(tenantId, packing, picking));
+                packing.getFinalizedAt(),
+                preparedContents(tenantId, packing, context.picking()),
+                context.sourceReference());
     }
 
     private PackingQueueResponse queueResponse(UUID tenantId, Packing packing) {
         requireSupportedSource(packing);
-        Order order = orderRepository.findByTenantIdAndId(tenantId, packing.getOrderId())
-                .orElseThrow(() -> notFound("ORDER_NOT_FOUND", "Pedido no encontrado."));
-        requireMatchingOrder(packing, order);
-        return queueResponse(tenantId, packing, order);
+        if (packing.getSourceType() == PackingSourceType.order) {
+            Order order = orderRepository.findByTenantIdAndId(tenantId, packing.getOrderId())
+                    .orElseThrow(() -> notFound("ORDER_NOT_FOUND", "Pedido no encontrado."));
+            requireMatchingOrder(packing, order);
+            return queueResponse(
+                    tenantId,
+                    packing,
+                    new MutationContext(order, null, requirePicking(packing), order.getOrderNumber()));
+        }
+        InventoryTransfer transfer = transferRepository
+                .findByTenantIdAndId(tenantId, packing.getSourceId())
+                .orElseThrow(() -> notFound(
+                        "INVENTORY_TRANSFER_NOT_FOUND", "Transferencia no encontrada."));
+        tenantCapabilityGuard.ensureTenantCapability(tenantId, SaasCapability.inventory);
+        requireMatchingTransfer(packing, transfer);
+        return queueResponse(
+                tenantId,
+                packing,
+                new MutationContext(null, transfer, requirePicking(packing), transfer.getNumber()));
     }
 
-    private PackingQueueResponse queueResponse(UUID tenantId, Packing packing, Order order) {
-        requireCoherentState(packing, order);
+    private PackingQueueResponse queueResponse(
+            UUID tenantId, Packing packing, MutationContext context) {
+        requireCoherentState(packing, context);
+        Order order = context.order();
         return new PackingQueueResponse(
-                packing.getId(), order.getId(), order.getOrderNumber(), customerName(tenantId, order),
-                null, order.getDeliveryMethod(), packing.getSourceType(), packing.getSourceId(),
-                packing.getStatus(), packing.getVersion(), packing.getStartedAt(), packing.getUpdatedAt());
+                packing.getId(),
+                order == null ? null : order.getId(),
+                order == null ? null : order.getOrderNumber(),
+                order == null ? null : customerName(tenantId, order),
+                null,
+                order == null ? null : order.getDeliveryMethod(),
+                packing.getSourceType(),
+                packing.getSourceId(),
+                packing.getStatus(),
+                packing.getVersion(),
+                packing.getStartedAt(),
+                packing.getUpdatedAt(),
+                context.sourceReference());
     }
 
     private List<PackingPreparedContentResponse> preparedContents(
@@ -361,7 +440,11 @@ public class PackingService {
         requireMatchingOperation(operation, packingId, fingerprint, PackingOperationType.finalize);
         PackingFinalizeResponse historical =
                 jsonMapper.readValue(operation.getResultPacking(), PackingFinalizeResponse.class);
-        return new PackingFinalizeResponse(historical.packing(), true, historical.orderStatus());
+        return new PackingFinalizeResponse(
+                historical.packing(),
+                true,
+                historical.orderStatus(),
+                historical.transferStatus());
     }
 
     private static void requireMatchingOperation(
@@ -399,10 +482,15 @@ public class PackingService {
     }
 
     private static void requireSupportedSource(Packing packing) {
-        if (packing.getSourceType() != PackingSourceType.order || packing.getOrderId() == null) {
+        boolean order = packing.getSourceType() == PackingSourceType.order
+                && packing.getOrderId() != null
+                && packing.getOrderId().equals(packing.getSourceId());
+        boolean transfer = packing.getSourceType() == PackingSourceType.transfer
+                && packing.getOrderId() == null;
+        if (!order && !transfer) {
             throw conflict(
                     "PACKING_SOURCE_NOT_SUPPORTED",
-                    "La fuente de Packing solicitada aún no está soportada.");
+                    "La fuente de Packing solicitada no es válida.");
         }
     }
 
@@ -420,8 +508,34 @@ public class PackingService {
         }
     }
 
-    private static void requireCoherentState(Packing packing, Order order) {
-        if (packing.getStatus() == PackingStatus.in_progress && order.getStatus() != OrderStatus.packing) {
+    private static void requireMatchingTransfer(
+            Packing packing, InventoryTransfer transfer) {
+        if (packing.getSourceType() != PackingSourceType.transfer
+                || packing.getOrderId() != null
+                || !packing.getSourceId().equals(transfer.getId())
+                || !packing.getBranchId().equals(transfer.getSourceBranchId())) {
+            throw conflict("PACKING_SOURCE_CONFLICT", "Packing no coincide con su transferencia.");
+        }
+    }
+
+    private static void requireCoherentState(
+            Packing packing, MutationContext context) {
+        if (context.transfer() != null) {
+            boolean coherent = packing.getStatus() == PackingStatus.in_progress
+                    ? context.transfer().getStatus() == InventoryTransferStatus.preparing
+                    : context.transfer().getStatus() == InventoryTransferStatus.preparing
+                            || context.transfer().getStatus() == InventoryTransferStatus.inTransit
+                            || context.transfer().getStatus() == InventoryTransferStatus.received;
+            if (!coherent) {
+                throw conflict(
+                        "PACKING_TRANSFER_STATE_CONFLICT",
+                        "Packing y transferencia tienen estados incompatibles.");
+            }
+            return;
+        }
+        Order order = context.order();
+        if (packing.getStatus() == PackingStatus.in_progress
+                && order.getStatus() != OrderStatus.packing) {
             throw conflict("PACKING_ORDER_STATE_CONFLICT", "Packing y pedido tienen estados incompatibles.");
         }
         if (packing.getStatus() == PackingStatus.finalized
@@ -511,5 +625,9 @@ public class PackingService {
         return BusinessException.conflict(code, message);
     }
 
-    private record MutationContext(Order order, PickingOrder picking) {}
+    private record MutationContext(
+            Order order,
+            InventoryTransfer transfer,
+            PickingOrder picking,
+            String sourceReference) {}
 }

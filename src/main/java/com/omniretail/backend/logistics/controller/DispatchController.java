@@ -1,6 +1,7 @@
 package com.omniretail.backend.logistics.controller;
 
 import com.omniretail.backend.logistics.dto.ConfirmDispatchRequest;
+import com.omniretail.backend.logistics.dto.ConfirmTransferDispatchRequest;
 import com.omniretail.backend.logistics.dto.DispatchQueueResponse;
 import com.omniretail.backend.logistics.dto.DispatchResponse;
 import com.omniretail.backend.logistics.service.DispatchService;
@@ -44,5 +45,21 @@ public class DispatchController {
             @PathVariable UUID orderId,
             @Valid @RequestBody ConfirmDispatchRequest request) {
         return dispatchService.confirm(branchId, orderId, request);
+    }
+
+    @GetMapping("/transfers/{transferId}")
+    @RequirePermission("logistics.dispatch.read")
+    public DispatchResponse transferDetail(
+            @RequestParam UUID branchId, @PathVariable UUID transferId) {
+        return dispatchService.getTransferDetail(branchId, transferId);
+    }
+
+    @PostMapping("/transfers/{transferId}/confirm")
+    @RequirePermission("logistics.dispatch.confirm")
+    public DispatchResponse confirmTransfer(
+            @RequestParam UUID branchId,
+            @PathVariable UUID transferId,
+            @Valid @RequestBody ConfirmTransferDispatchRequest request) {
+        return dispatchService.confirmTransfer(branchId, transferId, request);
     }
 }
