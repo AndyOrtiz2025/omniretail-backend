@@ -13,8 +13,12 @@ public class MediaWebConfig implements WebMvcConfigurer {
 
     @Override
     public void addResourceHandlers(ResourceHandlerRegistry registry) {
+        String location = mediaStorageService.root().toUri().toString();
+        if (!location.endsWith("/")) {
+            location += "/";
+        }
         registry.addResourceHandler("/media/**")
-                .addResourceLocations(mediaStorageService.root().toUri().toString())
+                .addResourceLocations(location)
                 .setUseLastModified(true);
     }
 }

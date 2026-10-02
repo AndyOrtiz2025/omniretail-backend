@@ -37,6 +37,12 @@ public class MediaStorageService {
             @Value("${app.media.max-size-bytes:5242880}") long maxSizeBytes) {
         this.root = Path.of(storagePath).toAbsolutePath().normalize();
         this.maxSizeBytes = maxSizeBytes;
+        try {
+            Files.createDirectories(this.root);
+        } catch (IOException exception) {
+            throw new IllegalStateException(
+                    "No se pudo inicializar el directorio de media.", exception);
+        }
     }
 
     public String storeImage(UUID tenantId, String scope, UUID ownerId, MultipartFile file) {

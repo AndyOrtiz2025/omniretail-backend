@@ -18,6 +18,18 @@ class MediaStorageServiceTest {
     @TempDir Path directory;
 
     @Test
+    void createsMissingNormalizedRootDuringInitialization() {
+        Path expectedRoot = directory.resolve("missing").resolve("nested").toAbsolutePath().normalize();
+        assertThat(Files.notExists(expectedRoot)).isTrue();
+
+        MediaStorageService service = new MediaStorageService(
+                expectedRoot.resolve("..").resolve("nested").toString(), MAX_SIZE_BYTES);
+
+        assertThat(Files.isDirectory(expectedRoot)).isTrue();
+        assertThat(service.root()).isEqualTo(expectedRoot);
+    }
+
+    @Test
     void storesDetectedPngBelowTenantRootAndNeverTrustsFilename() throws Exception {
         MediaStorageService service = new MediaStorageService(directory.toString(), 1024);
         byte[] png = {(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1};
