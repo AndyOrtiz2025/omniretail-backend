@@ -3,6 +3,8 @@ package com.omniretail.backend.inventory.repository;
 import com.omniretail.backend.inventory.entity.InventoryTransfer;
 import com.omniretail.backend.inventory.entity.InventoryTransferStatus;
 import jakarta.persistence.LockModeType;
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
@@ -19,6 +21,8 @@ public interface InventoryTransferRepository extends JpaRepository<InventoryTran
     Optional<InventoryTransfer> findByTenantIdAndNumber(UUID tenantId, String number);
 
     Optional<InventoryTransfer> findByTenantIdAndOperationId(UUID tenantId, String operationId);
+
+    List<InventoryTransfer> findByTenantIdAndIdIn(UUID tenantId, Collection<UUID> ids);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("""
@@ -38,6 +42,24 @@ public interface InventoryTransferRepository extends JpaRepository<InventoryTran
             """)
     Page<InventoryTransfer> findPage(
             @Param("tenantId") UUID tenantId,
+            @Param("sourceBranchId") UUID sourceBranchId,
+            @Param("destinationBranchId") UUID destinationBranchId,
+            @Param("status") InventoryTransferStatus status,
+            Pageable pageable);
+
+    @Query("""
+            select transfer from InventoryTransfer transfer
+            where transfer.tenantId = :tenantId
+              and (transfer.sourceBranchId in :branchIds
+                   or transfer.destinationBranchId in :branchIds)
+              and (:sourceBranchId is null or transfer.sourceBranchId = :sourceBranchId)
+              and (:destinationBranchId is null
+                   or transfer.destinationBranchId = :destinationBranchId)
+              and (:status is null or transfer.status = :status)
+            """)
+    Page<InventoryTransfer> findPageForBranches(
+            @Param("tenantId") UUID tenantId,
+            @Param("branchIds") Collection<UUID> branchIds,
             @Param("sourceBranchId") UUID sourceBranchId,
             @Param("destinationBranchId") UUID destinationBranchId,
             @Param("status") InventoryTransferStatus status,

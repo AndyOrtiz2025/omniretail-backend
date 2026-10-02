@@ -1,6 +1,7 @@
 package com.omniretail.backend.inventory.repository;
 
 import com.omniretail.backend.inventory.entity.InventoryTransferItem;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -13,4 +14,13 @@ public interface InventoryTransferItemRepository
 
     List<InventoryTransferItem> findByTenantIdAndTransferIdOrderByIdAsc(
             UUID tenantId, UUID transferId);
+
+    Optional<InventoryTransferItem> findByTenantIdAndSourceRequestId(
+            UUID tenantId, UUID sourceRequestId);
+
+    List<InventoryTransferItem> findByTenantIdAndSourceRequestIdIn(
+            UUID tenantId, Collection<UUID> sourceRequestIds);
+
+    List<InventoryTransferItem> findByTenantIdAndTransferIdInOrderByTransferIdAscIdAsc(
+            UUID tenantId, Collection<UUID> transferIds);
 }
