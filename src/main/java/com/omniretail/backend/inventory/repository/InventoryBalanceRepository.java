@@ -54,6 +54,8 @@ public interface InventoryBalanceRepository extends JpaRepository<InventoryBalan
 
     List<InventoryBalance> findByTenantId(UUID tenantId);
 
+    List<InventoryBalance> findByTenantIdAndBranchIdAndLocationIdIsNull(UUID tenantId, UUID branchId);
+
     List<InventoryBalance> findByTenantIdAndBranchIdAndProductId(
             UUID tenantId, UUID branchId, UUID productId);
 

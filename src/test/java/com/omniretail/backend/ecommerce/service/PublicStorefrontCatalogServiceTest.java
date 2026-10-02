@@ -7,8 +7,10 @@ import static org.mockito.Mockito.when;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.lenient;
 
+import com.omniretail.backend.administration.entity.EcommerceConfig;
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
+import com.omniretail.backend.administration.repository.EcommerceConfigRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.catalog.entity.Category;
 import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
@@ -20,6 +22,8 @@ import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
 import com.omniretail.backend.catalog.service.ProductPriceResolver;
+import com.omniretail.backend.inventory.entity.InventoryBalance;
+import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -41,6 +45,8 @@ class PublicStorefrontCatalogServiceTest {
     @Mock private CategoryRepository categoryRepository;
     @Mock private UnitRepository unitRepository;
     @Mock private ProductPriceResolver productPriceResolver;
+    @Mock private EcommerceConfigRepository ecommerceConfigRepository;
+    @Mock private InventoryBalanceRepository inventoryBalanceRepository;
 
     @InjectMocks private PublicStorefrontCatalogService service;
 
@@ -139,6 +145,70 @@ class PublicStorefrontCatalogServiceTest {
     }
 
     @Test
+    void exposesAvailableStockFromTheEcommerceBranchForTrackedProducts() {
+        UUID tenantId = UUID.randomUUID();
+        UUID branchId = UUID.randomUUID();
+        UUID unitId = UUID.randomUUID();
+        Product withStock = trackedProduct(UUID.randomUUID(), unitId);
+        Product withoutBalance = trackedProduct(UUID.randomUUID(), unitId);
+        Product untracked = product(UUID.randomUUID(), UUID.randomUUID(), unitId);
+        Tenant tenant = tenant(tenantId);
+        when(tenantRepository.findBySlug("ferreteria-los-simpson")).thenReturn(Optional.of(tenant));
+        when(productRepository.findByTenantIdAndStatusAndChannelEcommerceTrue(tenantId, ProductStatus.published))
+                .thenReturn(List.of(withStock, withoutBalance, untracked));
+        ecommerceBranch(tenantId, branchId);
+        InventoryBalance stockBalance = balance(withStock.getId(), "100.000", "30.000");
+        when(inventoryBalanceRepository.findByTenantIdAndBranchIdAndLocationIdIsNull(tenantId, branchId))
+                .thenReturn(List.of(stockBalance));
+
+        var response = service.listProducts("ferreteria-los-simpson");
+
+        assertThat(response).hasSize(3);
+        assertThat(response.get(0).inStock()).isTrue();
+        assertThat(response.get(0).availableQuantity()).isEqualByComparingTo("70.000");
+        assertThat(response.get(1).inStock()).isFalse();
+        assertThat(response.get(1).availableQuantity()).isEqualByComparingTo("0");
+        assertThat(response.get(2).inStock()).isTrue();
+        assertThat(response.get(2).availableQuantity()).isNull();
+    }
+
+    @Test
+    void marksAFullyReservedProductAsOutOfStock() {
+        UUID tenantId = UUID.randomUUID();
+        UUID branchId = UUID.randomUUID();
+        Product product = trackedProduct(UUID.randomUUID(), UUID.randomUUID());
+        Tenant tenant = tenant(tenantId);
+        when(tenantRepository.findBySlug("ferreteria-los-simpson")).thenReturn(Optional.of(tenant));
+        when(productRepository.findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
+                tenantId, product.getId(), ProductStatus.published)).thenReturn(Optional.of(product));
+        ecommerceBranch(tenantId, branchId);
+        InventoryBalance reservedBalance = balance(product.getId(), "5.000", "5.000");
+        when(inventoryBalanceRepository.findByTenantIdAndBranchIdAndLocationIdIsNull(tenantId, branchId))
+                .thenReturn(List.of(reservedBalance));
+
+        var response = service.getProduct("ferreteria-los-simpson", product.getId());
+
+        assertThat(response.inStock()).isFalse();
+        assertThat(response.availableQuantity()).isEqualByComparingTo("0");
+    }
+
+    @Test
+    void treatsTrackedProductsAsOutOfStockWhenTheStorefrontHasNoEcommerceBranch() {
+        UUID tenantId = UUID.randomUUID();
+        Product product = trackedProduct(UUID.randomUUID(), UUID.randomUUID());
+        Tenant tenant = tenant(tenantId);
+        when(tenantRepository.findBySlug("ferreteria-los-simpson")).thenReturn(Optional.of(tenant));
+        when(productRepository.findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
+                tenantId, product.getId(), ProductStatus.published)).thenReturn(Optional.of(product));
+        when(ecommerceConfigRepository.findByTenantId(tenantId)).thenReturn(Optional.empty());
+
+        var response = service.getProduct("ferreteria-los-simpson", product.getId());
+
+        assertThat(response.inStock()).isFalse();
+        assertThat(response.availableQuantity()).isEqualByComparingTo("0");
+    }
+
+    @Test
     void rejectsAnUnknownOrInactiveStorefront() {
         when(tenantRepository.findBySlug("cerrada")).thenReturn(Optional.empty());
 
@@ -166,6 +236,26 @@ class PublicStorefrontCatalogServiceTest {
         when(unit.getId()).thenReturn(unitId);
         when(unit.getName()).thenReturn("Unidad");
         return unit;
+    }
+
+    private void ecommerceBranch(UUID tenantId, UUID branchId) {
+        EcommerceConfig config = mock(EcommerceConfig.class);
+        when(config.getDefaultBranchId()).thenReturn(branchId);
+        when(ecommerceConfigRepository.findByTenantId(tenantId)).thenReturn(Optional.of(config));
+    }
+
+    private InventoryBalance balance(UUID productId, String quantity, String reserved) {
+        InventoryBalance balance = mock(InventoryBalance.class);
+        when(balance.getProductId()).thenReturn(productId);
+        when(balance.getQuantity()).thenReturn(new BigDecimal(quantity));
+        when(balance.getReservedQuantity()).thenReturn(new BigDecimal(reserved));
+        return balance;
+    }
+
+    private Product trackedProduct(UUID productId, UUID unitId) {
+        Product product = product(productId, UUID.randomUUID(), unitId);
+        when(product.getTrackingStock()).thenReturn(true);
+        return product;
     }
 
     private Product product(UUID productId, UUID categoryId, UUID unitId) {
