@@ -7,11 +7,14 @@ import com.omniretail.backend.TestcontainersConfiguration;
 import com.omniretail.backend.ecommerce.entity.InventoryReservation;
 import com.omniretail.backend.ecommerce.entity.InventoryReservationSourceType;
 import com.omniretail.backend.ecommerce.entity.InventoryReservationStatus;
+import com.omniretail.backend.ecommerce.repository.InventoryReservationRepository;
 import com.omniretail.backend.inventory.dto.ReserveInventoryCommand;
 import com.omniretail.backend.shared.exception.BusinessException;
 import jakarta.persistence.LockModeType;
 import java.math.BigDecimal;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -25,6 +28,8 @@ import org.springframework.context.annotation.Import;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 @SpringBootTest
 @ActiveProfiles("test")
@@ -32,7 +37,9 @@ import org.springframework.test.context.ActiveProfiles;
 class InventoryReservationLifecycleServiceTest {
 
     @Autowired private InventoryReservationLifecycleService lifecycleService;
+    @Autowired private InventoryReservationRepository reservations;
     @Autowired private JdbcTemplate jdbcTemplate;
+    @Autowired private JsonMapper jsonMapper;
 
     @Test
     void reserveIncrementsReservedQuantityWithoutChangingPhysicalQuantity() {
@@ -116,6 +123,66 @@ class InventoryReservationLifecycleServiceTest {
         lifecycleService.release(fixture.tenantId(), reservation.getId());
 
         assertBalance(fixture, "5.000", "2.000");
+        assertStatus(reservation.getId(), InventoryReservationStatus.released);
+    }
+
+    @Test
+    void consumeUsesTheExactAllocatedBalanceWhenTheProductHasTwoBalances() {
+        Fixture fixture = createFixture("10.000", "0.000");
+        UUID secondBalance = createLocatedBalance(fixture, "8.000", "3.000");
+        InventoryReservation reservation = persistReservation(
+                fixture, "3.000", allocations(allocation(secondBalance, "3.000", "0.000")));
+
+        lifecycleService.consume(fixture.tenantId(), reservation.getId());
+
+        assertBalance(fixture.balanceId(), "10.000", "0.000");
+        assertBalance(secondBalance, "5.000", "0.000");
+        assertStatus(reservation.getId(), InventoryReservationStatus.consumed);
+    }
+
+    @Test
+    void consumeProcessesEveryAllocationAndRecordsConsumedQuantities() {
+        Fixture fixture = createFixture("10.000", "2.000");
+        UUID secondBalance = createLocatedBalance(fixture, "8.000", "3.000");
+        InventoryReservation reservation = persistReservation(
+                fixture,
+                "5.000",
+                allocations(
+                        allocation(fixture.balanceId(), "2.000", "0.000"),
+                        allocation(secondBalance, "3.000", "0.000")));
+
+        lifecycleService.consume(fixture.tenantId(), reservation.getId());
+
+        assertBalance(fixture.balanceId(), "8.000", "0.000");
+        assertBalance(secondBalance, "5.000", "0.000");
+        JsonNode stored = jsonMapper.readTree(reservations.findById(reservation.getId()).orElseThrow().getAllocations());
+        assertThat(stored).hasSize(2);
+        Map<UUID, BigDecimal> consumed = new HashMap<>();
+        stored.forEach(node -> consumed.put(
+                UUID.fromString(node.get("balanceId").asText()),
+                node.get("consumedQuantity").decimalValue()));
+        assertThat(consumed.get(fixture.balanceId())).isEqualByComparingTo("2.000");
+        assertThat(consumed.get(secondBalance)).isEqualByComparingTo("3.000");
+        assertThat(consumed.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add))
+                .isEqualByComparingTo("5.000");
+        assertStatus(reservation.getId(), InventoryReservationStatus.consumed);
+    }
+
+    @Test
+    void releaseProcessesTheUnconsumedRemainderOfEveryAllocation() {
+        Fixture fixture = createFixture("10.000", "3.000");
+        UUID secondBalance = createLocatedBalance(fixture, "8.000", "4.000");
+        InventoryReservation reservation = persistReservation(
+                fixture,
+                "7.000",
+                allocations(
+                        allocation(fixture.balanceId(), "3.000", "1.000"),
+                        allocation(secondBalance, "4.000", "2.000")));
+
+        lifecycleService.release(fixture.tenantId(), reservation.getId());
+
+        assertBalance(fixture.balanceId(), "10.000", "1.000");
+        assertBalance(secondBalance, "8.000", "2.000");
         assertStatus(reservation.getId(), InventoryReservationStatus.released);
     }
 
@@ -289,12 +356,16 @@ class InventoryReservationLifecycleServiceTest {
     }
 
     private void assertBalance(Fixture fixture, String physical, String reserved) {
+        assertBalance(fixture.balanceId(), physical, reserved);
+    }
+
+    private void assertBalance(UUID balanceId, String physical, String reserved) {
         MapBalance balance = jdbcTemplate.queryForObject(
                 "SELECT quantity, reserved_quantity FROM inventory_balances WHERE id = ?",
                 (resultSet, rowNumber) -> new MapBalance(
                         resultSet.getBigDecimal("quantity"),
                         resultSet.getBigDecimal("reserved_quantity")),
-                fixture.balanceId());
+                balanceId);
         assertThat(balance.quantity()).isEqualByComparingTo(physical);
         assertThat(balance.reservedQuantity()).isEqualByComparingTo(reserved);
     }
@@ -384,6 +455,56 @@ class InventoryReservationLifecycleServiceTest {
                 balanceId,
                 UUID.randomUUID(),
                 UUID.randomUUID());
+    }
+
+    private UUID createLocatedBalance(Fixture fixture, String quantity, String reservedQuantity) {
+        UUID locationId = UUID.randomUUID();
+        UUID balanceId = UUID.randomUUID();
+        String suffix = balanceId.toString().substring(0, 8);
+        jdbcTemplate.update(
+                "INSERT INTO locations (id, tenant_id, branch_id, code, name, type, status) "
+                        + "VALUES (?, ?, ?, ?, ?, 'warehouse', 'active')",
+                locationId,
+                fixture.tenantId(),
+                fixture.branchId(),
+                "LOC-" + suffix,
+                "Ubicacion " + suffix);
+        jdbcTemplate.update(
+                "INSERT INTO inventory_balances "
+                        + "(id, tenant_id, branch_id, product_id, location_id, quantity, reserved_quantity) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                balanceId,
+                fixture.tenantId(),
+                fixture.branchId(),
+                fixture.productId(),
+                locationId,
+                new BigDecimal(quantity),
+                new BigDecimal(reservedQuantity));
+        return balanceId;
+    }
+
+    private InventoryReservation persistReservation(Fixture fixture, String quantity, String allocations) {
+        InventoryReservation reservation = InventoryReservation.builder()
+                .branchId(fixture.branchId())
+                .sourceType(InventoryReservationSourceType.transfer)
+                .sourceId(fixture.sourceId())
+                .sourceLineId(fixture.sourceLineId())
+                .productId(fixture.productId())
+                .quantity(new BigDecimal(quantity))
+                .allocations(allocations)
+                .build();
+        reservation.setTenantId(fixture.tenantId());
+        return reservations.saveAndFlush(reservation);
+    }
+
+    private String allocations(String... entries) {
+        return "[" + String.join(",", entries) + "]";
+    }
+
+    private String allocation(UUID balanceId, String reserved, String consumed) {
+        return "{\"id\":\"" + UUID.randomUUID() + "\",\"balanceId\":\"" + balanceId
+                + "\",\"locationId\":null,\"reservedQuantity\":" + reserved
+                + ",\"consumedQuantity\":" + consumed + "}";
     }
 
     private record Fixture(

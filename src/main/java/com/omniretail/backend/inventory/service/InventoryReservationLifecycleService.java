@@ -71,13 +71,39 @@ public class InventoryReservationLifecycleService {
             throw invalidTransition("Una reserva liberada no puede consumirse.");
         }
 
-        inventoryStockService.consumeReservedStock(
-                tenantId,
-                reservation.getBranchId(),
-                reservation.getProductId(),
-                reservation.getQuantity());
+        consumeAllocations(tenantId, reservation);
         reservation.setStatus(InventoryReservationStatus.consumed);
         return reservation;
+    }
+
+    private void consumeAllocations(UUID tenantId, InventoryReservation reservation) {
+        List<ReservationAllocation> allocations = jsonMapper.readValue(reservation.getAllocations(), ALLOCATIONS_TYPE);
+        if (allocations.isEmpty()) {
+            inventoryStockService.consumeReservedStock(tenantId, reservation.getBranchId(),
+                    reservation.getProductId(), reservation.getQuantity());
+            return;
+        }
+        if (allocations.stream().anyMatch(a -> a.balanceId() == null || a.reservedQuantity() == null
+                || a.reservedQuantity().signum() <= 0)) {
+            throw invalidTransition("La reserva no contiene una asignacion de balance valida.");
+        }
+        BigDecimal total = allocations.stream().map(ReservationAllocation::reservedQuantity)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (total.compareTo(reservation.getQuantity()) != 0) {
+            throw invalidTransition("Las asignaciones no coinciden con la cantidad reservada.");
+        }
+        List<ReservationAllocation> consumedAllocations = allocations.stream()
+                .sorted(Comparator.comparing(ReservationAllocation::balanceId))
+                .toList();
+        for (ReservationAllocation allocation : consumedAllocations) {
+            inventoryStockService.consumeReservedStock(tenantId, reservation.getBranchId(),
+                    reservation.getProductId(), allocation.balanceId(), allocation.reservedQuantity());
+        }
+        reservation.setAllocations(jsonMapper.writeValueAsString(consumedAllocations.stream()
+                .map(allocation -> new ReservationAllocation(
+                        allocation.id(), allocation.balanceId(), allocation.locationId(),
+                        allocation.reservedQuantity(), allocation.reservedQuantity()))
+                .toList()));
     }
 
     @Transactional

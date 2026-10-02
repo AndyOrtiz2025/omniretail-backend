@@ -137,6 +137,23 @@ public class InventoryStockService {
         }
     }
 
+    /** Consume exactamente el balance que fue reservado, conservando la ubicacion de la reserva. */
+    @Transactional
+    public void consumeReservedStock(
+            UUID tenantId, UUID branchId, UUID productId, UUID balanceId, BigDecimal quantity) {
+        validateQuantity(quantity);
+        InventoryBalance balance = inventoryBalanceRepository.findByTenantIdAndId(tenantId, balanceId)
+                .orElseThrow(InventoryStockService::inconsistentReservation);
+        if (!balance.getBranchId().equals(branchId) || !balance.getProductId().equals(productId)) {
+            throw inconsistentReservation();
+        }
+        try {
+            balance.consumeReservation(quantity);
+        } catch (IllegalStateException exception) {
+            throw inconsistentReservation();
+        }
+    }
+
     @Transactional
     public void releaseReservedStock(
             UUID tenantId, UUID branchId, UUID productId, BigDecimal quantity) {
