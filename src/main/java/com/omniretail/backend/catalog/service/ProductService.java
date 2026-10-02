@@ -4,17 +4,23 @@ import com.omniretail.backend.administration.dto.BusinessConfigResponse;
 import com.omniretail.backend.administration.service.BusinessConfigService;
 import com.omniretail.backend.catalog.dto.ProductChannelsDto;
 import com.omniretail.backend.catalog.dto.ProductCreateRequest;
+import com.omniretail.backend.catalog.dto.ProductChannel;
 import com.omniretail.backend.catalog.dto.ProductDto;
+import com.omniretail.backend.catalog.dto.ProductListDto;
+import com.omniretail.backend.catalog.dto.ProductPromotionFilter;
 import com.omniretail.backend.catalog.dto.ProductTrackingDto;
 import com.omniretail.backend.catalog.dto.ProductUpdateRequest;
 import com.omniretail.backend.catalog.entity.CategoryStatus;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductPriceHistory;
+import com.omniretail.backend.catalog.entity.ProductMediaType;
 import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.entity.UnitStatus;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.catalog.repository.ProductMediaRepository;
+import com.omniretail.backend.catalog.repository.ProductSpecifications;
 import com.omniretail.backend.catalog.repository.ProductPriceHistoryRepository;
 import com.omniretail.backend.catalog.repository.ProductKitComponentRepository;
 import com.omniretail.backend.catalog.repository.UnitConversionRepository;
@@ -29,11 +35,17 @@ import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.CurrentUser;
 import com.omniretail.backend.shared.security.SaasCapability;
 import com.omniretail.backend.shared.security.TenantCapabilityGuard;
+import java.time.Instant;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Page;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -46,6 +58,7 @@ public class ProductService {
     private static final String BARCODE_CONSTRAINT = "uk_products_tenant_barcode";
 
     private final ProductRepository productRepository;
+    private final ProductMediaRepository productMediaRepository;
     private final ProductPriceHistoryRepository productPriceHistoryRepository;
     private final CategoryRepository categoryRepository;
     private final UnitRepository unitRepository;
@@ -62,9 +75,55 @@ public class ProductService {
     private final CurrentUser currentUser;
 
     @Transactional(readOnly = true)
-    public PageResponse<ProductDto> list(Pageable pageable) {
+    public PageResponse<ProductListDto> list(Pageable pageable) {
+        return list(null, null, null, null, List.of(), ProductPromotionFilter.all, pageable);
+    }
+
+    @Transactional(readOnly = true)
+    public PageResponse<ProductListDto> list(
+            String search,
+            ProductStatus status,
+            ProductType productType,
+            UUID categoryId,
+            List<ProductChannel> channels,
+            ProductPromotionFilter promotion,
+            Pageable pageable) {
         UUID tenantId = currentUser.require().tenantId();
-        return PageResponse.from(productRepository.findByTenantId(tenantId, pageable), ProductService::toDto);
+        validateProductSort(pageable);
+        Instant now = Instant.now();
+        Page<Product> products = productRepository.findAll(
+                ProductSpecifications.filtered(
+                        tenantId,
+                        search,
+                        status,
+                        productType,
+                        categoryId,
+                        channels,
+                        promotion == null ? ProductPromotionFilter.all : promotion,
+                        now),
+                pageable);
+        List<UUID> productIds = products.getContent().stream().map(Product::getId).toList();
+        Map<UUID, String> primaryImages = new HashMap<>();
+        if (!productIds.isEmpty()) {
+            productMediaRepository
+                    .findByTenantIdAndProductIdInAndPrimaryTrueAndTypeOrderByProductIdAscSortOrderAscIdAsc(
+                            tenantId, productIds, ProductMediaType.image)
+                    .forEach(media -> primaryImages.putIfAbsent(media.getProductId(), media.getUrl()));
+        }
+        return PageResponse.from(products, product -> toListDto(product, primaryImages.get(product.getId())));
+    }
+
+    private static final Set<String> PRODUCT_SORT_FIELDS = Set.of("name", "sku", "createdAt");
+
+    private static void validateProductSort(Pageable pageable) {
+        pageable.getSort().forEach(order -> {
+            if (!PRODUCT_SORT_FIELDS.contains(order.getProperty())) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "PRODUCT_SORT_INVALID",
+                        "El ordenamiento de productos solo admite name, sku o createdAt.");
+            }
+        });
     }
 
     @Transactional(readOnly = true)
@@ -563,6 +622,34 @@ public class ProductService {
                         product.getTrackingSerial()),
                 new ProductChannelsDto(
                         product.getChannelEcommerce(), product.getChannelPos(), product.getChannelMobileApp()),
+                product.getCreatedAt(),
+                product.getUpdatedAt());
+    }
+
+    static ProductListDto toListDto(Product product, String primaryImageUrl) {
+        return new ProductListDto(
+                product.getId(),
+                product.getTenantId(),
+                product.getSku(),
+                product.getBarcode(),
+                product.getName(),
+                product.getDescription(),
+                product.getBrand(),
+                product.getProductType(),
+                product.getCategoryId(),
+                product.getBaseUnitId(),
+                product.getInventoryUnitId(),
+                product.getSaleUnitId(),
+                product.getSalePrice(),
+                product.getStatus(),
+                new ProductTrackingDto(
+                        product.getTrackingStock(),
+                        product.getTrackingLot(),
+                        product.getTrackingExpiration(),
+                        product.getTrackingSerial()),
+                new ProductChannelsDto(
+                        product.getChannelEcommerce(), product.getChannelPos(), product.getChannelMobileApp()),
+                primaryImageUrl,
                 product.getCreatedAt(),
                 product.getUpdatedAt());
     }

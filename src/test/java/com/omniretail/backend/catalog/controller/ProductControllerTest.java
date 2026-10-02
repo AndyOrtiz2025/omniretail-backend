@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.BDDMockito.given;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -22,6 +23,9 @@ import com.omniretail.backend.auth.service.SessionService;
 import com.omniretail.backend.catalog.dto.ProductChannelsDto;
 import com.omniretail.backend.catalog.dto.ProductCreateRequest;
 import com.omniretail.backend.catalog.dto.ProductDto;
+import com.omniretail.backend.catalog.dto.ProductListDto;
+import com.omniretail.backend.catalog.dto.ProductChannel;
+import com.omniretail.backend.catalog.dto.ProductPromotionFilter;
 import com.omniretail.backend.catalog.dto.ProductTrackingDto;
 import com.omniretail.backend.catalog.dto.ProductUpdateRequest;
 import com.omniretail.backend.catalog.entity.ProductStatus;
@@ -87,7 +91,7 @@ class ProductControllerTest {
     @Test
     void authenticatedGetWithReadPermissionSucceeds() throws Exception {
         given(productService.list(any(Pageable.class)))
-                .willReturn(new PageResponse<>(List.of(productDto()), 1, 20, 1, 1));
+                .willReturn(new PageResponse<>(List.of(productListDto()), 1, 20, 1, 1));
 
         mockMvc.perform(get(PRODUCTS).header("Authorization", token()))
                 .andExpect(status().isOk())
@@ -123,6 +127,35 @@ class ProductControllerTest {
         org.mockito.Mockito.verify(productService).list(captor.capture());
         assertThat(captor.getValue().getPageNumber()).isZero();
         assertThat(captor.getValue().getPageSize()).isEqualTo(10);
+    }
+
+    @Test
+    void queryFiltersAreAcceptedAndUnknownChannelIsRejected() throws Exception {
+        given(productService.list(
+                        eq("producto"),
+                        eq(ProductStatus.published),
+                        eq(ProductType.physical),
+                        isNull(),
+                        eq(List.of(ProductChannel.pos, ProductChannel.ecommerce)),
+                        eq(ProductPromotionFilter.with),
+                        any(Pageable.class)))
+                .willReturn(new PageResponse<>(List.of(productListDto()), 1, 20, 1, 1));
+
+        mockMvc.perform(get(PRODUCTS)
+                        .header("Authorization", token())
+                        .param("search", "producto")
+                        .param("status", "published")
+                        .param("productType", "physical")
+                        .param("channels", "pos,ecommerce")
+                        .param("promotion", "with"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].primaryImageUrl")
+                        .value("/media/products/example.webp"));
+
+        mockMvc.perform(get(PRODUCTS)
+                        .header("Authorization", token())
+                        .param("channels", "unknown"))
+                .andExpect(status().isBadRequest());
     }
 
     @Test
@@ -421,5 +454,15 @@ class ProductControllerTest {
                 new ProductChannelsDto(true, true, false),
                 Instant.parse("2026-01-01T00:00:00Z"),
                 Instant.parse("2026-01-01T00:00:00Z"));
+    }
+
+    private static ProductListDto productListDto() {
+        ProductDto product = productDto();
+        return new ProductListDto(
+                product.id(), product.tenantId(), product.sku(), product.barcode(), product.name(),
+                product.description(), product.brand(), product.productType(), product.categoryId(), product.baseUnitId(),
+                product.inventoryUnitId(), product.saleUnitId(), product.salePrice(), product.status(),
+                product.tracking(), product.channels(), "/media/products/example.webp",
+                product.createdAt(), product.updatedAt());
     }
 }

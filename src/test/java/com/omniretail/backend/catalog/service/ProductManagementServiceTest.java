@@ -24,6 +24,7 @@ import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.entity.UnitStatus;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.catalog.repository.ProductMediaRepository;
 import com.omniretail.backend.catalog.repository.ProductKitComponentRepository;
 import com.omniretail.backend.catalog.repository.ProductPriceHistoryRepository;
 import com.omniretail.backend.catalog.repository.UnitConversionRepository;
@@ -60,6 +61,7 @@ class ProductManagementServiceTest {
     private static final UUID BASE_UNIT_ID = UUID.randomUUID();
 
     @Mock private ProductRepository productRepository;
+    @Mock private ProductMediaRepository productMediaRepository;
     @Mock private ProductPriceHistoryRepository productPriceHistoryRepository;
     @Mock private CategoryRepository categoryRepository;
     @Mock private UnitRepository unitRepository;
@@ -82,6 +84,7 @@ class ProductManagementServiceTest {
     void setUp() {
         service = new ProductService(
                 productRepository,
+                productMediaRepository,
                 productPriceHistoryRepository,
                 categoryRepository,
                 unitRepository,
