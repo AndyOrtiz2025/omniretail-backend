@@ -18,7 +18,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
-/** Foundation Phase 1: identidad y estado de una unidad serializada, sin transiciones operativas. */
+/** Identidad y estado de una unidad serializada utilizada por los ajustes trazables. */
 @Entity
 @Table(name = "inventory_serials")
 @Getter

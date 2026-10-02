@@ -14,7 +14,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
-/** Foundation Phase 1: balance fisico por lote, aun desconectado de InventoryStockService. */
+/** Balance fisico por lote y ubicacion usado por los ajustes trazables de inventario. */
 @Entity
 @Table(name = "inventory_lot_balances")
 @Getter
@@ -46,4 +46,16 @@ public class InventoryLotBalance extends TenantScopedEntity {
     @Builder.Default
     @Column(name = "reserved_quantity", nullable = false, precision = 12, scale = 3)
     private BigDecimal reservedQuantity = BigDecimal.ZERO;
+
+    public void add(BigDecimal amount) {
+        quantity = quantity.add(amount);
+    }
+
+    public void deduct(BigDecimal amount) {
+        BigDecimal resultingQuantity = quantity.subtract(amount);
+        if (resultingQuantity.compareTo(reservedQuantity) < 0) {
+            throw new IllegalStateException("El balance del lote no tiene cantidad disponible suficiente.");
+        }
+        quantity = resultingQuantity;
+    }
 }

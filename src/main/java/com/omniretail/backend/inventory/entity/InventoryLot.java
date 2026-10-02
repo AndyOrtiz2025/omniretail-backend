@@ -15,7 +15,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
-/** Foundation Phase 1: identidad de un lote; todavia no participa en operaciones de stock. */
+/** Identidad de lote utilizada por los ajustes trazables de inventario. */
 @Entity
 @Table(name = "inventory_lots")
 @Getter

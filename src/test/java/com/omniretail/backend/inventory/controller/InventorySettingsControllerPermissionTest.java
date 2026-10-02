@@ -30,6 +30,14 @@ class InventorySettingsControllerPermissionTest {
                 InventoryAlertController.class.getDeclaredMethod(
                         "list", UUID.class, InventoryAlertStatus.class, Pageable.class),
                 "inventory.stock.read");
+        assertPermission(
+                InventoryTraceabilityController.class.getDeclaredMethod(
+                        "availableLots", UUID.class, UUID.class, UUID.class),
+                "inventory.stock.read");
+        assertPermission(
+                InventoryTraceabilityController.class.getDeclaredMethod(
+                        "availableSerials", UUID.class, UUID.class, UUID.class, UUID.class),
+                "inventory.stock.read");
     }
 
     private static void assertPermission(Method method, String expected) {

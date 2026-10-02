@@ -17,7 +17,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import org.hibernate.annotations.CreationTimestamp;
 
-/** Desglose fisico historico de un InventoryMovement; Foundation Phase 1 no lo alimenta aun. */
+/** Desglose fisico historico por lote o serie de un InventoryMovement trazable. */
 @Entity
 @Table(name = "inventory_movement_traces")
 @Getter
