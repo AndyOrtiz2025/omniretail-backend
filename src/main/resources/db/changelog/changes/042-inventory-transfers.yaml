@@ -1,0 +1,186 @@
+databaseChangeLog:
+  - changeSet:
+      id: 042-inventory-transfers
+      author: omniretail
+      changes:
+        - createTable:
+            tableName: inventory_transfer_requests
+            columns:
+              - column: {name: id, type: UUID, defaultValueComputed: gen_random_uuid(), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: tenant_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: requesting_branch_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: source_branch_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: product_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: requested_quantity, type: 'NUMERIC(12,3)', constraints: {nullable: false}}
+              - column: {name: reason, type: VARCHAR(30), constraints: {nullable: false}}
+              - column: {name: notes, type: VARCHAR(500)}
+              - column: {name: status, type: VARCHAR(20), defaultValue: requested, constraints: {nullable: false}}
+              - column: {name: requested_by_user_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: requested_at, type: TIMESTAMPTZ, constraints: {nullable: false}}
+              - column: {name: reviewed_by_user_id, type: UUID}
+              - column: {name: reviewed_at, type: TIMESTAMPTZ}
+              - column: {name: review_notes, type: VARCHAR(500)}
+              - column: {name: version, type: BIGINT, defaultValueNumeric: 0, constraints: {nullable: false}}
+              - column: {name: created_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+              - column: {name: updated_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfer_requests, baseColumnNames: tenant_id, referencedTableName: tenants, referencedColumnNames: id, constraintName: fk_transfer_requests_tenant, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfer_requests, baseColumnNames: requesting_branch_id, referencedTableName: branches, referencedColumnNames: id, constraintName: fk_transfer_requests_requesting_branch, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfer_requests, baseColumnNames: source_branch_id, referencedTableName: branches, referencedColumnNames: id, constraintName: fk_transfer_requests_source_branch, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfer_requests, baseColumnNames: product_id, referencedTableName: products, referencedColumnNames: id, constraintName: fk_transfer_requests_product, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfer_requests, baseColumnNames: requested_by_user_id, referencedTableName: users, referencedColumnNames: id, constraintName: fk_transfer_requests_requested_by, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfer_requests, baseColumnNames: reviewed_by_user_id, referencedTableName: users, referencedColumnNames: id, constraintName: fk_transfer_requests_reviewed_by, onDelete: RESTRICT}
+        - addUniqueConstraint: {tableName: inventory_transfer_requests, columnNames: 'tenant_id, id, product_id', constraintName: uk_transfer_requests_tenant_id_product}
+        - sql: {sql: "ALTER TABLE inventory_transfer_requests ADD CONSTRAINT ck_transfer_requests_branches CHECK (requesting_branch_id <> source_branch_id)"}
+        - sql: {sql: "ALTER TABLE inventory_transfer_requests ADD CONSTRAINT ck_transfer_requests_quantity CHECK (requested_quantity > 0)"}
+        - sql: {sql: "ALTER TABLE inventory_transfer_requests ADD CONSTRAINT ck_transfer_requests_reason CHECK (reason IN ('replenishment', 'demandCoverage', 'urgentRequest', 'inventoryBalancing', 'other'))"}
+        - sql: {sql: "ALTER TABLE inventory_transfer_requests ADD CONSTRAINT ck_transfer_requests_status CHECK (status IN ('requested', 'approved', 'rejected', 'cancelled'))"}
+        - sql: {sql: "ALTER TABLE inventory_transfer_requests ADD CONSTRAINT ck_transfer_requests_version CHECK (version >= 0)"}
+        - createIndex:
+            tableName: inventory_transfer_requests
+            indexName: idx_transfer_requests_tenant_requesting_status_created
+            columns:
+              - column: {name: tenant_id}
+              - column: {name: requesting_branch_id}
+              - column: {name: status}
+              - column: {name: created_at}
+        - createIndex:
+            tableName: inventory_transfer_requests
+            indexName: idx_transfer_requests_tenant_source_status_created
+            columns:
+              - column: {name: tenant_id}
+              - column: {name: source_branch_id}
+              - column: {name: status}
+              - column: {name: created_at}
+
+        - createTable:
+            tableName: inventory_transfers
+            columns:
+              - column: {name: id, type: UUID, defaultValueComputed: gen_random_uuid(), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: tenant_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: number, type: VARCHAR(50), constraints: {nullable: false}}
+              - column: {name: source_branch_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: destination_branch_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: status, type: VARCHAR(20), defaultValue: preparing, constraints: {nullable: false}}
+              - column: {name: operation_id, type: VARCHAR(128), constraints: {nullable: false}}
+              - column: {name: operation_fingerprint, type: TEXT, constraints: {nullable: false}}
+              - column: {name: reason, type: VARCHAR(30)}
+              - column: {name: notes, type: VARCHAR(500)}
+              - column: {name: prepared_by_user_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: prepared_at, type: TIMESTAMPTZ, constraints: {nullable: false}}
+              - column: {name: dispatched_by_user_id, type: UUID}
+              - column: {name: dispatched_at, type: TIMESTAMPTZ}
+              - column: {name: received_by_user_id, type: UUID}
+              - column: {name: received_at, type: TIMESTAMPTZ}
+              - column: {name: cancelled_by_user_id, type: UUID}
+              - column: {name: cancelled_at, type: TIMESTAMPTZ}
+              - column: {name: cancel_reason, type: VARCHAR(500)}
+              - column: {name: version, type: BIGINT, defaultValueNumeric: 0, constraints: {nullable: false}}
+              - column: {name: created_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+              - column: {name: updated_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfers, baseColumnNames: tenant_id, referencedTableName: tenants, referencedColumnNames: id, constraintName: fk_inventory_transfers_tenant, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfers, baseColumnNames: source_branch_id, referencedTableName: branches, referencedColumnNames: id, constraintName: fk_inventory_transfers_source_branch, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfers, baseColumnNames: destination_branch_id, referencedTableName: branches, referencedColumnNames: id, constraintName: fk_inventory_transfers_destination_branch, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfers, baseColumnNames: prepared_by_user_id, referencedTableName: users, referencedColumnNames: id, constraintName: fk_inventory_transfers_prepared_by, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfers, baseColumnNames: dispatched_by_user_id, referencedTableName: users, referencedColumnNames: id, constraintName: fk_inventory_transfers_dispatched_by, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfers, baseColumnNames: received_by_user_id, referencedTableName: users, referencedColumnNames: id, constraintName: fk_inventory_transfers_received_by, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfers, baseColumnNames: cancelled_by_user_id, referencedTableName: users, referencedColumnNames: id, constraintName: fk_inventory_transfers_cancelled_by, onDelete: RESTRICT}
+        - addUniqueConstraint: {tableName: inventory_transfers, columnNames: 'tenant_id, number', constraintName: uk_inventory_transfers_tenant_number}
+        - addUniqueConstraint: {tableName: inventory_transfers, columnNames: 'tenant_id, operation_id', constraintName: uk_inventory_transfers_tenant_operation}
+        - addUniqueConstraint: {tableName: inventory_transfers, columnNames: 'tenant_id, id', constraintName: uk_inventory_transfers_tenant_id}
+        - sql: {sql: "ALTER TABLE inventory_transfers ADD CONSTRAINT ck_inventory_transfers_branches CHECK (source_branch_id <> destination_branch_id)"}
+        - sql: {sql: "ALTER TABLE inventory_transfers ADD CONSTRAINT ck_inventory_transfers_status CHECK (status IN ('preparing', 'inTransit', 'received', 'cancelled'))"}
+        - sql: {sql: "ALTER TABLE inventory_transfers ADD CONSTRAINT ck_inventory_transfers_reason CHECK (reason IS NULL OR reason IN ('replenishment', 'demandCoverage', 'urgentRequest', 'inventoryBalancing', 'other'))"}
+        - sql: {sql: "ALTER TABLE inventory_transfers ADD CONSTRAINT ck_inventory_transfers_version CHECK (version >= 0)"}
+        - createIndex:
+            tableName: inventory_transfers
+            indexName: idx_inventory_transfers_tenant_source_status_created
+            columns:
+              - column: {name: tenant_id}
+              - column: {name: source_branch_id}
+              - column: {name: status}
+              - column: {name: created_at}
+        - createIndex:
+            tableName: inventory_transfers
+            indexName: idx_inventory_transfers_tenant_destination_status_created
+            columns:
+              - column: {name: tenant_id}
+              - column: {name: destination_branch_id}
+              - column: {name: status}
+              - column: {name: created_at}
+
+        - createTable:
+            tableName: inventory_transfer_items
+            columns:
+              - column: {name: id, type: UUID, defaultValueComputed: gen_random_uuid(), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: tenant_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: transfer_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: product_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: source_request_id, type: UUID}
+              - column: {name: requested_quantity, type: 'NUMERIC(12,3)', constraints: {nullable: false}}
+              - column: {name: dispatched_quantity, type: 'NUMERIC(12,3)', defaultValueNumeric: 0, constraints: {nullable: false}}
+              - column: {name: received_quantity, type: 'NUMERIC(12,3)', defaultValueNumeric: 0, constraints: {nullable: false}}
+              - column: {name: created_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+              - column: {name: updated_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfer_items, baseColumnNames: 'tenant_id, transfer_id', referencedTableName: inventory_transfers, referencedColumnNames: 'tenant_id, id', constraintName: fk_transfer_items_tenant_transfer, onDelete: CASCADE}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfer_items, baseColumnNames: product_id, referencedTableName: products, referencedColumnNames: id, constraintName: fk_transfer_items_product, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfer_items, baseColumnNames: 'tenant_id, source_request_id, product_id', referencedTableName: inventory_transfer_requests, referencedColumnNames: 'tenant_id, id, product_id', constraintName: fk_transfer_items_tenant_request_product, onDelete: RESTRICT}
+        - addUniqueConstraint: {tableName: inventory_transfer_items, columnNames: 'tenant_id, id, product_id', constraintName: uk_transfer_items_tenant_id_product}
+        - addUniqueConstraint: {tableName: inventory_transfer_items, columnNames: 'tenant_id, source_request_id', constraintName: uk_transfer_items_tenant_request}
+        - sql: {sql: "ALTER TABLE inventory_transfer_items ADD CONSTRAINT ck_transfer_items_requested_quantity CHECK (requested_quantity > 0)"}
+        - sql: {sql: "ALTER TABLE inventory_transfer_items ADD CONSTRAINT ck_transfer_items_dispatched_quantity CHECK (dispatched_quantity >= 0 AND dispatched_quantity <= requested_quantity)"}
+        - sql: {sql: "ALTER TABLE inventory_transfer_items ADD CONSTRAINT ck_transfer_items_received_quantity CHECK (received_quantity >= 0 AND received_quantity <= dispatched_quantity)"}
+        - createIndex:
+            tableName: inventory_transfer_items
+            indexName: idx_transfer_items_tenant_transfer
+            columns:
+              - column: {name: tenant_id}
+              - column: {name: transfer_id}
+
+        - createTable:
+            tableName: inventory_transfer_receipts
+            columns:
+              - column: {name: id, type: UUID, defaultValueComputed: gen_random_uuid(), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: tenant_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: transfer_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: confirmation_id, type: VARCHAR(128), constraints: {nullable: false}}
+              - column: {name: operation_fingerprint, type: TEXT, constraints: {nullable: false}}
+              - column: {name: received_by_user_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: received_at, type: TIMESTAMPTZ, constraints: {nullable: false}}
+              - column: {name: created_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+              - column: {name: updated_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfer_receipts, baseColumnNames: 'tenant_id, transfer_id', referencedTableName: inventory_transfers, referencedColumnNames: 'tenant_id, id', constraintName: fk_transfer_receipts_tenant_transfer, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfer_receipts, baseColumnNames: received_by_user_id, referencedTableName: users, referencedColumnNames: id, constraintName: fk_transfer_receipts_received_by, onDelete: RESTRICT}
+        - addUniqueConstraint: {tableName: inventory_transfer_receipts, columnNames: 'tenant_id, confirmation_id', constraintName: uk_transfer_receipts_tenant_confirmation}
+        - addUniqueConstraint: {tableName: inventory_transfer_receipts, columnNames: 'tenant_id, id', constraintName: uk_transfer_receipts_tenant_id}
+        - createIndex:
+            tableName: inventory_transfer_receipts
+            indexName: idx_transfer_receipts_tenant_transfer_received
+            columns:
+              - column: {name: tenant_id}
+              - column: {name: transfer_id}
+              - column: {name: received_at}
+
+        - createTable:
+            tableName: inventory_transfer_receipt_items
+            columns:
+              - column: {name: id, type: UUID, defaultValueComputed: gen_random_uuid(), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: tenant_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: receipt_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: transfer_item_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: product_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: location_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: quantity, type: 'NUMERIC(12,3)', constraints: {nullable: false}}
+              - column: {name: created_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+              - column: {name: updated_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfer_receipt_items, baseColumnNames: 'tenant_id, receipt_id', referencedTableName: inventory_transfer_receipts, referencedColumnNames: 'tenant_id, id', constraintName: fk_transfer_receipt_items_tenant_receipt, onDelete: CASCADE}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfer_receipt_items, baseColumnNames: 'tenant_id, transfer_item_id, product_id', referencedTableName: inventory_transfer_items, referencedColumnNames: 'tenant_id, id, product_id', constraintName: fk_transfer_receipt_items_tenant_item_product, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfer_receipt_items, baseColumnNames: product_id, referencedTableName: products, referencedColumnNames: id, constraintName: fk_transfer_receipt_items_product, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_transfer_receipt_items, baseColumnNames: location_id, referencedTableName: locations, referencedColumnNames: id, constraintName: fk_transfer_receipt_items_location, onDelete: RESTRICT}
+        - addUniqueConstraint: {tableName: inventory_transfer_receipt_items, columnNames: 'tenant_id, receipt_id, transfer_item_id', constraintName: uk_transfer_receipt_items_receipt_item}
+        - sql: {sql: "ALTER TABLE inventory_transfer_receipt_items ADD CONSTRAINT ck_transfer_receipt_items_quantity CHECK (quantity > 0)"}
+        - createIndex:
+            tableName: inventory_transfer_receipt_items
+            indexName: idx_transfer_receipt_items_tenant_receipt
+            columns:
+              - column: {name: tenant_id}
+              - column: {name: receipt_id}
