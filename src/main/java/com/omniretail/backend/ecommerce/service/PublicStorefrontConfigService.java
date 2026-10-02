@@ -1,8 +1,12 @@
 package com.omniretail.backend.ecommerce.service;
 
 import com.omniretail.backend.administration.dto.HeroBannerSlideDto;
+import com.omniretail.backend.administration.entity.Branch;
+import com.omniretail.backend.administration.entity.BranchStatus;
+import com.omniretail.backend.administration.entity.BranchType;
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
+import com.omniretail.backend.administration.repository.BranchRepository;
 import com.omniretail.backend.administration.repository.EcommerceConfigRepository;
 import com.omniretail.backend.administration.repository.HeroBannerConfigRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
@@ -25,6 +29,7 @@ public class PublicStorefrontConfigService {
     private static final TypeReference<List<HeroBannerSlideDto>> SLIDES_TYPE = new TypeReference<>() {};
 
     private final TenantRepository tenantRepository;
+    private final BranchRepository branchRepository;
     private final EcommerceConfigRepository ecommerceConfigRepository;
     private final HeroBannerConfigRepository heroBannerConfigRepository;
     private final JsonMapper jsonMapper;
@@ -38,7 +43,10 @@ public class PublicStorefrontConfigService {
         List<HeroBannerSlideDto> slides = heroBannerConfigRepository.findByTenantId(tenant.getId())
                 .map(banner -> jsonMapper.readValue(banner.getSlides(), SLIDES_TYPE))
                 .orElseGet(List::of);
-        return PublicStorefrontConfigResponse.from(config, slides);
+        List<Branch> branches = branchRepository.findByTenantIdAndStatus(tenant.getId(), BranchStatus.active).stream()
+                .filter(branch -> branch.getType() == BranchType.store)
+                .toList();
+        return PublicStorefrontConfigResponse.from(config, slides, branches);
     }
 
     private BusinessException storefrontNotFound() {
