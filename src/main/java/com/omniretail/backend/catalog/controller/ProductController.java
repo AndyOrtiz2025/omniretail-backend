@@ -82,4 +82,10 @@ public class ProductController {
     public void archive(@PathVariable UUID id) {
         productService.archive(id);
     }
+
+    @PostMapping("/{id}/restore")
+    @RequirePermission("catalog.products.update")
+    public ProductDto restore(@PathVariable UUID id) {
+        return productService.restore(id);
+    }
 }

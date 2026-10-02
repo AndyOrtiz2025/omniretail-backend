@@ -47,7 +47,8 @@ class PublicStorefrontCatalogServiceTest {
     @BeforeEach
     void setUpPriceResolver() {
         lenient().when(productPriceResolver.resolveEffectivePrice(
-                        any(), any(Product.class), any(Instant.class)))
+                        any(), any(Product.class), any(Instant.class),
+                        org.mockito.ArgumentMatchers.eq("ecommerce"), org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("75.00"),
                         new BigDecimal("75.00"),
@@ -101,7 +102,8 @@ class PublicStorefrontCatalogServiceTest {
         when(productPriceResolver.resolveEffectivePrice(
                 org.mockito.ArgumentMatchers.eq(tenantId),
                 org.mockito.ArgumentMatchers.eq(product),
-                any(Instant.class)))
+                any(Instant.class), org.mockito.ArgumentMatchers.eq("ecommerce"),
+                org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("75.00"), new BigDecimal("60.00"),
                         new BigDecimal("15.00"), promotionId));

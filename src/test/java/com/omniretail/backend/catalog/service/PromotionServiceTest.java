@@ -13,6 +13,7 @@ import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.catalog.dto.CreatePromotionRequest;
 import com.omniretail.backend.catalog.dto.PromotionLifecycleStatus;
 import com.omniretail.backend.catalog.dto.PromotionSummaryResponse;
+import com.omniretail.backend.catalog.dto.UpdatePromotionRequest;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.entity.Promotion;
@@ -22,6 +23,7 @@ import com.omniretail.backend.catalog.entity.PromotionStatus;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.PromotionProductRepository;
 import com.omniretail.backend.catalog.repository.PromotionRepository;
+import com.omniretail.backend.administration.repository.BranchRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
@@ -48,6 +50,7 @@ class PromotionServiceTest {
     @Mock private PromotionRepository promotionRepository;
     @Mock private PromotionProductRepository promotionProductRepository;
     @Mock private ProductRepository productRepository;
+    @Mock private BranchRepository branchRepository;
     @Mock private CurrentUser currentUser;
     @InjectMocks private PromotionService service;
 
@@ -65,7 +68,7 @@ class PromotionServiceTest {
     @Test
     void createsPercentagePromotionAndNormalizesName() {
         Product product = product(productId, ProductStatus.published);
-        when(productRepository.findByTenantIdAndIdIn(eq(tenantId), any(Collection.class)))
+        when(productRepository.findAllForUpdateByTenantIdAndIdIn(eq(tenantId), any(Collection.class)))
                 .thenReturn(List.of(product));
         when(promotionRepository.saveAndFlush(any())).thenAnswer(invocation -> {
             Promotion promotion = invocation.getArgument(0);
@@ -91,7 +94,7 @@ class PromotionServiceTest {
     @Test
     void createsFixedPricePromotion() {
         Product product = product(productId, ProductStatus.published);
-        when(productRepository.findByTenantIdAndIdIn(eq(tenantId), any(Collection.class)))
+        when(productRepository.findAllForUpdateByTenantIdAndIdIn(eq(tenantId), any(Collection.class)))
                 .thenReturn(List.of(product));
         when(promotionRepository.saveAndFlush(any())).thenAnswer(invocation -> {
             Promotion promotion = invocation.getArgument(0);
@@ -128,6 +131,12 @@ class PromotionServiceTest {
     }
 
     @Test
+    void rejectsZeroFixedDiscount() {
+        assertInvalid(request("Oferta", PromotionDiscountType.fixed_discount,
+                BigDecimal.ZERO, List.of(productId), null));
+    }
+
+    @Test
     void rejectsInvalidDates() {
         assertInvalid(request("Oferta", PromotionDiscountType.percentage,
                 BigDecimal.TEN, List.of(productId), startsAt));
@@ -156,7 +165,7 @@ class PromotionServiceTest {
 
     @Test
     void rejectsArchivedProduct() {
-        when(productRepository.findByTenantIdAndIdIn(eq(tenantId), any(Collection.class)))
+        when(productRepository.findAllForUpdateByTenantIdAndIdIn(eq(tenantId), any(Collection.class)))
                 .thenReturn(List.of(product(productId, ProductStatus.archived)));
 
         assertThatThrownBy(() -> service.create(request(
@@ -168,7 +177,7 @@ class PromotionServiceTest {
 
     @Test
     void treatsCrossTenantProductAsNotFound() {
-        when(productRepository.findByTenantIdAndIdIn(eq(tenantId), any(Collection.class)))
+        when(productRepository.findAllForUpdateByTenantIdAndIdIn(eq(tenantId), any(Collection.class)))
                 .thenReturn(List.of());
 
         assertThatThrownBy(() -> service.create(request(
@@ -192,7 +201,7 @@ class PromotionServiceTest {
     }
 
     @Test
-    void derivesScheduledActiveExpiredAndCancelledStatuses() {
+    void derivesScheduledActiveEndedAndCancelledStatuses() {
         Promotion promotion = promotion(PromotionStatus.active);
         Instant start = Instant.parse("2026-01-01T00:00:00Z");
         Instant end = start.plusSeconds(3600);
@@ -204,7 +213,7 @@ class PromotionServiceTest {
         assertThat(PromotionSummaryResponse.lifecycle(promotion, start))
                 .isEqualTo(PromotionLifecycleStatus.active);
         assertThat(PromotionSummaryResponse.lifecycle(promotion, end))
-                .isEqualTo(PromotionLifecycleStatus.expired);
+                .isEqualTo(PromotionLifecycleStatus.ended);
         ReflectionTestUtils.setField(promotion, "status", PromotionStatus.cancelled);
         assertThat(PromotionSummaryResponse.lifecycle(promotion, start.minusSeconds(1)))
                 .isEqualTo(PromotionLifecycleStatus.cancelled);
@@ -233,7 +242,7 @@ class PromotionServiceTest {
     @Test
     void cancelsPromotionWithActorSnapshot() {
         Promotion promotion = promotion(PromotionStatus.active);
-        when(promotionRepository.findByTenantIdAndId(tenantId, promotion.getId()))
+        when(promotionRepository.findForUpdateByTenantIdAndId(tenantId, promotion.getId()))
                 .thenReturn(Optional.of(promotion));
         when(promotionRepository.saveAndFlush(promotion)).thenReturn(promotion);
         when(promotionProductRepository.findByTenantIdAndPromotionId(tenantId, promotion.getId()))
@@ -253,7 +262,7 @@ class PromotionServiceTest {
         Promotion promotion = promotion(PromotionStatus.cancelled);
         ReflectionTestUtils.setField(promotion, "cancelledByUserId", userId);
         ReflectionTestUtils.setField(promotion, "cancelledAt", startsAt);
-        when(promotionRepository.findByTenantIdAndId(tenantId, promotion.getId()))
+        when(promotionRepository.findForUpdateByTenantIdAndId(tenantId, promotion.getId()))
                 .thenReturn(Optional.of(promotion));
         when(promotionProductRepository.findByTenantIdAndPromotionId(tenantId, promotion.getId()))
                 .thenReturn(List.of());
@@ -275,6 +284,44 @@ class PromotionServiceTest {
         assertThatThrownBy(() -> service.get(foreignPromotion))
                 .isInstanceOfSatisfying(BusinessException.class,
                         exception -> assertThat(exception.getCode()).isEqualTo("PROMOTION_NOT_FOUND"));
+    }
+
+    @Test
+    void filtersPromotionsByTenantScopedProduct() {
+        PageRequest pageable = PageRequest.of(0, 20);
+        when(productRepository.findByTenantIdAndId(tenantId, productId))
+                .thenReturn(Optional.of(product(productId, ProductStatus.published)));
+        when(promotionRepository.findByTenantIdAndProductId(tenantId, productId, pageable))
+                .thenReturn(new PageImpl<>(List.of(promotion(PromotionStatus.active)), pageable, 1));
+
+        assertThat(service.list(productId, pageable).items()).hasSize(1);
+        verify(promotionRepository).findByTenantIdAndProductId(tenantId, productId, pageable);
+    }
+
+    @Test
+    void updatesEditorFieldsAndEndsPromotionIdempotently() {
+        Promotion promotion = promotion(PromotionStatus.active);
+        Product product = product(productId, ProductStatus.published);
+        when(promotionRepository.findForUpdateByTenantIdAndId(tenantId, promotion.getId()))
+                .thenReturn(Optional.of(promotion));
+        when(productRepository.findAllForUpdateByTenantIdAndIdIn(eq(tenantId), any(Collection.class)))
+                .thenReturn(List.of(product));
+        when(promotionRepository.saveAndFlush(any())).thenAnswer(call -> call.getArgument(0));
+        UpdatePromotionRequest request = new UpdatePromotionRequest("Oferta web", "Descripcion",
+                PromotionDiscountType.fixed_discount, new BigDecimal("5.00"), startsAt,
+                startsAt.plusSeconds(3600), List.of(productId), List.of("ecommerce"), true, List.of());
+
+        var updated = service.update(promotion.getId(), request);
+        assertThat(updated.channels()).containsExactly("ecommerce");
+        assertThat(updated.untilStockEnds()).isTrue();
+        assertThat(updated.discountType()).isEqualTo(PromotionDiscountType.fixed_discount);
+
+        when(promotionProductRepository.findByTenantIdAndPromotionId(tenantId, promotion.getId()))
+                .thenReturn(List.of());
+        when(productRepository.findByTenantIdAndIdIn(tenantId, List.of())).thenReturn(List.of());
+        var ended = service.end(promotion.getId());
+        assertThat(ended.status()).isEqualTo(PromotionLifecycleStatus.ended);
+        service.end(promotion.getId());
     }
 
     private void assertInvalid(CreatePromotionRequest request) {

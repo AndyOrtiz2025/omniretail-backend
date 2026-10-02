@@ -29,6 +29,11 @@ public interface ProductRepository extends JpaRepository<Product, UUID> {
     Optional<Product> findForUpdateByTenantIdAndId(
             @Param("tenantId") UUID tenantId, @Param("id") UUID id);
 
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select product from Product product where product.tenantId = :tenantId and product.id in :ids order by product.id")
+    List<Product> findAllForUpdateByTenantIdAndIdIn(
+            @Param("tenantId") UUID tenantId, @Param("ids") Collection<UUID> ids);
+
     Optional<Product> findByTenantIdAndSku(UUID tenantId, String sku);
 
     Optional<Product> findByTenantIdAndBarcode(UUID tenantId, String barcode);

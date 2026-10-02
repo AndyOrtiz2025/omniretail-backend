@@ -35,6 +35,11 @@ public class ProductPriceResolver {
     }
 
     public ResolvedProductPrice resolveEffectivePrice(UUID tenantId, Product product, Instant at) {
+        return resolveEffectivePrice(tenantId, product, at, null, null);
+    }
+
+    public ResolvedProductPrice resolveEffectivePrice(
+            UUID tenantId, Product product, Instant at, String channel, UUID branchId) {
         if (product == null
                 || product.getTenantId() == null
                 || !product.getTenantId().equals(tenantId)) {
@@ -48,6 +53,9 @@ public class ProductPriceResolver {
         // La query ya ordena empates por startsAt mas reciente y luego UUID ascendente.
         for (Promotion promotion : promotionRepository.findApplicable(
                 tenantId, product.getId(), PromotionStatus.active, at)) {
+            if (channel != null && (promotion.getChannels() == null || !promotion.getChannels().contains(channel))) continue;
+            if (promotion.getBranchIds() != null && !promotion.getBranchIds().isEmpty()
+                    && (branchId == null || !promotion.getBranchIds().contains(branchId))) continue;
             ResolvedProductPrice candidate = calculate(basePrice, promotion);
             if (candidate.effectivePrice().compareTo(best.effectivePrice()) < 0) {
                 best = candidate;
@@ -63,11 +71,13 @@ public class ProductPriceResolver {
                     .divide(ONE_HUNDRED)
                     .setScale(2, RoundingMode.HALF_UP);
             effectivePrice = money(basePrice.subtract(discount));
-        } else {
+        } else if (promotion.getDiscountType() == PromotionDiscountType.fixed_price) {
             effectivePrice = money(promotion.getDiscountValue());
             if (effectivePrice.compareTo(basePrice) > 0) {
                 effectivePrice = basePrice;
             }
+        } else {
+            effectivePrice = money(basePrice.subtract(promotion.getDiscountValue()));
         }
         if (effectivePrice.signum() < 0) {
             effectivePrice = BigDecimal.ZERO.setScale(2);

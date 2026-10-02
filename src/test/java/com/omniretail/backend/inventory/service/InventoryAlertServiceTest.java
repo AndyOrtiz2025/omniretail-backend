@@ -153,7 +153,7 @@ class InventoryAlertServiceTest {
         Fixture fixture = fixture();
         addProduct(fixture, "physical", false, "published", "No tracking");
         addProduct(fixture, "service", true, "published", "Servicio");
-        addProduct(fixture, "kit", true, "published", "Kit");
+        addProduct(fixture, "kit", false, "published", "Kit");
         addProduct(fixture, "physical", true, "archived", "Archivado");
         UUID positiveNoSettings = addProduct(
                 fixture, "physical", true, "published", "Normal sin settings");

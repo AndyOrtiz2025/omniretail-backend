@@ -26,6 +26,7 @@ import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.UnitConversionRepository;
 import com.omniretail.backend.catalog.service.ProductPriceResolver;
+import com.omniretail.backend.catalog.service.ProductKitService;
 import com.omniretail.backend.ecommerce.dto.StorefrontCheckoutItemRequest;
 import com.omniretail.backend.ecommerce.dto.StorefrontCheckoutRequest;
 import com.omniretail.backend.ecommerce.dto.StorefrontCheckoutResponse;
@@ -57,6 +58,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.test.util.ReflectionTestUtils;
 import tools.jackson.databind.json.JsonMapper;
 
 @ExtendWith(MockitoExtension.class)
@@ -75,6 +77,7 @@ class StorefrontCheckoutServiceTest {
     @Mock private TenantCapabilityGuard capabilityGuard;
     @Mock private UnitConversionRepository unitConversionRepository;
     @Mock private ProductPriceResolver productPriceResolver;
+    @Mock private ProductKitService productKitService;
 
     private StorefrontCheckoutService service;
     private UUID tenantId;
@@ -88,12 +91,13 @@ class StorefrontCheckoutServiceTest {
                 customerRepository, orderRepository, orderItemRepository, reservationRepository,
                 balanceRepository, paymentRepository, capabilityGuard, unitConversionRepository,
                 productPriceResolver,
+                productKitService,
                 JsonMapper.builder().build());
         tenantId = UUID.randomUUID();
         branchId = UUID.randomUUID();
         productId = UUID.randomUUID();
         lenient().when(productPriceResolver.resolveEffectivePrice(
-                        eq(tenantId), any(Product.class), any()))
+                        eq(tenantId), any(Product.class), any(), eq("ecommerce"), eq(branchId)))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("20.00"),
                         new BigDecimal("20.00"),
@@ -181,7 +185,7 @@ class StorefrontCheckoutServiceTest {
         Product product = product(false, ProductType.service);
         when(productRepository.findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
                 tenantId, productId, ProductStatus.published)).thenReturn(Optional.of(product));
-        when(productPriceResolver.resolveEffectivePrice(eq(tenantId), any(Product.class), any()))
+        when(productPriceResolver.resolveEffectivePrice(eq(tenantId), any(Product.class), any(), eq("ecommerce"), eq(branchId)))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("20.00"), new BigDecimal("12.00"),
                         new BigDecimal("8.00"), promotionId));
@@ -222,6 +226,45 @@ class StorefrontCheckoutServiceTest {
             assertThat(item.discount()).isEqualByComparingTo("16.00");
             assertThat(item.promotionId()).isEqualTo(promotionId);
         });
+    }
+
+    @Test
+    void kitCheckoutReservesEachComponentAndStoresSnapshot() {
+        UUID componentId = UUID.randomUUID();
+        Product kit = product(false, ProductType.kit);
+        when(productRepository.findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
+                tenantId, productId, ProductStatus.published)).thenReturn(Optional.of(kit));
+        when(productKitService.fulfillment(tenantId, kit, new BigDecimal("2")))
+                .thenReturn(List.of(new ProductKitService.FulfillmentComponent(
+                        componentId, new BigDecimal("3.000"), new BigDecimal("6.000"))));
+        InventoryBalance balance = mock(InventoryBalance.class);
+        when(balance.getId()).thenReturn(UUID.randomUUID());
+        when(balance.getQuantity()).thenReturn(new BigDecimal("10.000"));
+        when(balance.getReservedQuantity()).thenReturn(BigDecimal.ZERO);
+        when(balanceRepository.findByTenantIdAndBranchIdAndProductIdAndLocationIdIsNull(
+                tenantId, branchId, componentId)).thenReturn(Optional.of(balance));
+        Order savedOrder = mock(Order.class); UUID orderId = UUID.randomUUID();
+        when(savedOrder.getId()).thenReturn(orderId); when(savedOrder.getOrderNumber()).thenReturn("WEB-KIT");
+        when(savedOrder.getTrackingToken()).thenReturn("kit"); when(savedOrder.getTotal()).thenReturn(new BigDecimal("40.00"));
+        when(savedOrder.getStatus()).thenReturn(OrderStatus.confirmed);
+        when(savedOrder.getDeliveryAddress()).thenReturn("{\"city\":\"Guatemala\"}");
+        when(savedOrder.getTenantId()).thenReturn(tenantId); when(orderRepository.save(any())).thenReturn(savedOrder);
+        when(orderItemRepository.save(any())).thenAnswer(call -> {
+            var item = call.getArgument(0, com.omniretail.backend.ecommerce.entity.OrderItem.class);
+            ReflectionTestUtils.setField(item, "id", UUID.randomUUID()); return item;
+        });
+        Payment payment = mock(Payment.class); when(payment.getStatus()).thenReturn(PaymentStatus.approved);
+        when(paymentRepository.save(any())).thenReturn(payment);
+        when(reservationRepository.findByTenantIdAndOrderId(tenantId, orderId)).thenReturn(List.of());
+
+        service.checkout("ferreteria", "checkout-1", request(new BigDecimal("2")));
+
+        verify(reservationRepository).save(org.mockito.ArgumentMatchers.argThat(reservation ->
+                reservation.getProductId().equals(componentId)
+                        && reservation.getAllocations().contains("\"reservedQuantity\":6.000")));
+        verify(orderItemRepository).save(org.mockito.ArgumentMatchers.argThat(item ->
+                item.getProductId().equals(productId)
+                        && item.getFulfillmentComponents().contains(componentId.toString())));
     }
 
     @Test
@@ -329,8 +372,8 @@ class StorefrontCheckoutServiceTest {
         when(product.getName()).thenReturn("Martillo");
         when(product.getSalePrice()).thenReturn(new BigDecimal("20.00"));
         when(product.getTrackingStock()).thenReturn(trackingStock);
+        lenient().when(product.getProductType()).thenReturn(type);
         if (trackingStock) {
-            when(product.getProductType()).thenReturn(type);
             when(product.getSaleUnitId()).thenReturn(null);
         }
         return product;

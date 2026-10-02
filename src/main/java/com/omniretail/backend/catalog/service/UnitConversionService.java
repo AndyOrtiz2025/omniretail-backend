@@ -4,6 +4,10 @@ import com.omniretail.backend.administration.service.BusinessConfigService;
 import com.omniretail.backend.catalog.dto.UnitConversionCreateRequest;
 import com.omniretail.backend.catalog.dto.UnitConversionResponse;
 import com.omniretail.backend.catalog.dto.UnitConversionUpdateRequest;
+import com.omniretail.backend.catalog.dto.ReplaceProductUnitConversionsRequest;
+import com.omniretail.backend.catalog.dto.ProductUnitConversionRequest;
+import com.omniretail.backend.catalog.entity.Product;
+import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.entity.UnitConversion;
 import com.omniretail.backend.catalog.entity.UnitStatus;
 import com.omniretail.backend.catalog.repository.ProductRepository;
@@ -13,6 +17,9 @@ import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.CurrentUser;
 import java.util.UUID;
+import java.util.List;
+import java.util.Set;
+import java.util.HashSet;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -50,6 +57,57 @@ public class UnitConversionService {
         UUID tenantId = currentUser.require().tenantId();
         ensureUnitsAndPackagingEnabled();
         return UnitConversionResponse.from(requireConversion(tenantId, id));
+    }
+
+    public List<UnitConversionResponse> listForProduct(UUID productId) {
+        UUID tenantId = currentUser.require().tenantId();
+        ensureUnitsAndPackagingEnabled();
+        validateProduct(tenantId, productId);
+        return unitConversionRepository.findByTenantIdAndProductId(tenantId, productId).stream()
+                .sorted(java.util.Comparator.comparing(UnitConversion::getFromUnitId)
+                        .thenComparing(UnitConversion::getToUnitId))
+                .map(UnitConversionResponse::from).toList();
+    }
+
+    @Transactional
+    public List<UnitConversionResponse> replaceForProduct(
+            UUID productId, ReplaceProductUnitConversionsRequest request) {
+        UUID tenantId = currentUser.require().tenantId();
+        ensureUnitsAndPackagingEnabled();
+        Product product = requireProductForUpdate(tenantId, productId);
+        if (product.getStatus() == ProductStatus.archived) {
+            throw BusinessException.conflict("PRODUCT_ARCHIVED", "Restaura el producto para modificar conversiones.");
+        }
+        if (request.conversions() == null) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "UNIT_CONVERSION_INVALID", "La lista de conversiones es requerida.");
+        }
+        Set<String> pairs = new HashSet<>();
+        Set<UUID> productUnits = new HashSet<>();
+        productUnits.add(product.getBaseUnitId());
+        if (product.getInventoryUnitId() != null) productUnits.add(product.getInventoryUnitId());
+        if (product.getSaleUnitId() != null) productUnits.add(product.getSaleUnitId());
+        for (ProductUnitConversionRequest conversion : request.conversions()) {
+            validateDifferentUnits(conversion.fromUnitId(), conversion.toUnitId());
+            validateActiveUnit(tenantId, conversion.fromUnitId(), "UNIT_CONVERSION_FROM_UNIT_NOT_FOUND", "Unidad origen no encontrada o inactiva.");
+            validateActiveUnit(tenantId, conversion.toUnitId(), "UNIT_CONVERSION_TO_UNIT_NOT_FOUND", "Unidad destino no encontrada o inactiva.");
+            if (!productUnits.contains(conversion.fromUnitId()) || !productUnits.contains(conversion.toUnitId())) {
+                throw new BusinessException(HttpStatus.BAD_REQUEST, "UNIT_CONVERSION_PRODUCT_UNIT_MISMATCH",
+                        "Las conversiones solo pueden usar unidades configuradas en el producto.");
+            }
+            if (!pairs.add(conversion.fromUnitId() + ":" + conversion.toUnitId())) {
+                throw BusinessException.conflict("UNIT_CONVERSION_CONFLICT", "No pueden repetirse pares de unidades.");
+            }
+        }
+        unitConversionRepository.deleteByTenantIdAndProductId(tenantId, productId);
+        unitConversionRepository.flush();
+        List<UnitConversion> replacements = request.conversions().stream().map(input -> UnitConversion.builder()
+                .tenantId(tenantId).productId(productId).fromUnitId(input.fromUnitId())
+                .toUnitId(input.toUnitId()).factor(input.factor()).build()).toList();
+        if (replacements.isEmpty()) return List.of();
+        return unitConversionRepository.saveAllAndFlush(replacements).stream()
+                .sorted(java.util.Comparator.comparing(UnitConversion::getFromUnitId)
+                        .thenComparing(UnitConversion::getToUnitId))
+                .map(UnitConversionResponse::from).toList();
     }
 
     @Transactional
@@ -145,6 +203,11 @@ public class UnitConversionService {
                     "UNIT_CONVERSION_PRODUCT_NOT_FOUND",
                     "Producto no encontrado.");
         }
+    }
+
+    private Product requireProductForUpdate(UUID tenantId, UUID productId) {
+        return productRepository.findForUpdateByTenantIdAndId(tenantId, productId).orElseThrow(() ->
+                new BusinessException(HttpStatus.NOT_FOUND, "UNIT_CONVERSION_PRODUCT_NOT_FOUND", "Producto no encontrado."));
     }
 
     private void validateNotDuplicate(

@@ -69,7 +69,7 @@ public class PublicStorefrontCatalogService {
                 categoryName,
                 saleUnitId,
                 saleUnitName,
-                productPriceResolver.resolveEffectivePrice(tenantId, product, Instant.now()));
+                productPriceResolver.resolveEffectivePrice(tenantId, product, Instant.now(), "ecommerce", null));
     }
 
     private PublicStorefrontProductResponse toResponse(
@@ -87,7 +87,7 @@ public class PublicStorefrontCatalogService {
                 saleUnitId,
                 saleUnit != null ? saleUnit.getName() : null,
                 productPriceResolver.resolveEffectivePrice(
-                        tenantId, product, pricingAt));
+                        tenantId, product, pricingAt, "ecommerce", null));
     }
 
     private Tenant resolveActiveTenant(String slug) {

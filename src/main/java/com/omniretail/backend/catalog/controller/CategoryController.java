@@ -21,6 +21,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestPart;
+import org.springframework.web.multipart.MultipartFile;
+import org.springframework.http.MediaType;
 
 @RestController
 @RequestMapping("/catalog/categories")
@@ -62,5 +65,17 @@ public class CategoryController {
     @RequirePermission("catalog.categories.manage")
     public void archive(@PathVariable UUID id) {
         categoryService.archive(id);
+    }
+
+    @PostMapping(value = "/{id}/image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @RequirePermission("catalog.categories.manage")
+    public CategoryResponse uploadImage(@PathVariable UUID id, @RequestPart("file") MultipartFile file) {
+        return categoryService.uploadImage(id, file);
+    }
+
+    @DeleteMapping("/{id}/image")
+    @RequirePermission("catalog.categories.manage")
+    public CategoryResponse deleteImage(@PathVariable UUID id) {
+        return categoryService.deleteImage(id);
     }
 }

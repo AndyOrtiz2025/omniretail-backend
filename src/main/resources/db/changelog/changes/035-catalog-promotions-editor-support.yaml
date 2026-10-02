@@ -1,0 +1,40 @@
+databaseChangeLog:
+  - changeSet:
+      id: 035-catalog-promotions-editor-support
+      author: melbyn
+      changes:
+        - addColumn:
+            tableName: promotions
+            columns:
+              - column: { name: description, type: TEXT }
+              - column: { name: channels, type: "TEXT[]", defaultValueComputed: "ARRAY['pos','ecommerce','mobileApp']::text[]" }
+              - column: { name: until_stock_ends, type: BOOLEAN, defaultValueBoolean: false, constraints: { nullable: false } }
+              - column: { name: branch_ids, type: "UUID[]", defaultValueComputed: "ARRAY[]::uuid[]" }
+        - sql:
+            sql: "UPDATE promotions SET channels = ARRAY['pos','ecommerce','mobileApp']::text[] WHERE channels IS NULL"
+        - addNotNullConstraint:
+            tableName: promotions
+            columnName: channels
+            columnDataType: "TEXT[]"
+        - addNotNullConstraint:
+            tableName: promotions
+            columnName: branch_ids
+            columnDataType: "UUID[]"
+        - sql:
+            sql: "ALTER TABLE promotions DROP CONSTRAINT ck_promotions_discount_type"
+        - sql:
+            sql: "ALTER TABLE promotions ADD CONSTRAINT ck_promotions_discount_type CHECK (discount_type IN ('percentage', 'fixed_discount', 'fixed_price'))"
+        - sql:
+            sql: "ALTER TABLE promotions DROP CONSTRAINT ck_promotions_status"
+        - sql:
+            sql: "ALTER TABLE promotions ADD CONSTRAINT ck_promotions_status CHECK (status IN ('active', 'ended', 'cancelled'))"
+        - sql:
+            sql: "ALTER TABLE promotions DROP CONSTRAINT ck_promotions_discount_value"
+        - sql:
+            sql: "ALTER TABLE promotions ADD CONSTRAINT ck_promotions_discount_value CHECK ((discount_type = 'percentage' AND discount_value > 0 AND discount_value <= 100) OR (discount_type = 'fixed_discount' AND discount_value > 0 AND discount_value <= 9999999.99) OR (discount_type = 'fixed_price' AND discount_value >= 0 AND discount_value <= 9999999.99))"
+        - sql:
+            sql: "ALTER TABLE promotions DROP CONSTRAINT ck_promotions_cancellation"
+        - sql:
+            sql: "ALTER TABLE promotions ADD CONSTRAINT ck_promotions_cancellation CHECK ((status IN ('active', 'ended') AND cancelled_by_user_id IS NULL AND cancelled_at IS NULL) OR (status = 'cancelled' AND cancelled_by_user_id IS NOT NULL AND cancelled_at IS NOT NULL))"
+        - sql:
+            sql: "ALTER TABLE promotions ADD CONSTRAINT ck_promotions_channels CHECK (cardinality(channels) > 0 AND channels <@ ARRAY['pos','ecommerce','mobileApp']::text[])"

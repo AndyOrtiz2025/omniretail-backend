@@ -41,6 +41,7 @@ public class SecurityConfig {
         "/api/v1/auth/password/reset",
         "/api/v1/auth/activate-employee",
         "/api/v1/public/**",
+        "/media/**",
     };
 
     @Bean

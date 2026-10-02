@@ -15,6 +15,8 @@ import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.service.ProductPriceResolver;
+import com.omniretail.backend.catalog.service.ProductKitService;
+import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.inventory.service.InventoryStockService;
 import com.omniretail.backend.pos.dto.CreateSaleRequest;
@@ -71,6 +73,7 @@ class SaleServiceTest {
     @Mock InventoryStockService inventory;
     @Mock DocumentCounterService counter;
     @Mock ProductPriceResolver productPriceResolver;
+    @Mock ProductKitService productKitService;
     @InjectMocks SaleService service;
 
     private final UUID tenant = UUID.randomUUID();
@@ -92,7 +95,7 @@ class SaleServiceTest {
                 .timezone("America/Guatemala").build()));
         lenient().when(businessConfig.findByTenantId(tenant)).thenReturn(Optional.empty());
         lenient().when(productPriceResolver.resolveEffectivePrice(
-                        eq(tenant), any(Product.class), any(Instant.class)))
+                        eq(tenant), any(Product.class), any(Instant.class), eq("pos"), eq(branch)))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("20.00"),
                         new BigDecimal("20.00"),
@@ -120,10 +123,55 @@ class SaleServiceTest {
     }
 
     @Test
+    void kitSaleDeductsComponentsAndStoresFulfillmentSnapshot() {
+        UUID componentId = UUID.randomUUID();
+        Product kit = product();
+        kit.setProductType(ProductType.kit);
+        kit.setTrackingStock(false);
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(kit));
+        when(productKitService.fulfillment(eq(tenant), eq(kit), eq(new BigDecimal("2"))))
+                .thenReturn(List.of(new ProductKitService.FulfillmentComponent(
+                        componentId, new BigDecimal("3.000"), new BigDecimal("6.000"))));
+        stubSalePersistence();
+
+        service.create(request(new BigDecimal("40.00"), new BigDecimal("2")));
+
+        verify(inventory).deductStock(argThat(command -> command.productId().equals(componentId)
+                && command.qty().compareTo(new BigDecimal("6.000")) == 0));
+        verify(items).save(argThat(item -> item.getProductId().equals(productId)
+                && item.getFulfillmentComponents().contains(componentId.toString())));
+    }
+
+    @Test
+    void voidRestoresKitComponentsFromSnapshot() {
+        UUID componentId = UUID.randomUUID();
+        Sale sale = Sale.builder().branchId(branch).cashShiftId(shiftId).number("POS-1")
+                .status(SaleStatus.completed).subtotal(new BigDecimal("20.00"))
+                .discountTotal(BigDecimal.ZERO).taxTotal(BigDecimal.ZERO).total(new BigDecimal("20.00"))
+                .createdByUserId(user).build();
+        sale.setTenantId(tenant);
+        ReflectionTestUtils.setField(sale, "id", UUID.randomUUID());
+        SaleItem item = SaleItem.builder().saleId(sale.getId()).productId(productId).skuSnapshot("KIT")
+                .nameSnapshot("Kit").quantity(new BigDecimal("2.000")).unitPrice(new BigDecimal("10.00"))
+                .discount(BigDecimal.ZERO).subtotal(new BigDecimal("20.00"))
+                .fulfillmentComponents("[{\"productId\":\"" + componentId
+                        + "\",\"quantityPerKit\":3.000}]").build();
+        when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
+        when(items.findByTenantIdAndSaleId(tenant, sale.getId())).thenReturn(List.of(item));
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.empty());
+        when(sales.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.voidSale(sale.getId());
+
+        verify(inventory).incrementStock(argThat(command -> command.productId().equals(componentId)
+                && command.qty().compareTo(new BigDecimal("6.000")) == 0));
+    }
+
+    @Test
     void promotionWinsAgainstZeroManualDiscountAndIsSnapshotted() {
         UUID promotionId = UUID.randomUUID();
         when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
-        when(productPriceResolver.resolveEffectivePrice(eq(tenant), any(Product.class), any(Instant.class)))
+        when(productPriceResolver.resolveEffectivePrice(eq(tenant), any(Product.class), any(Instant.class), eq("pos"), eq(branch)))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("20.00"), new BigDecimal("15.00"),
                         new BigDecimal("5.00"), promotionId));
@@ -143,7 +191,7 @@ class SaleServiceTest {
     void greaterManualDiscountWinsAndClearsPromotionSnapshot() {
         UUID promotionId = UUID.randomUUID();
         when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
-        when(productPriceResolver.resolveEffectivePrice(eq(tenant), any(Product.class), any(Instant.class)))
+        when(productPriceResolver.resolveEffectivePrice(eq(tenant), any(Product.class), any(Instant.class), eq("pos"), eq(branch)))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("20.00"), new BigDecimal("15.00"),
                         new BigDecimal("5.00"), promotionId));
@@ -161,7 +209,7 @@ class SaleServiceTest {
     void equalDiscountDeterministicallyPrefersPromotion() {
         UUID promotionId = UUID.randomUUID();
         when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
-        when(productPriceResolver.resolveEffectivePrice(eq(tenant), any(Product.class), any(Instant.class)))
+        when(productPriceResolver.resolveEffectivePrice(eq(tenant), any(Product.class), any(Instant.class), eq("pos"), eq(branch)))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("20.00"), new BigDecimal("15.00"),
                         new BigDecimal("5.00"), promotionId));
@@ -176,7 +224,7 @@ class SaleServiceTest {
     void comparesPromotionAndManualDiscountAtLineQuantity() {
         UUID promotionId = UUID.randomUUID();
         when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
-        when(productPriceResolver.resolveEffectivePrice(eq(tenant), any(Product.class), any(Instant.class)))
+        when(productPriceResolver.resolveEffectivePrice(eq(tenant), any(Product.class), any(Instant.class), eq("pos"), eq(branch)))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("20.00"), new BigDecimal("15.00"),
                         new BigDecimal("5.00"), promotionId));
@@ -204,11 +252,11 @@ class SaleServiceTest {
         ReflectionTestUtils.setField(additionalProduct, "id", additionalProductId);
         when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(discountedProduct));
         when(products.findByTenantIdAndId(tenant, additionalProductId)).thenReturn(Optional.of(additionalProduct));
-        when(productPriceResolver.resolveEffectivePrice(eq(tenant), eq(discountedProduct), any(Instant.class)))
+        when(productPriceResolver.resolveEffectivePrice(eq(tenant), eq(discountedProduct), any(Instant.class), eq("pos"), eq(branch)))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("20.00"), BigDecimal.ZERO.setScale(2),
                         new BigDecimal("20.00"), promotionId));
-        when(productPriceResolver.resolveEffectivePrice(eq(tenant), eq(additionalProduct), any(Instant.class)))
+        when(productPriceResolver.resolveEffectivePrice(eq(tenant), eq(additionalProduct), any(Instant.class), eq("pos"), eq(branch)))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("1.00"), new BigDecimal("1.00"),
                         BigDecimal.ZERO.setScale(2), null));
