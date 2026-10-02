@@ -664,6 +664,104 @@ class InventoryMovementControllerTest {
                 .andExpect(jsonPath("$.totalItems").value(0));
     }
 
+    @Test
+    void searchRunsBeforePaginationAcrossProductBranchReasonAndReference() throws Exception {
+        Fixture fixture = createFixture();
+        UUID matching = insertMovement(
+                fixture, fixture.firstBranchId(), fixture.firstProductId(), "in", BASE_TIME, null, null);
+        jdbcTemplate.update(
+                "UPDATE inventory_movements SET reason = 'Conteo especial', reference_type = 'CUSTOM_REF' WHERE id = ?",
+                matching);
+        insertMovement(
+                fixture, fixture.firstBranchId(), fixture.secondProductId(), "out", BASE_TIME.plusSeconds(1), null, null);
+
+        mockMvc.perform(get(MOVEMENTS)
+                        .header("Authorization", token(fixture))
+                        .param("search", "conteo especial")
+                        .param("size", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].id").value(matching.toString()))
+                .andExpect(jsonPath("$.items[0].productName").exists())
+                .andExpect(jsonPath("$.items[0].sku").exists())
+                .andExpect(jsonPath("$.items[0].branchName").exists())
+                .andExpect(jsonPath("$.totalItems").value(1));
+    }
+
+    @Test
+    void groundedDisplayTypesFilterBeforePaginationAndKeepAccurateTotals() throws Exception {
+        Fixture fixture = createFixture();
+        UUID firstSale = insertMovement(
+                fixture, fixture.firstBranchId(), fixture.firstProductId(), "out", BASE_TIME, null, null);
+        UUID secondSale = insertMovement(
+                fixture, fixture.firstBranchId(), fixture.firstProductId(), "out", BASE_TIME.plusSeconds(1), null, null);
+        UUID purchase = insertMovement(
+                fixture, fixture.firstBranchId(), fixture.firstProductId(), "in", BASE_TIME.plusSeconds(2), null, null);
+        UUID returned = insertMovement(
+                fixture, fixture.firstBranchId(), fixture.firstProductId(), "in", BASE_TIME.plusSeconds(3), null, null);
+        UUID voided = insertMovement(
+                fixture, fixture.firstBranchId(), fixture.firstProductId(), "in", BASE_TIME.plusSeconds(4), null, null);
+        UUID dispatch = insertMovement(
+                fixture, fixture.firstBranchId(), fixture.firstProductId(), "out", BASE_TIME.plusSeconds(5), null, null);
+        setReference(firstSale, "POS_SALE");
+        setReference(secondSale, "POS_KIT_SALE");
+        setReference(purchase, "goods_receipt");
+        setReference(returned, "POS_SALE_RETURN");
+        setReference(voided, "POS_KIT_SALE_VOID");
+        setReference(dispatch, "dispatch");
+
+        mockMvc.perform(get(MOVEMENTS)
+                        .header("Authorization", token(fixture))
+                        .param("displayType", "sale")
+                        .param("size", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].displayType").value("sale"))
+                .andExpect(jsonPath("$.totalItems").value(2))
+                .andExpect(jsonPath("$.totalPages").value(2));
+
+        assertDisplayType(fixture, "purchase_in", "purchase_in");
+        assertDisplayType(fixture, "return", "return");
+        assertDisplayType(fixture, "void", "void");
+        assertDisplayType(fixture, "dispatch", "dispatch");
+    }
+
+    @Test
+    void unsupportedAndUnknownDisplayTypesAreHandledWithoutPostPageFiltering() throws Exception {
+        Fixture fixture = createFixture();
+        insertMovement(
+                fixture, fixture.firstBranchId(), fixture.firstProductId(), "in", BASE_TIME, null, null);
+
+        mockMvc.perform(get(MOVEMENTS)
+                        .header("Authorization", token(fixture))
+                        .param("displayType", "transfer_in"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items").isEmpty())
+                .andExpect(jsonPath("$.totalItems").value(0));
+
+        mockMvc.perform(get(MOVEMENTS)
+                        .header("Authorization", token(fixture))
+                        .param("displayType", "invented"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVENTORY_MOVEMENT_DISPLAY_TYPE_INVALID"));
+    }
+
+    private void assertDisplayType(Fixture fixture, String requested, String expected) throws Exception {
+        mockMvc.perform(get(MOVEMENTS)
+                        .header("Authorization", token(fixture))
+                        .param("displayType", requested))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].displayType").value(expected))
+                .andExpect(jsonPath("$.totalItems").value(1));
+    }
+
+    private void setReference(UUID movementId, String referenceType) {
+        jdbcTemplate.update(
+                "UPDATE inventory_movements SET reference_type = ? WHERE id = ?",
+                referenceType,
+                movementId);
+    }
+
     private void assertTypeFilter(String requestedType) throws Exception {
         Fixture fixture = createFixture();
         UUID expected = null;

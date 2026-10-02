@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.*;
 import org.springframework.data.repository.query.Param;
 
 public interface DispatchRepository extends JpaRepository<Dispatch, UUID> {
+    List<Dispatch> findByTenantIdAndIdIn(UUID tenantId, Collection<UUID> ids);
     Optional<Dispatch> findByTenantIdAndBranchIdAndId(UUID tenantId, UUID branchId, UUID id);
     Optional<Dispatch> findByTenantIdAndBranchIdAndSourceTypeAndSourceId(UUID tenantId, UUID branchId, DispatchSourceType sourceType, UUID sourceId);
     Optional<Dispatch> findByTenantIdAndOrderId(UUID tenantId, UUID orderId);

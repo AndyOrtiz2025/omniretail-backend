@@ -4,6 +4,7 @@ import com.omniretail.backend.catalog.entity.Location;
 import com.omniretail.backend.catalog.entity.LocationStatus;
 import com.omniretail.backend.catalog.entity.LocationType;
 import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
@@ -15,6 +16,8 @@ import org.springframework.data.repository.query.Param;
 public interface LocationRepository extends JpaRepository<Location, UUID> {
 
     Optional<Location> findByTenantIdAndId(UUID tenantId, UUID id);
+
+    List<Location> findByTenantIdAndIdIn(UUID tenantId, Collection<UUID> ids);
 
     boolean existsByTenantIdAndBranchIdAndCode(
             UUID tenantId, UUID branchId, String code);

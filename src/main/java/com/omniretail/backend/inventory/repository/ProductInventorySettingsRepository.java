@@ -160,6 +160,164 @@ public interface ProductInventorySettingsRepository
             @Param("status") String status,
             Pageable pageable);
 
+    @Query(
+            value = """
+                    WITH product_stock AS (
+                        SELECT p.id AS product_id,
+                               p.sku,
+                               p.name AS product_name,
+                               p.category_id,
+                               c.name AS category_name,
+                               p.base_unit_id,
+                               COALESCE(s.min_stock, CAST(0 AS numeric)) AS min_stock,
+                               s.reorder_point,
+                               s.default_location_id,
+                               l.name AS default_location_name,
+                               COALESCE(SUM(b.quantity), CAST(0 AS numeric)) AS quantity,
+                               COALESCE(SUM(b.reserved_quantity), CAST(0 AS numeric)) AS reserved_quantity,
+                               COALESCE(SUM(b.quantity - b.reserved_quantity), CAST(0 AS numeric)) AS available_quantity
+                        FROM products p
+                        LEFT JOIN categories c
+                          ON c.tenant_id = p.tenant_id AND c.id = p.category_id
+                        LEFT JOIN product_inventory_settings s
+                          ON s.tenant_id = p.tenant_id AND s.product_id = p.id AND s.branch_id = :branchId
+                        LEFT JOIN locations l
+                          ON l.tenant_id = p.tenant_id AND l.id = s.default_location_id AND l.branch_id = :branchId
+                        LEFT JOIN inventory_balances b
+                          ON b.tenant_id = p.tenant_id AND b.product_id = p.id AND b.branch_id = :branchId
+                        WHERE p.tenant_id = :tenantId
+                          AND p.status = 'published'
+                          AND p.product_type = 'physical'
+                          AND p.tracking_stock = TRUE
+                          AND (:categoryId IS NULL OR p.category_id = :categoryId)
+                          AND (CAST(:search AS text) IS NULL
+                               OR LOWER(p.name) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%')
+                               OR LOWER(p.sku) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%')
+                               OR LOWER(COALESCE(c.name, '')) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%')
+                               OR LOWER(COALESCE(l.name, '')) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%'))
+                        GROUP BY p.id, p.sku, p.name, p.category_id, c.name, p.base_unit_id,
+                                 s.min_stock, s.reorder_point, s.default_location_id, l.name
+                    ), classified AS (
+                        SELECT product_stock.*,
+                               CASE
+                                   WHEN available_quantity <= 0 THEN 'out_of_stock'
+                                   WHEN min_stock > 0 AND available_quantity < min_stock THEN 'critical'
+                                   WHEN min_stock > 0 AND available_quantity <= min_stock * 1.25 THEN 'near_minimum'
+                                   ELSE 'normal'
+                               END AS stock_status,
+                               GREATEST(CAST(0 AS numeric), COALESCE(reorder_point, min_stock) - available_quantity)
+                                   AS suggested_reorder
+                        FROM product_stock
+                    )
+                    SELECT product_id AS "productId", :branchId AS "branchId", sku, product_name AS "productName",
+                           category_id AS "categoryId", category_name AS "categoryName", base_unit_id AS "baseUnitId",
+                           quantity, reserved_quantity AS "reservedQuantity", available_quantity AS "availableQuantity",
+                           min_stock AS "minStock", reorder_point AS "reorderPoint",
+                           default_location_id AS "defaultLocationId", default_location_name AS "defaultLocationName",
+                           stock_status AS "stockStatus", suggested_reorder AS "suggestedReorder"
+                    FROM classified
+                    WHERE stock_status = COALESCE(CAST(:status AS text), stock_status)
+                    ORDER BY
+                      CASE WHEN :sortField = 'productName' AND :sortDirection = 'asc' THEN LOWER(product_name) END ASC,
+                      CASE WHEN :sortField = 'productName' AND :sortDirection = 'desc' THEN LOWER(product_name) END DESC,
+                      CASE WHEN :sortField = 'sku' AND :sortDirection = 'asc' THEN LOWER(sku) END ASC,
+                      CASE WHEN :sortField = 'sku' AND :sortDirection = 'desc' THEN LOWER(sku) END DESC,
+                      CASE WHEN :sortField = 'categoryName' AND :sortDirection = 'asc' THEN LOWER(category_name) END ASC NULLS LAST,
+                      CASE WHEN :sortField = 'categoryName' AND :sortDirection = 'desc' THEN LOWER(category_name) END DESC NULLS LAST,
+                      CASE WHEN :sortField = 'availableQuantity' AND :sortDirection = 'asc' THEN available_quantity END ASC,
+                      CASE WHEN :sortField = 'availableQuantity' AND :sortDirection = 'desc' THEN available_quantity END DESC,
+                      CASE WHEN :sortField = 'status' AND :sortDirection = 'asc' THEN stock_status END ASC,
+                      CASE WHEN :sortField = 'status' AND :sortDirection = 'desc' THEN stock_status END DESC,
+                      product_id ASC
+                    """,
+            countQuery = """
+                    WITH product_stock AS (
+                        SELECT p.id AS product_id,
+                               COALESCE(s.min_stock, CAST(0 AS numeric)) AS min_stock,
+                               COALESCE(SUM(b.quantity - b.reserved_quantity), CAST(0 AS numeric)) AS available_quantity
+                        FROM products p
+                        LEFT JOIN categories c ON c.tenant_id = p.tenant_id AND c.id = p.category_id
+                        LEFT JOIN product_inventory_settings s
+                          ON s.tenant_id = p.tenant_id AND s.product_id = p.id AND s.branch_id = :branchId
+                        LEFT JOIN locations l
+                          ON l.tenant_id = p.tenant_id AND l.id = s.default_location_id AND l.branch_id = :branchId
+                        LEFT JOIN inventory_balances b
+                          ON b.tenant_id = p.tenant_id AND b.product_id = p.id AND b.branch_id = :branchId
+                        WHERE p.tenant_id = :tenantId AND p.status = 'published'
+                          AND p.product_type = 'physical' AND p.tracking_stock = TRUE
+                          AND (:categoryId IS NULL OR p.category_id = :categoryId)
+                          AND (CAST(:search AS text) IS NULL
+                               OR LOWER(p.name) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%')
+                               OR LOWER(p.sku) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%')
+                               OR LOWER(COALESCE(c.name, '')) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%')
+                               OR LOWER(COALESCE(l.name, '')) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%'))
+                        GROUP BY p.id, s.min_stock
+                    ), classified AS (
+                        SELECT CASE WHEN available_quantity <= 0 THEN 'out_of_stock'
+                                    WHEN min_stock > 0 AND available_quantity < min_stock THEN 'critical'
+                                    WHEN min_stock > 0 AND available_quantity <= min_stock * 1.25 THEN 'near_minimum'
+                                    ELSE 'normal' END AS stock_status
+                        FROM product_stock
+                    )
+                    SELECT COUNT(*) FROM classified
+                    WHERE stock_status = COALESCE(CAST(:status AS text), stock_status)
+                      AND CAST(:sortField AS text) IS NOT NULL AND CAST(:sortDirection AS text) IS NOT NULL
+                    """,
+            nativeQuery = true)
+    Page<InventoryStockProjection> findStock(
+            @Param("tenantId") UUID tenantId,
+            @Param("branchId") UUID branchId,
+            @Param("search") String search,
+            @Param("categoryId") UUID categoryId,
+            @Param("status") String status,
+            @Param("sortField") String sortField,
+            @Param("sortDirection") String sortDirection,
+            Pageable pageable);
+
+    @Query(value = """
+            WITH product_stock AS (
+                SELECT p.id AS product_id,
+                       COALESCE(s.min_stock, CAST(0 AS numeric)) AS min_stock,
+                       COALESCE(SUM(b.quantity - b.reserved_quantity), CAST(0 AS numeric)) AS available_quantity
+                FROM products p
+                LEFT JOIN categories c ON c.tenant_id = p.tenant_id AND c.id = p.category_id
+                LEFT JOIN product_inventory_settings s
+                  ON s.tenant_id = p.tenant_id AND s.product_id = p.id AND s.branch_id = :branchId
+                LEFT JOIN locations l
+                  ON l.tenant_id = p.tenant_id AND l.id = s.default_location_id AND l.branch_id = :branchId
+                LEFT JOIN inventory_balances b
+                  ON b.tenant_id = p.tenant_id AND b.product_id = p.id AND b.branch_id = :branchId
+                WHERE p.tenant_id = :tenantId AND p.status = 'published'
+                  AND p.product_type = 'physical' AND p.tracking_stock = TRUE
+                  AND (:categoryId IS NULL OR p.category_id = :categoryId)
+                  AND (CAST(:search AS text) IS NULL
+                       OR LOWER(p.name) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%')
+                       OR LOWER(p.sku) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%')
+                       OR LOWER(COALESCE(c.name, '')) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%')
+                       OR LOWER(COALESCE(l.name, '')) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%'))
+                GROUP BY p.id, s.min_stock
+            ), classified AS (
+                SELECT CASE WHEN available_quantity <= 0 THEN 'out_of_stock'
+                            WHEN min_stock > 0 AND available_quantity < min_stock THEN 'critical'
+                            WHEN min_stock > 0 AND available_quantity <= min_stock * 1.25 THEN 'near_minimum'
+                            ELSE 'normal' END AS stock_status
+                FROM product_stock
+            ), filtered AS (
+                SELECT stock_status FROM classified
+                WHERE stock_status = COALESCE(CAST(:status AS text), stock_status)
+            )
+            SELECT COUNT(*) AS "activeProducts",
+                   COUNT(*) FILTER (WHERE stock_status IN ('critical', 'near_minimum')) AS "lowStock",
+                   COUNT(*) FILTER (WHERE stock_status = 'out_of_stock') AS "outOfStock"
+            FROM filtered
+            """, nativeQuery = true)
+    InventoryStockSummaryProjection summarizeStock(
+            @Param("tenantId") UUID tenantId,
+            @Param("branchId") UUID branchId,
+            @Param("search") String search,
+            @Param("categoryId") UUID categoryId,
+            @Param("status") String status);
+
     interface InventoryAlertProjection {
         UUID getProductId();
 
@@ -186,5 +344,30 @@ public interface ProductInventorySettingsRepository
         String getAlertStatus();
 
         BigDecimal getSuggestedReorder();
+    }
+
+    interface InventoryStockProjection {
+        UUID getProductId();
+        UUID getBranchId();
+        String getSku();
+        String getProductName();
+        UUID getCategoryId();
+        String getCategoryName();
+        UUID getBaseUnitId();
+        BigDecimal getQuantity();
+        BigDecimal getReservedQuantity();
+        BigDecimal getAvailableQuantity();
+        BigDecimal getMinStock();
+        BigDecimal getReorderPoint();
+        UUID getDefaultLocationId();
+        String getDefaultLocationName();
+        String getStockStatus();
+        BigDecimal getSuggestedReorder();
+    }
+
+    interface InventoryStockSummaryProjection {
+        long getActiveProducts();
+        long getLowStock();
+        long getOutOfStock();
     }
 }

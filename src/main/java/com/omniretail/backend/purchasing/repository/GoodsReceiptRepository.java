@@ -4,6 +4,7 @@ import com.omniretail.backend.purchasing.entity.GoodsReceipt;
 import com.omniretail.backend.purchasing.entity.GoodsReceiptStatus;
 import jakarta.persistence.LockModeType;
 import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
@@ -17,6 +18,8 @@ import org.springframework.data.repository.query.Param;
 public interface GoodsReceiptRepository extends JpaRepository<GoodsReceipt, UUID> {
 
     Optional<GoodsReceipt> findByTenantIdAndId(UUID tenantId, UUID id);
+
+    List<GoodsReceipt> findByTenantIdAndIdIn(UUID tenantId, Collection<UUID> ids);
 
     @Modifying
     long deleteByTenantIdAndId(UUID tenantId, UUID id);
