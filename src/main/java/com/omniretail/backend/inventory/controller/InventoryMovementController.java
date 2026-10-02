@@ -1,10 +1,9 @@
 package com.omniretail.backend.inventory.controller;
 
 import com.omniretail.backend.inventory.dto.InventoryMovementDisplayType;
-import com.omniretail.backend.inventory.dto.InventoryMovementListDto;
+import com.omniretail.backend.inventory.dto.InventoryMovementPageResponse;
 import com.omniretail.backend.inventory.entity.InventoryMovementType;
 import com.omniretail.backend.inventory.service.InventoryService;
-import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.security.RequirePermission;
 import io.swagger.v3.oas.annotations.Parameter;
 import java.time.Instant;
@@ -27,7 +26,7 @@ public class InventoryMovementController {
 
     @GetMapping
     @RequirePermission("inventory.movements.read")
-    public PageResponse<InventoryMovementListDto> search(
+    public InventoryMovementPageResponse search(
             @RequestParam(required = false) UUID branchId,
             @RequestParam(required = false) UUID productId,
             @RequestParam(required = false) InventoryMovementType type,

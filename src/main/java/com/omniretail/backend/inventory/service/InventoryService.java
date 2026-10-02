@@ -13,6 +13,8 @@ import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.inventory.dto.InventoryBalanceResponse;
 import com.omniretail.backend.inventory.dto.InventoryMovementDisplayType;
 import com.omniretail.backend.inventory.dto.InventoryMovementListDto;
+import com.omniretail.backend.inventory.dto.InventoryMovementPageResponse;
+import com.omniretail.backend.inventory.dto.InventoryMovementSummaryDto;
 import com.omniretail.backend.inventory.entity.InventoryMovement;
 import com.omniretail.backend.inventory.entity.InventoryMovementType;
 import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
@@ -45,6 +47,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -82,7 +85,7 @@ public class InventoryService {
                 InventoryBalanceResponse::from);
     }
 
-    public PageResponse<InventoryMovementListDto> searchMovements(
+    public InventoryMovementPageResponse searchMovements(
             UUID branchId,
             UUID productId,
             InventoryMovementType type,
@@ -114,15 +117,22 @@ public class InventoryService {
             allowedBranchIds = access.branchIds();
         }
         if (allowedBranchIds != null && allowedBranchIds.isEmpty()) {
-            return new PageResponse<>(List.of(), safePageable.getPageNumber() + 1,
-                    safePageable.getPageSize(), 0, 0);
+            return new InventoryMovementPageResponse(
+                    List.of(), safePageable.getPageNumber() + 1,
+                    safePageable.getPageSize(), 0, 0, InventoryMovementSummaryDto.zero());
         }
-        Page<InventoryMovement> movements = inventoryMovementRepository.findAll(
-                InventoryMovementSpecifications.filtered(
-                        tenantId, branchId, allowedBranchIds, productId, type, from, to, search, displayType),
-                safePageable);
+        Specification<InventoryMovement> filters = InventoryMovementSpecifications.filtered(
+                tenantId, branchId, allowedBranchIds, productId, type, from, to, search, displayType);
+        Page<InventoryMovement> movements = inventoryMovementRepository.findAll(filters, safePageable);
+        InventoryMovementSummaryDto summary = inventoryMovementRepository.summarize(filters);
         MovementContext context = context(tenantId, movements.getContent());
-        return PageResponse.from(movements, movement -> response(movement, context));
+        return new InventoryMovementPageResponse(
+                movements.getContent().stream().map(movement -> response(movement, context)).toList(),
+                movements.getNumber() + 1,
+                movements.getSize(),
+                movements.getTotalElements(),
+                movements.getTotalPages(),
+                summary);
     }
 
     private MovementContext context(UUID tenantId, List<InventoryMovement> movements) {

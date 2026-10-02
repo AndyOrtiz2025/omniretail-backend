@@ -126,7 +126,10 @@ class InventoryMovementControllerTest {
                 .andExpect(jsonPath("$.page").value(1))
                 .andExpect(jsonPath("$.pageSize").value(20))
                 .andExpect(jsonPath("$.totalItems").value(0))
-                .andExpect(jsonPath("$.totalPages").value(0));
+                .andExpect(jsonPath("$.totalPages").value(0))
+                .andExpect(jsonPath("$.summary.incoming").value(0))
+                .andExpect(jsonPath("$.summary.outgoing").value(0))
+                .andExpect(jsonPath("$.summary.net").value(0));
     }
 
     @Test
@@ -157,7 +160,10 @@ class InventoryMovementControllerTest {
                 .andExpect(jsonPath("$.items[0].quantityAfter").value(5.000))
                 .andExpect(jsonPath("$.items[0].referenceType").value("TEST"))
                 .andExpect(jsonPath("$.items[0].createdAt").value(BASE_TIME.toString()))
-                .andExpect(jsonPath("$.totalItems").value(1));
+                .andExpect(jsonPath("$.totalItems").value(1))
+                .andExpect(jsonPath("$.summary.incoming").value(2.000))
+                .andExpect(jsonPath("$.summary.outgoing").value(0))
+                .andExpect(jsonPath("$.summary.net").value(2.000));
     }
 
     @Test
@@ -185,7 +191,10 @@ class InventoryMovementControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items.length()").value(1))
                 .andExpect(jsonPath("$.items[0].id").value(tenantAMovement.toString()))
-                .andExpect(jsonPath("$.totalItems").value(1));
+                .andExpect(jsonPath("$.totalItems").value(1))
+                .andExpect(jsonPath("$.summary.incoming").value(2.000))
+                .andExpect(jsonPath("$.summary.outgoing").value(0))
+                .andExpect(jsonPath("$.summary.net").value(2.000));
     }
 
     @Test
@@ -214,7 +223,10 @@ class InventoryMovementControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items.length()").value(1))
                 .andExpect(jsonPath("$.items[0].id").value(expected.toString()))
-                .andExpect(jsonPath("$.totalItems").value(1));
+                .andExpect(jsonPath("$.totalItems").value(1))
+                .andExpect(jsonPath("$.summary.incoming").value(2.000))
+                .andExpect(jsonPath("$.summary.outgoing").value(0))
+                .andExpect(jsonPath("$.summary.net").value(2.000));
     }
 
     @Test
@@ -256,7 +268,10 @@ class InventoryMovementControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items.length()").value(1))
                 .andExpect(jsonPath("$.items[0].id").value(expected.toString()))
-                .andExpect(jsonPath("$.totalItems").value(1));
+                .andExpect(jsonPath("$.totalItems").value(1))
+                .andExpect(jsonPath("$.summary.incoming").value(2.000))
+                .andExpect(jsonPath("$.summary.outgoing").value(0))
+                .andExpect(jsonPath("$.summary.net").value(2.000));
     }
 
     @Test
@@ -323,7 +338,10 @@ class InventoryMovementControllerTest {
                         .param("from", BASE_TIME.toString()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items.length()").value(1))
-                .andExpect(jsonPath("$.items[0].id").value(expected.toString()));
+                .andExpect(jsonPath("$.items[0].id").value(expected.toString()))
+                .andExpect(jsonPath("$.summary.incoming").value(0))
+                .andExpect(jsonPath("$.summary.outgoing").value(2.000))
+                .andExpect(jsonPath("$.summary.net").value(-2.000));
     }
 
     @Test
@@ -351,7 +369,10 @@ class InventoryMovementControllerTest {
                         .param("to", BASE_TIME.toString()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items.length()").value(1))
-                .andExpect(jsonPath("$.items[0].id").value(expected.toString()));
+                .andExpect(jsonPath("$.items[0].id").value(expected.toString()))
+                .andExpect(jsonPath("$.summary.incoming").value(2.000))
+                .andExpect(jsonPath("$.summary.outgoing").value(0))
+                .andExpect(jsonPath("$.summary.net").value(2.000));
     }
 
     @Test
@@ -397,7 +418,10 @@ class InventoryMovementControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items.length()").value(2))
                 .andExpect(jsonPath("$.items[0].id").value(secondExpected.toString()))
-                .andExpect(jsonPath("$.items[1].id").value(firstExpected.toString()));
+                .andExpect(jsonPath("$.items[1].id").value(firstExpected.toString()))
+                .andExpect(jsonPath("$.summary.incoming").value(0))
+                .andExpect(jsonPath("$.summary.outgoing").value(2.000))
+                .andExpect(jsonPath("$.summary.net").value(-2.000));
     }
 
     @Test
@@ -541,6 +565,51 @@ class InventoryMovementControllerTest {
     }
 
     @Test
+    void summaryUsesAllFilteredMovementsAndIsStableAcrossPages() throws Exception {
+        Fixture fixture = createFixture();
+        UUID[] movementIds = new UUID[25];
+        for (int index = 0; index < movementIds.length; index++) {
+            String type = index < 15 ? "in" : index < 23 ? "out" : "transfer";
+            movementIds[index] = insertMovement(
+                    fixture,
+                    fixture.firstBranchId(),
+                    fixture.firstProductId(),
+                    type,
+                    BASE_TIME.plusSeconds(index),
+                    null,
+                    null);
+        }
+
+        mockMvc.perform(get(MOVEMENTS)
+                        .header("Authorization", token(fixture))
+                        .param("page", "1")
+                        .param("size", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(10))
+                .andExpect(jsonPath("$.items[0].id").value(movementIds[24].toString()))
+                .andExpect(jsonPath("$.page").value(1))
+                .andExpect(jsonPath("$.totalItems").value(25))
+                .andExpect(jsonPath("$.totalPages").value(3))
+                .andExpect(jsonPath("$.summary.incoming").value(30.000))
+                .andExpect(jsonPath("$.summary.outgoing").value(16.000))
+                .andExpect(jsonPath("$.summary.net").value(14.000));
+
+        mockMvc.perform(get(MOVEMENTS)
+                        .header("Authorization", token(fixture))
+                        .param("page", "2")
+                        .param("size", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(10))
+                .andExpect(jsonPath("$.items[0].id").value(movementIds[14].toString()))
+                .andExpect(jsonPath("$.page").value(2))
+                .andExpect(jsonPath("$.totalItems").value(25))
+                .andExpect(jsonPath("$.totalPages").value(3))
+                .andExpect(jsonPath("$.summary.incoming").value(30.000))
+                .andExpect(jsonPath("$.summary.outgoing").value(16.000))
+                .andExpect(jsonPath("$.summary.net").value(14.000));
+    }
+
+    @Test
     void responseIncludesFromAndToLocationIds() throws Exception {
         Fixture fixture = createFixture();
         UUID fromLocationId = UUID.randomUUID();
@@ -647,7 +716,10 @@ class InventoryMovementControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items.length()").value(1))
                 .andExpect(jsonPath("$.items[0].id").value(allowed.toString()))
-                .andExpect(jsonPath("$.totalItems").value(1));
+                .andExpect(jsonPath("$.totalItems").value(1))
+                .andExpect(jsonPath("$.summary.incoming").value(2.000))
+                .andExpect(jsonPath("$.summary.outgoing").value(0))
+                .andExpect(jsonPath("$.summary.net").value(2.000));
     }
 
     @Test
@@ -661,7 +733,10 @@ class InventoryMovementControllerTest {
         mockMvc.perform(get(MOVEMENTS).header("Authorization", token(fixture)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items").isEmpty())
-                .andExpect(jsonPath("$.totalItems").value(0));
+                .andExpect(jsonPath("$.totalItems").value(0))
+                .andExpect(jsonPath("$.summary.incoming").value(0))
+                .andExpect(jsonPath("$.summary.outgoing").value(0))
+                .andExpect(jsonPath("$.summary.net").value(0));
     }
 
     @Test
@@ -684,7 +759,30 @@ class InventoryMovementControllerTest {
                 .andExpect(jsonPath("$.items[0].productName").exists())
                 .andExpect(jsonPath("$.items[0].sku").exists())
                 .andExpect(jsonPath("$.items[0].branchName").exists())
-                .andExpect(jsonPath("$.totalItems").value(1));
+                .andExpect(jsonPath("$.totalItems").value(1))
+                .andExpect(jsonPath("$.summary.incoming").value(2.000))
+                .andExpect(jsonPath("$.summary.outgoing").value(0))
+                .andExpect(jsonPath("$.summary.net").value(2.000));
+    }
+
+    @Test
+    void searchByProductSkuUsesTheSameFiltersForSummary() throws Exception {
+        Fixture fixture = createFixture();
+        UUID matching = insertMovement(
+                fixture, fixture.firstBranchId(), fixture.firstProductId(), "out", BASE_TIME, null, null);
+        insertMovement(
+                fixture, fixture.firstBranchId(), fixture.secondProductId(), "in", BASE_TIME.plusSeconds(1), null, null);
+
+        mockMvc.perform(get(MOVEMENTS)
+                        .header("Authorization", token(fixture))
+                        .param("search", "sku-a"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].id").value(matching.toString()))
+                .andExpect(jsonPath("$.totalItems").value(1))
+                .andExpect(jsonPath("$.summary.incoming").value(0))
+                .andExpect(jsonPath("$.summary.outgoing").value(2.000))
+                .andExpect(jsonPath("$.summary.net").value(-2.000));
     }
 
     @Test
@@ -717,12 +815,30 @@ class InventoryMovementControllerTest {
                 .andExpect(jsonPath("$.items.length()").value(1))
                 .andExpect(jsonPath("$.items[0].displayType").value("sale"))
                 .andExpect(jsonPath("$.totalItems").value(2))
-                .andExpect(jsonPath("$.totalPages").value(2));
+                .andExpect(jsonPath("$.totalPages").value(2))
+                .andExpect(jsonPath("$.summary.incoming").value(0))
+                .andExpect(jsonPath("$.summary.outgoing").value(4.000))
+                .andExpect(jsonPath("$.summary.net").value(-4.000));
 
-        assertDisplayType(fixture, "purchase_in", "purchase_in");
-        assertDisplayType(fixture, "return", "return");
-        assertDisplayType(fixture, "void", "void");
-        assertDisplayType(fixture, "dispatch", "dispatch");
+        assertDisplayType(fixture, "purchase_in", "purchase_in", 2.000, 0, 2.000);
+        assertDisplayType(fixture, "return", "return", 2.000, 0, 2.000);
+        assertDisplayType(fixture, "void", "void", 2.000, 0, 2.000);
+        assertDisplayType(fixture, "dispatch", "dispatch", 0, 2.000, -2.000);
+    }
+
+    @Test
+    void genericDisplayTypesUsePersistedMovementTypeForSummary() throws Exception {
+        Fixture fixture = createFixture();
+        insertMovement(
+                fixture, fixture.firstBranchId(), fixture.firstProductId(), "in", BASE_TIME, null, null);
+        insertMovement(
+                fixture, fixture.firstBranchId(), fixture.firstProductId(), "out", BASE_TIME.plusSeconds(1), null, null);
+        insertMovement(
+                fixture, fixture.firstBranchId(), fixture.firstProductId(), "transfer", BASE_TIME.plusSeconds(2), null, null);
+
+        assertDisplayType(fixture, "in", "in", 2.000, 0, 2.000);
+        assertDisplayType(fixture, "out", "out", 0, 2.000, -2.000);
+        assertDisplayType(fixture, "transfer", "transfer", 0, 0, 0);
     }
 
     @Test
@@ -736,7 +852,10 @@ class InventoryMovementControllerTest {
                         .param("displayType", "transfer_in"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items").isEmpty())
-                .andExpect(jsonPath("$.totalItems").value(0));
+                .andExpect(jsonPath("$.totalItems").value(0))
+                .andExpect(jsonPath("$.summary.incoming").value(0))
+                .andExpect(jsonPath("$.summary.outgoing").value(0))
+                .andExpect(jsonPath("$.summary.net").value(0));
 
         mockMvc.perform(get(MOVEMENTS)
                         .header("Authorization", token(fixture))
@@ -745,14 +864,23 @@ class InventoryMovementControllerTest {
                 .andExpect(jsonPath("$.code").value("INVENTORY_MOVEMENT_DISPLAY_TYPE_INVALID"));
     }
 
-    private void assertDisplayType(Fixture fixture, String requested, String expected) throws Exception {
+    private void assertDisplayType(
+            Fixture fixture,
+            String requested,
+            String expected,
+            double incoming,
+            double outgoing,
+            double net) throws Exception {
         mockMvc.perform(get(MOVEMENTS)
                         .header("Authorization", token(fixture))
                         .param("displayType", requested))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items.length()").value(1))
                 .andExpect(jsonPath("$.items[0].displayType").value(expected))
-                .andExpect(jsonPath("$.totalItems").value(1));
+                .andExpect(jsonPath("$.totalItems").value(1))
+                .andExpect(jsonPath("$.summary.incoming").value(incoming))
+                .andExpect(jsonPath("$.summary.outgoing").value(outgoing))
+                .andExpect(jsonPath("$.summary.net").value(net));
     }
 
     private void setReference(UUID movementId, String referenceType) {
@@ -778,6 +906,8 @@ class InventoryMovementControllerTest {
                 expected = movementId;
             }
         }
+        double incoming = "in".equals(requestedType) ? 2.000 : 0;
+        double outgoing = "out".equals(requestedType) ? 2.000 : 0;
 
         mockMvc.perform(get(MOVEMENTS)
                         .header("Authorization", token(fixture))
@@ -785,7 +915,10 @@ class InventoryMovementControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items.length()").value(1))
                 .andExpect(jsonPath("$.items[0].id").value(expected.toString()))
-                .andExpect(jsonPath("$.items[0].type").value(requestedType));
+                .andExpect(jsonPath("$.items[0].type").value(requestedType))
+                .andExpect(jsonPath("$.summary.incoming").value(incoming))
+                .andExpect(jsonPath("$.summary.outgoing").value(outgoing))
+                .andExpect(jsonPath("$.summary.net").value(incoming - outgoing));
     }
 
     private Fixture createFixture() {
