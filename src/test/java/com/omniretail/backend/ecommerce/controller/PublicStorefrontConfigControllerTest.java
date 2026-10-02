@@ -7,10 +7,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.omniretail.backend.TestcontainersConfiguration;
 import com.omniretail.backend.administration.entity.EcommerceConfig;
 import com.omniretail.backend.administration.entity.HeroBannerConfig;
+import com.omniretail.backend.administration.entity.Branch;
+import com.omniretail.backend.administration.entity.BranchStatus;
+import com.omniretail.backend.administration.entity.BranchType;
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.repository.EcommerceConfigRepository;
 import com.omniretail.backend.administration.repository.HeroBannerConfigRepository;
+import com.omniretail.backend.administration.repository.BranchRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
 import java.util.List;
 import java.util.UUID;
@@ -42,6 +46,9 @@ class PublicStorefrontConfigControllerTest {
     @Autowired
     private HeroBannerConfigRepository heroBannerConfigRepository;
 
+    @Autowired
+    private BranchRepository branchRepository;
+
     @Test
     void anonymousRequestReturnsThePublicStorefrontConfiguration() throws Exception {
         Tenant tenant = persistStorefront();
@@ -53,7 +60,10 @@ class PublicStorefrontConfigControllerTest {
                 .andExpect(jsonPath("$.logoUrl").value("https://cdn.example.com/logo.png"))
                 .andExpect(jsonPath("$.guestTrackingEnabled").value(true))
                 .andExpect(jsonPath("$.slides[0].title").value("Oferta de temporada"))
-                .andExpect(jsonPath("$.slides[0].imageUrl").value("https://cdn.example.com/banner.png"));
+                .andExpect(jsonPath("$.slides[0].imageUrl").value("https://cdn.example.com/banner.png"))
+                .andExpect(jsonPath("$.branches[0].code").value("CENTRAL"))
+                .andExpect(jsonPath("$.branches[0].phone").value("5555-1111"))
+                .andExpect(jsonPath("$.branches.length()").value(1));
     }
 
     @Test
@@ -94,6 +104,27 @@ class PublicStorefrontConfigControllerTest {
                 .build();
         banners.setTenantId(tenant.getId());
         heroBannerConfigRepository.save(banners);
+
+        Branch store = Branch.builder()
+                .code("CENTRAL")
+                .name("Sucursal Central")
+                .type(BranchType.store)
+                .address("Zona 1")
+                .phone("5555-1111")
+                .email("central@example.com")
+                .status(BranchStatus.active)
+                .build();
+        store.setTenantId(tenant.getId());
+        branchRepository.save(store);
+
+        Branch warehouse = Branch.builder()
+                .code("BODEGA")
+                .name("Bodega")
+                .type(BranchType.warehouse)
+                .status(BranchStatus.active)
+                .build();
+        warehouse.setTenantId(tenant.getId());
+        branchRepository.save(warehouse);
         return tenant;
     }
 
