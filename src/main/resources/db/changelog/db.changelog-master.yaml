@@ -4,7 +4,8 @@
 #   001-tenants-branches.yaml, ..., 032-product-sales-price-tiers.yaml,
 #   033-product-media.yaml, 034-product-kits.yaml, 035-catalog-promotions-editor-support.yaml,
 #   036-inventory-reservation-sources.yaml, ..., 041-logistics-dispatch.yaml, ...
-#   999-01-seed-base.yaml, 999-02-..., 999-03-... (semillas demo: marcar sus changesets con
+#   999-01-seed-base.yaml, 999-02-..., 999-03-..., ..., 999-06-seed-inventory-balances.yaml
+#   (semillas demo: marcar sus changesets con
 #   `context: dev`; el sufijo numerico despues de `999-` evita que el orden alfabetico dependa
 #   de si el nombre siguiente tiene mas guiones que el actual).
 #

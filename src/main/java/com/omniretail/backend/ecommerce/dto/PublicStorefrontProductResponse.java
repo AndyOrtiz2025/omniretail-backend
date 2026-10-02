@@ -20,14 +20,18 @@ public record PublicStorefrontProductResponse(
         UUID categoryId,
         String categoryName,
         UUID saleUnitId,
-        String saleUnitName) {
+        String saleUnitName,
+        boolean inStock,
+        BigDecimal availableQuantity) {
 
     public static PublicStorefrontProductResponse from(
             Product product,
             String categoryName,
             UUID saleUnitId,
             String saleUnitName,
-            ResolvedProductPrice price) {
+            ResolvedProductPrice price,
+            boolean inStock,
+            BigDecimal availableQuantity) {
         return new PublicStorefrontProductResponse(
                 product.getId(),
                 product.getSku(),
@@ -42,6 +46,8 @@ public record PublicStorefrontProductResponse(
                 product.getCategoryId(),
                 categoryName,
                 saleUnitId,
-                saleUnitName);
+                saleUnitName,
+                inStock,
+                availableQuantity);
     }
 }

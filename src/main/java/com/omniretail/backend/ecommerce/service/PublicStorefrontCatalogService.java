@@ -1,7 +1,9 @@
 package com.omniretail.backend.ecommerce.service;
 
+import com.omniretail.backend.administration.entity.EcommerceConfig;
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
+import com.omniretail.backend.administration.repository.EcommerceConfigRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.catalog.entity.Category;
 import com.omniretail.backend.catalog.entity.CategoryStatus;
@@ -13,7 +15,10 @@ import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
 import com.omniretail.backend.catalog.service.ProductPriceResolver;
 import com.omniretail.backend.ecommerce.dto.PublicStorefrontProductResponse;
+import com.omniretail.backend.inventory.entity.InventoryBalance;
+import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -35,6 +40,8 @@ public class PublicStorefrontCatalogService {
     private final CategoryRepository categoryRepository;
     private final UnitRepository unitRepository;
     private final ProductPriceResolver productPriceResolver;
+    private final EcommerceConfigRepository ecommerceConfigRepository;
+    private final InventoryBalanceRepository inventoryBalanceRepository;
 
     public List<PublicStorefrontProductResponse> listProducts(String slug) {
         UUID tenantId = resolveActiveTenant(slug).getId();
@@ -44,9 +51,10 @@ public class PublicStorefrontCatalogService {
         Map<UUID, Unit> units = unitRepository.findByTenantId(tenantId).stream()
                 .collect(java.util.stream.Collectors.toMap(Unit::getId, Function.identity()));
         Instant pricingAt = Instant.now();
+        Map<UUID, BigDecimal> availableByProduct = availableByProduct(tenantId);
 
         return productRepository.findByTenantIdAndStatusAndChannelEcommerceTrue(tenantId, ProductStatus.published).stream()
-                .map(product -> toResponse(product, activeCategories, units, tenantId, pricingAt))
+                .map(product -> toResponse(product, activeCategories, units, tenantId, pricingAt, availableByProduct))
                 .toList();
     }
 
@@ -64,12 +72,15 @@ public class PublicStorefrontCatalogService {
                 .filter(found -> found.getTenantId().equals(tenantId))
                 .map(Unit::getName)
                 .orElse(null);
+        StockAvailability stock = stockAvailability(product, availableByProduct(tenantId));
         return PublicStorefrontProductResponse.from(
                 product,
                 categoryName,
                 saleUnitId,
                 saleUnitName,
-                productPriceResolver.resolveEffectivePrice(tenantId, product, Instant.now(), "ecommerce", null));
+                productPriceResolver.resolveEffectivePrice(tenantId, product, Instant.now(), "ecommerce", null),
+                stock.inStock(),
+                stock.availableQuantity());
     }
 
     private PublicStorefrontProductResponse toResponse(
@@ -77,18 +88,47 @@ public class PublicStorefrontCatalogService {
             Map<UUID, Category> categories,
             Map<UUID, Unit> units,
             UUID tenantId,
-            Instant pricingAt) {
+            Instant pricingAt,
+            Map<UUID, BigDecimal> availableByProduct) {
         UUID saleUnitId = product.getSaleUnitId() != null ? product.getSaleUnitId() : product.getBaseUnitId();
         Unit saleUnit = units.get(saleUnitId);
         Category category = categories.get(product.getCategoryId());
+        StockAvailability stock = stockAvailability(product, availableByProduct);
         return PublicStorefrontProductResponse.from(
                 product,
                 category != null ? category.getName() : null,
                 saleUnitId,
                 saleUnit != null ? saleUnit.getName() : null,
                 productPriceResolver.resolveEffectivePrice(
-                        tenantId, product, pricingAt, "ecommerce", null));
+                        tenantId, product, pricingAt, "ecommerce", null),
+                stock.inStock(),
+                stock.availableQuantity());
     }
+
+    /**
+     * Disponible (cantidad - reservado) por producto en la sucursal que atiende el e-commerce,
+     * la misma contra la que el checkout reserva stock. Sin sucursal configurada no hay stock.
+     */
+    private Map<UUID, BigDecimal> availableByProduct(UUID tenantId) {
+        return ecommerceConfigRepository.findByTenantId(tenantId)
+                .map(EcommerceConfig::getDefaultBranchId)
+                .map(branchId -> inventoryBalanceRepository
+                        .findByTenantIdAndBranchIdAndLocationIdIsNull(tenantId, branchId).stream()
+                        .collect(java.util.stream.Collectors.toMap(
+                                InventoryBalance::getProductId,
+                                balance -> balance.getQuantity().subtract(balance.getReservedQuantity()))))
+                .orElse(Map.of());
+    }
+
+    private static StockAvailability stockAvailability(Product product, Map<UUID, BigDecimal> availableByProduct) {
+        if (!Boolean.TRUE.equals(product.getTrackingStock())) {
+            return new StockAvailability(true, null);
+        }
+        BigDecimal available = availableByProduct.getOrDefault(product.getId(), BigDecimal.ZERO);
+        return new StockAvailability(available.signum() > 0, available.max(BigDecimal.ZERO));
+    }
+
+    private record StockAvailability(boolean inStock, BigDecimal availableQuantity) {}
 
     private Tenant resolveActiveTenant(String slug) {
         return tenantRepository.findBySlug(slug)

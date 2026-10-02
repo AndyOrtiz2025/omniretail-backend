@@ -25,6 +25,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -51,6 +52,9 @@ class PublicStorefrontCatalogControllerTest {
     @Autowired
     private ProductRepository productRepository;
 
+    @Autowired
+    private JdbcTemplate jdbc;
+
     @Test
     void anonymousRequestCanListAndReadAProduct() throws Exception {
         StorefrontFixture fixture = persistStorefront();
@@ -63,6 +67,38 @@ class PublicStorefrontCatalogControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(product.getId().toString()))
                 .andExpect(jsonPath("$.sku").value(product.getSku()));
+    }
+
+    @Test
+    void exposesStockAvailabilityFromTheEcommerceBranch() throws Exception {
+        StorefrontFixture fixture = persistStorefront();
+        UUID branchId = persistEcommerceBranch(fixture);
+        Product inStock = persistProduct(fixture, true);
+        Product reserved = persistProduct(fixture, true);
+        Product untracked = persistProduct(fixture, true);
+        untracked.setTrackingStock(false);
+        productRepository.save(untracked);
+        persistBalance(fixture, branchId, inStock, "100.000", "25.000");
+        persistBalance(fixture, branchId, reserved, "4.000", "4.000");
+
+        String url = productsUrl(fixture.tenant().getSlug());
+        mockMvc.perform(get(url))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.id == '%s')].inStock", inStock.getId()).value(true))
+                .andExpect(jsonPath("$[?(@.id == '%s')].availableQuantity", inStock.getId()).value(75.0))
+                .andExpect(jsonPath("$[?(@.id == '%s')].inStock", reserved.getId()).value(false))
+                .andExpect(jsonPath("$[?(@.id == '%s')].availableQuantity", reserved.getId()).value(0.0))
+                .andExpect(jsonPath("$[?(@.id == '%s')].inStock", untracked.getId()).value(true));
+
+        mockMvc.perform(get(url + "/" + inStock.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.inStock").value(true))
+                .andExpect(jsonPath("$.availableQuantity").value(75.0));
+
+        mockMvc.perform(get(url + "/" + untracked.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.inStock").value(true))
+                .andExpect(jsonPath("$.availableQuantity").doesNotExist());
     }
 
     @Test
@@ -133,6 +169,29 @@ class PublicStorefrontCatalogControllerTest {
                 .build();
         product.setTenantId(fixture.tenant().getId());
         return productRepository.save(product);
+    }
+
+    private UUID persistEcommerceBranch(StorefrontFixture fixture) {
+        UUID branchId = UUID.randomUUID();
+        UUID tenantId = fixture.tenant().getId();
+        jdbc.update("""
+                INSERT INTO branches (id, tenant_id, code, name, type, status)
+                VALUES (?, ?, ?, ?, 'main', 'active')
+                """, branchId, tenantId, "BR-" + branchId.toString().substring(0, 8), "Sucursal " + branchId);
+        jdbc.update("""
+                INSERT INTO ecommerce_configs (tenant_id, enabled, store_name, default_branch_id)
+                VALUES (?, TRUE, 'Tienda', ?)
+                """, tenantId, branchId);
+        return branchId;
+    }
+
+    private void persistBalance(
+            StorefrontFixture fixture, UUID branchId, Product product, String quantity, String reserved) {
+        jdbc.update("""
+                INSERT INTO inventory_balances (tenant_id, branch_id, product_id, location_id, quantity, reserved_quantity)
+                VALUES (?, ?, ?, NULL, ?, ?)
+                """, fixture.tenant().getId(), branchId, product.getId(),
+                new BigDecimal(quantity), new BigDecimal(reserved));
     }
 
     private static String productsUrl(String slug) {
