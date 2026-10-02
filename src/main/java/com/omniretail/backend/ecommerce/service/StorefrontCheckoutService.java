@@ -15,6 +15,8 @@ import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.UnitConversionRepository;
 import com.omniretail.backend.catalog.service.ProductPriceResolver;
+import com.omniretail.backend.catalog.service.ProductKitService;
+import com.omniretail.backend.catalog.service.KitFulfillmentSnapshot;
 import com.omniretail.backend.ecommerce.dto.StorefrontCheckoutItemRequest;
 import com.omniretail.backend.ecommerce.dto.StorefrontCheckoutRequest;
 import com.omniretail.backend.ecommerce.dto.StorefrontCheckoutResponse;
@@ -78,6 +80,7 @@ public class StorefrontCheckoutService {
     private final TenantCapabilityGuard capabilityGuard;
     private final UnitConversionRepository unitConversionRepository;
     private final ProductPriceResolver productPriceResolver;
+    private final ProductKitService productKitService;
     private final JsonMapper jsonMapper;
 
     @Transactional
@@ -148,7 +151,7 @@ public class StorefrontCheckoutService {
             Product product = products.get(i);
             BigDecimal quantity = quantities.get(i);
             ResolvedProductPrice resolved = productPriceResolver.resolveEffectivePrice(
-                    tenantId, product, pricingAt);
+                    tenantId, product, pricingAt, "ecommerce", branch.getId());
             BigDecimal lineDiscount = resolved.discountAmount().multiply(quantity)
                     .setScale(2, RoundingMode.HALF_UP);
             BigDecimal lineTotal = resolved.effectivePrice().multiply(quantity)
@@ -162,6 +165,8 @@ public class StorefrontCheckoutService {
                     .nameSnapshot(product.getName())
                     .quantity(quantity)
                     .inventoryQuantity(inventoryQuantity(tenantId, product, quantity))
+                    .fulfillmentComponents(KitFulfillmentSnapshot.encode(
+                            productKitService.fulfillment(tenantId, product, quantity)))
                     .unitPrice(product.getSalePrice())
                     .discount(lineDiscount)
                     .subtotal(lineTotal)
@@ -196,7 +201,18 @@ public class StorefrontCheckoutService {
             item.setOrderId(savedOrder.getId());
             OrderItem savedItem = orderItemRepository.save(item);
             Product product = products.get(i);
-            if (shouldReserve(product)) {
+            List<KitFulfillmentSnapshot.Component> fulfillment =
+                    KitFulfillmentSnapshot.decode(item.getFulfillmentComponents());
+            if (!fulfillment.isEmpty()) {
+                for (KitFulfillmentSnapshot.Component component : fulfillment) {
+                    BigDecimal componentQuantity = savedItem.getQuantity().multiply(component.quantityPerKit());
+                    ReservationAllocation allocation = reserve(tenantId, branch.getId(), component.productId(), componentQuantity);
+                    InventoryReservation reservation = InventoryReservation.builder()
+                            .branchId(branch.getId()).orderId(savedOrder.getId()).orderItemId(savedItem.getId())
+                            .productId(component.productId()).allocations(json(List.of(allocationJson(allocation)))).build();
+                    reservation.setTenantId(tenantId); reservationRepository.save(reservation);
+                }
+            } else if (shouldReserve(product)) {
                 ReservationAllocation allocation = reserve(
                         tenantId, branch.getId(), product.getId(), savedItem.getInventoryQuantity());
                 InventoryReservation reservation = InventoryReservation.builder()

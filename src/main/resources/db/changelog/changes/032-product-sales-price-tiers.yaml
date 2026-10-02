@@ -1,0 +1,45 @@
+databaseChangeLog:
+  - changeSet:
+      id: 032-product-sales-price-tiers
+      author: melbyn
+      changes:
+        - createTable:
+            tableName: product_sales_price_tiers
+            columns:
+              - column: { name: id, type: UUID, defaultValueComputed: gen_random_uuid(), constraints: { primaryKey: true, nullable: false } }
+              - column: { name: tenant_id, type: UUID, constraints: { nullable: false } }
+              - column: { name: product_id, type: UUID, constraints: { nullable: false } }
+              - column: { name: min_quantity, type: INTEGER, constraints: { nullable: false } }
+              - column: { name: unit_price, type: "NUMERIC(9,2)", constraints: { nullable: false } }
+              - column: { name: active, type: BOOLEAN, defaultValueBoolean: true, constraints: { nullable: false } }
+              - column: { name: created_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: { nullable: false } }
+              - column: { name: updated_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: { nullable: false } }
+        - addForeignKeyConstraint:
+            baseTableName: product_sales_price_tiers
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_product_sales_price_tiers_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: product_sales_price_tiers
+            baseColumnNames: tenant_id, product_id
+            referencedTableName: products
+            referencedColumnNames: tenant_id, id
+            constraintName: fk_product_sales_price_tiers_product
+            onDelete: CASCADE
+        - addUniqueConstraint:
+            tableName: product_sales_price_tiers
+            columnNames: tenant_id, product_id, min_quantity
+            constraintName: uk_product_sales_price_tiers_quantity
+        - sql:
+            sql: "ALTER TABLE product_sales_price_tiers ADD CONSTRAINT ck_product_sales_price_tiers_quantity CHECK (min_quantity > 1 AND min_quantity <= 999999)"
+        - sql:
+            sql: "ALTER TABLE product_sales_price_tiers ADD CONSTRAINT ck_product_sales_price_tiers_price CHECK (unit_price > 0 AND unit_price <= 9999999.99)"
+        - createIndex:
+            tableName: product_sales_price_tiers
+            indexName: idx_product_sales_price_tiers_product
+            columns:
+              - column: { name: tenant_id }
+              - column: { name: product_id }
+              - column: { name: min_quantity }

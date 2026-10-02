@@ -134,7 +134,8 @@ class InventorySettingsServiceTest {
         for (String mutation : new String[] {
             "UPDATE products SET tracking_stock = false WHERE id = ?",
             "UPDATE products SET product_type = 'service' WHERE id = ?",
-            "UPDATE products SET product_type = 'kit' WHERE id = ?"
+            "UPDATE products SET product_type = 'kit', tracking_stock = false, "
+                    + "tracking_lot = false, tracking_expiration = false, tracking_serial = false WHERE id = ?"
         }) {
             Fixture fixture = fixture(true);
             jdbc.update(mutation, fixture.product());

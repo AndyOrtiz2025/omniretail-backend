@@ -92,6 +92,25 @@ class ProductPriceResolverTest {
     }
 
     @Test
+    void calculatesFixedDiscountAndHonorsChannelAndBranchScope() {
+        UUID branchId = UUID.randomUUID();
+        Promotion promotion = promotion(PromotionDiscountType.fixed_discount, "10.00", at.minusSeconds(60));
+        promotion.setChannels(List.of("pos"));
+        promotion.setBranchIds(List.of(branchId));
+        when(promotionRepository.findApplicable(tenantId, productId, PromotionStatus.active, at))
+                .thenReturn(List.of(promotion));
+
+        ResolvedProductPrice ignored = resolver.resolveEffectivePrice(
+                tenantId, product, at, "ecommerce", branchId);
+        ResolvedProductPrice applied = resolver.resolveEffectivePrice(
+                tenantId, product, at, "pos", branchId);
+
+        assertThat(ignored.effectivePrice()).isEqualByComparingTo("99.99");
+        assertThat(applied.effectivePrice()).isEqualByComparingTo("89.99");
+        assertThat(applied.promotionId()).isEqualTo(promotion.getId());
+    }
+
+    @Test
     void fixedPriceAboveBaseNeverIncreasesPrice() {
         Promotion promotion = promotion(PromotionDiscountType.fixed_price, "120.00", at.minusSeconds(60));
         when(promotionRepository.findApplicable(tenantId, productId, PromotionStatus.active, at))

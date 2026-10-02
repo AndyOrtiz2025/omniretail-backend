@@ -8,4 +8,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface PromotionProductRepository extends JpaRepository<PromotionProduct, UUID> {
 
     List<PromotionProduct> findByTenantIdAndPromotionId(UUID tenantId, UUID promotionId);
+    List<PromotionProduct> findByTenantIdAndProductId(UUID tenantId, UUID productId);
+    void deleteByTenantIdAndPromotionId(UUID tenantId, UUID promotionId);
 }

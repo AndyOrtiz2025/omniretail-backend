@@ -12,6 +12,8 @@ import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
 import com.omniretail.backend.catalog.service.ProductPriceResolver;
+import com.omniretail.backend.catalog.service.ProductKitService;
+import com.omniretail.backend.catalog.service.KitFulfillmentSnapshot;
 import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.inventory.dto.DeductStockCommand;
 import com.omniretail.backend.inventory.dto.AddStockCommand;
@@ -76,6 +78,7 @@ public class SaleService {
     private final InventoryStockService inventory;
     private final DocumentCounterService counter;
     private final ProductPriceResolver productPriceResolver;
+    private final ProductKitService productKitService;
 
     public SaleResponse create(CreateSaleRequest request) {
         AuthenticatedUser actor = currentUser.require();
@@ -134,7 +137,7 @@ public class SaleService {
                 throw new BusinessException(HttpStatus.BAD_REQUEST, "INVALID_DISCOUNT", "El descuento supera el importe de la línea.");
             }
             ResolvedProductPrice resolved = productPriceResolver.resolveEffectivePrice(
-                    actor.tenantId(), product, pricingAt);
+                    actor.tenantId(), product, pricingAt, "pos", request.branchId());
             BigDecimal promotionDiscount = money(resolved.discountAmount().multiply(line.quantity()));
             boolean usePromotion = resolved.promotionId() != null
                     && promotionDiscount.compareTo(manualDiscount) >= 0;
@@ -167,14 +170,22 @@ public class SaleService {
             var line = request.items().get(index);
             LinePricing pricing = catalog.get(index);
             Product product = pricing.product();
-            if (Boolean.TRUE.equals(product.getTrackingStock()) && product.getProductType() == ProductType.physical) {
+            List<ProductKitService.FulfillmentComponent> fulfillment = product.getProductType() == ProductType.kit
+                    ? productKitService.fulfillment(actor.tenantId(), product, line.quantity()) : List.of();
+            if (!fulfillment.isEmpty()) {
+                for (ProductKitService.FulfillmentComponent component : fulfillment) {
+                    inventory.deductStock(new DeductStockCommand(actor.tenantId(), request.branchId(), component.productId(),
+                            component.quantity(), "Venta kit POS #" + sale.getNumber(), "POS_KIT_SALE", sale.getId(), actor.userId()));
+                }
+            } else if (Boolean.TRUE.equals(product.getTrackingStock()) && product.getProductType() == ProductType.physical) {
                 inventory.deductStock(new DeductStockCommand(actor.tenantId(), request.branchId(), product.getId(),
                         line.quantity(), "Venta POS #" + sale.getNumber(), "POS_SALE", sale.getId(), actor.userId()));
             }
             items.save(SaleItem.builder().saleId(sale.getId()).productId(product.getId()).skuSnapshot(product.getSku())
                     .nameSnapshot(product.getName()).quantity(line.quantity()).unitPrice(product.getSalePrice())
                     .discount(pricing.discount()).subtotal(pricing.subtotal())
-                    .promotionId(pricing.promotionId()).build());
+                    .promotionId(pricing.promotionId())
+                    .fulfillmentComponents(KitFulfillmentSnapshot.encode(fulfillment)).build());
         }
         for (var paymentRequest : request.payments()) {
             UUID bankAccountId = paymentRequest.method() == PaymentMethod.transfer
@@ -252,9 +263,20 @@ public class SaleService {
         if (sale.getStatus() == SaleStatus.cancelled) {
             throw new BusinessException(HttpStatus.CONFLICT, "SALE_ALREADY_VOIDED", "La venta ya está anulada.");
         }
+        if (sale.getStatus() != SaleStatus.completed) {
+            throw new BusinessException(HttpStatus.CONFLICT, "SALE_NOT_VOIDABLE",
+                    "Una venta con devoluciones no puede anularse.");
+        }
         for (SaleItem item : items.findByTenantIdAndSaleId(actor.tenantId(), id)) {
             Product product = products.findByTenantIdAndId(actor.tenantId(), item.getProductId()).orElse(null);
-            if (product != null && Boolean.TRUE.equals(product.getTrackingStock()) && product.getProductType() == ProductType.physical) {
+            List<KitFulfillmentSnapshot.Component> fulfillment = KitFulfillmentSnapshot.decode(item.getFulfillmentComponents());
+            if (!fulfillment.isEmpty()) {
+                for (KitFulfillmentSnapshot.Component component : fulfillment) {
+                    inventory.incrementStock(new AddStockCommand(actor.tenantId(), sale.getBranchId(), component.productId(),
+                            item.getQuantity().multiply(component.quantityPerKit()), "Anulacion venta kit POS #" + sale.getNumber(),
+                            "POS_KIT_SALE_VOID", sale.getId(), actor.userId()));
+                }
+            } else if (product != null && Boolean.TRUE.equals(product.getTrackingStock()) && product.getProductType() == ProductType.physical) {
                 inventory.incrementStock(new AddStockCommand(actor.tenantId(), sale.getBranchId(), product.getId(), item.getQuantity(),
                         "Anulación venta POS #" + sale.getNumber(), "POS_SALE_VOID", sale.getId(), actor.userId()));
             }

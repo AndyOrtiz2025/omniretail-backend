@@ -7,6 +7,7 @@ import com.omniretail.backend.administration.repository.SupplierRepository;
 import com.omniretail.backend.administration.service.BusinessConfigService;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductStatus;
+import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.entity.Unit;
 import com.omniretail.backend.catalog.entity.UnitStatus;
 import com.omniretail.backend.catalog.repository.ProductRepository;
@@ -310,6 +311,9 @@ public class SupplierProductService {
         if (product.getStatus() != ProductStatus.published) {
             throw businessError(
                     "SUPPLIER_PRODUCT_PRODUCT_NOT_AVAILABLE", "El producto no está disponible para compras.");
+        }
+        if (product.getProductType() == ProductType.kit) {
+            throw businessError("SUPPLIER_PRODUCT_KIT_NOT_ALLOWED", "Los kits no se compran directamente a proveedores.");
         }
         return product;
     }
