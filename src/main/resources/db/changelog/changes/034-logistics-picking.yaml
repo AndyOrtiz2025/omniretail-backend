@@ -1,6 +1,6 @@
 databaseChangeLog:
   - changeSet:
-      id: 032-logistics-picking
+      id: 034-logistics-picking
       author: omniretail
       changes:
         - createTable:

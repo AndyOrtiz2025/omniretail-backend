@@ -270,7 +270,7 @@ class LogisticsPackingPersistenceTest {
                 """,
                 Integer.class);
         Integer changeSetCount = jdbc.queryForObject(
-                "SELECT count(*) FROM databasechangelog WHERE id = '034-logistics-packing'",
+                "SELECT count(*) FROM databasechangelog WHERE id = '036-logistics-packing'",
                 Integer.class);
         Integer constraintCount = jdbc.queryForObject(
                 """

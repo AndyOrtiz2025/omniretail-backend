@@ -298,7 +298,7 @@ class PickingServiceTest {
     }
 
     @Test
-    void migration033CreatesTheTenantScopedOperationContract() {
+    void migration035CreatesTheTenantScopedOperationContract() {
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM information_schema.tables
                 WHERE table_schema = 'public'
@@ -306,7 +306,7 @@ class PickingServiceTest {
                 """, Integer.class)).isOne();
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM databasechangelog
-                WHERE id = '033-logistics-picking-idempotency'
+                WHERE id = '035-logistics-picking-idempotency'
                 """, Integer.class)).isOne();
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM pg_constraint

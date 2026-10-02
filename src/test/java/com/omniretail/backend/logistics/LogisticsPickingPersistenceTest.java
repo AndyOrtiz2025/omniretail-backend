@@ -297,7 +297,7 @@ class LogisticsPickingPersistenceTest {
                 """,
                 Integer.class);
         Integer changeSetCount = jdbc.queryForObject(
-                "SELECT count(*) FROM databasechangelog WHERE id = '032-logistics-picking'",
+                "SELECT count(*) FROM databasechangelog WHERE id = '034-logistics-picking'",
                 Integer.class);
 
         assertThat(count).isEqualTo(4);

@@ -106,7 +106,7 @@ class LogisticsDispatchPersistenceTest {
                   AND table_name IN ('dispatches', 'dispatch_packages', 'dispatch_operations')
                 """, Integer.class)).isEqualTo(3);
         assertThat(jdbc.queryForObject(
-                "SELECT count(*) FROM databasechangelog WHERE id = '035-logistics-dispatch'",
+                "SELECT count(*) FROM databasechangelog WHERE id = '037-logistics-dispatch'",
                 Integer.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM pg_constraint

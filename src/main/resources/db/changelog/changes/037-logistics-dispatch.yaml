@@ -1,6 +1,6 @@
 databaseChangeLog:
   - changeSet:
-      id: 035-logistics-dispatch
+      id: 037-logistics-dispatch
       author: omniretail
       changes:
         - createTable:

@@ -1,6 +1,6 @@
 databaseChangeLog:
   - changeSet:
-      id: 033-logistics-picking-idempotency
+      id: 035-logistics-picking-idempotency
       author: omniretail
       changes:
         - addUniqueConstraint:
