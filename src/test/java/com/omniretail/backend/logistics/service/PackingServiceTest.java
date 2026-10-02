@@ -339,6 +339,7 @@ class PackingServiceTest {
         assertThat(actual.deliveryMethod()).isEqualTo(expected.deliveryMethod());
         assertThat(actual.sourceType()).isEqualTo(expected.sourceType());
         assertThat(actual.sourceId()).isEqualTo(expected.sourceId());
+        assertThat(actual.sourceReference()).isEqualTo(expected.sourceReference());
         assertThat(actual.status()).isEqualTo(expected.status());
         assertThat(actual.version()).isEqualTo(expected.version());
         assertThat(actual.startedAt()).isEqualTo(expected.startedAt());

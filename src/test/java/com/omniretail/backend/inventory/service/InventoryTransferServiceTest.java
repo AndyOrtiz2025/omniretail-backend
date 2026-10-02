@@ -38,6 +38,7 @@ import com.omniretail.backend.inventory.repository.InventoryTransferItemReposito
 import com.omniretail.backend.inventory.repository.InventoryTransferRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferRequestRepository;
 import com.omniretail.backend.pos.service.DocumentCounterService;
+import com.omniretail.backend.logistics.service.PickingService;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
@@ -89,6 +90,7 @@ class InventoryTransferServiceTest {
     @Mock private InventoryReservationRepository reservationRepository;
     @Mock private InventoryReservationLifecycleService reservationLifecycleService;
     @Mock private DocumentCounterService documentCounterService;
+    @Mock private PickingService pickingService;
 
     @InjectMocks private InventoryTransferService service;
 
@@ -210,6 +212,7 @@ class InventoryTransferServiceTest {
         assertThat(reservation.getValue().sourceLineId()).isEqualTo(ITEM_ID);
         assertThat(reservation.getValue().orderId()).isNull();
         assertThat(reservation.getValue().orderItemId()).isNull();
+        verify(pickingService).ensureForTransfer(TENANT_ID, TRANSFER_ID);
         assertThat(request.getStatus()).isEqualTo(InventoryTransferRequestStatus.approved);
         verify(requestRepository).findForUpdateByTenantIdAndId(TENANT_ID, REQUEST_ID);
     }

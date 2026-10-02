@@ -19,4 +19,35 @@ public record PackingQueueResponse(
         PackingStatus status,
         Long version,
         Instant startedAt,
-        Instant updatedAt) {}
+        Instant updatedAt,
+        String sourceReference) {
+
+    public PackingQueueResponse(
+            UUID packingId,
+            UUID orderId,
+            String orderReference,
+            String customerName,
+            JsonNode storePickupContact,
+            DeliveryMethod deliveryMethod,
+            PackingSourceType sourceType,
+            UUID sourceId,
+            PackingStatus status,
+            Long version,
+            Instant startedAt,
+            Instant updatedAt) {
+        this(
+                packingId,
+                orderId,
+                orderReference,
+                customerName,
+                storePickupContact,
+                deliveryMethod,
+                sourceType,
+                sourceId,
+                status,
+                version,
+                startedAt,
+                updatedAt,
+                orderReference);
+    }
+}

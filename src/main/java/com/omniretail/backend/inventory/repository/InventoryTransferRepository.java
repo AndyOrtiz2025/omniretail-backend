@@ -24,6 +24,9 @@ public interface InventoryTransferRepository extends JpaRepository<InventoryTran
 
     List<InventoryTransfer> findByTenantIdAndIdIn(UUID tenantId, Collection<UUID> ids);
 
+    List<InventoryTransfer> findByTenantIdAndSourceBranchIdAndStatusOrderByCreatedAtAsc(
+            UUID tenantId, UUID sourceBranchId, InventoryTransferStatus status);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("""
             select transfer from InventoryTransfer transfer

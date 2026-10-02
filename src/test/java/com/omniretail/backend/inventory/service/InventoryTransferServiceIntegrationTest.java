@@ -15,6 +15,7 @@ import com.omniretail.backend.ecommerce.repository.InventoryReservationRepositor
 import com.omniretail.backend.inventory.dto.ApproveInventoryTransferRequest;
 import com.omniretail.backend.inventory.dto.CancelInventoryTransferRequest;
 import com.omniretail.backend.inventory.dto.CreateInventoryTransferRequest;
+import com.omniretail.backend.inventory.dto.InventoryTransferRequestEffectiveStatus;
 import com.omniretail.backend.inventory.dto.InventoryTransferResponse;
 import com.omniretail.backend.inventory.entity.InventoryTransferReason;
 import com.omniretail.backend.inventory.entity.InventoryTransferRequestStatus;
@@ -22,6 +23,20 @@ import com.omniretail.backend.inventory.entity.InventoryTransferStatus;
 import com.omniretail.backend.inventory.repository.InventoryTransferItemRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferRequestRepository;
+import com.omniretail.backend.logistics.entity.PickingSourceType;
+import com.omniretail.backend.logistics.entity.PackingSourceType;
+import com.omniretail.backend.logistics.dto.ConfirmTransferDispatchRequest;
+import com.omniretail.backend.logistics.dto.PackingChecklistRequest;
+import com.omniretail.backend.logistics.dto.PackingVersionedRequest;
+import com.omniretail.backend.logistics.dto.RegisterPackingLabelPrintRequest;
+import com.omniretail.backend.logistics.dto.SavePackingPreparationRequest;
+import com.omniretail.backend.logistics.dto.UpdatePickingItemRequest;
+import com.omniretail.backend.logistics.repository.PackingRepository;
+import com.omniretail.backend.logistics.repository.PickingItemRepository;
+import com.omniretail.backend.logistics.repository.PickingOrderRepository;
+import com.omniretail.backend.logistics.service.DispatchService;
+import com.omniretail.backend.logistics.service.PackingService;
+import com.omniretail.backend.logistics.service.PickingService;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
@@ -45,6 +60,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -59,6 +75,12 @@ class InventoryTransferServiceIntegrationTest {
     @Autowired private InventoryTransferRepository transfers;
     @Autowired private InventoryTransferItemRepository items;
     @Autowired private InventoryReservationRepository reservations;
+    @Autowired private PickingOrderRepository pickingOrders;
+    @Autowired private PickingItemRepository pickingItems;
+    @Autowired private PackingRepository packings;
+    @Autowired private PickingService pickingService;
+    @Autowired private PackingService packingService;
+    @Autowired private DispatchService dispatchService;
     @Autowired private JdbcTemplate jdbc;
     @MockitoBean private CurrentUser currentUser;
     @MockitoBean private BranchAccessResolver branchAccessResolver;
@@ -106,7 +128,301 @@ class InventoryTransferServiceIntegrationTest {
                     assertThat(reservation.getOrderItemId()).isNull();
                     assertThat(reservation.getStatus()).isEqualTo(InventoryReservationStatus.active);
                 });
+        var picking = pickingOrders
+                .findByTenantIdAndSourceTypeAndSourceId(
+                        fixture.tenantId(), PickingSourceType.transfer, transfer.id())
+                .orElseThrow();
+        assertThat(pickingService.ensureForTransfer(fixture.tenantId(), transfer.id()).getId())
+                .isEqualTo(picking.getId());
+        assertThat(picking.getBranchId()).isEqualTo(fixture.sourceBranchId());
+        assertThat(picking.getOrderId()).isNull();
+        assertThat(pickingItems.findByTenantIdAndPickingOrderId(
+                        fixture.tenantId(), picking.getId()))
+                .singleElement()
+                .satisfies(pickingItem -> {
+                    assertThat(pickingItem.getSourceLineId())
+                            .isEqualTo(transfer.items().getFirst().id());
+                    assertThat(pickingItem.getOrderItemId()).isNull();
+                    assertThat(pickingItem.getRequestedQuantity())
+                            .isEqualByComparingTo("2.000");
+                });
         assertBalance("10.000", "2.000");
+    }
+
+    @Test
+    void transferTraversesPickingPackingAndDispatchExactlyOnce() {
+        UUID requestId = createRequest();
+        InventoryTransferResponse transfer = service.approve(
+                requestId, new ApproveInventoryTransferRequest("approve-pipeline", null));
+        var picking = pickingOrders
+                .findByTenantIdAndSourceTypeAndSourceId(
+                        fixture.tenantId(), PickingSourceType.transfer, transfer.id())
+                .orElseThrow();
+        var pickingItem = pickingItems
+                .findByTenantIdAndPickingOrderId(fixture.tenantId(), picking.getId())
+                .getFirst();
+
+        assertThat(pickingService.getQueue(fixture.sourceBranchId()))
+                .anySatisfy(row -> {
+                    assertThat(row.sourceType()).isEqualTo(PickingSourceType.transfer);
+                    assertThat(row.sourceId()).isEqualTo(transfer.id());
+                    assertThat(row.sourceReference()).isEqualTo(transfer.number());
+                    assertThat(row.orderId()).isNull();
+                });
+        assertThat(pickingService.getDetail(fixture.sourceBranchId(), picking.getId()))
+                .satisfies(detail -> {
+                    assertThat(detail.sourceReference()).isEqualTo(transfer.number());
+                    assertThat(detail.customerName()).isNull();
+                    assertThat(detail.deliveryMethod()).isNull();
+                    assertThat(detail.lines()).singleElement().satisfies(line -> {
+                        assertThat(line.sourceLineId()).isEqualTo(transfer.items().getFirst().id());
+                        assertThat(line.orderItemId()).isNull();
+                    });
+                });
+        assertThatThrownBy(() -> pickingService.getDetail(
+                        fixture.destinationBranchId(), picking.getId()))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode()).isEqualTo("PICKING_NOT_FOUND"));
+        pickingService.assign(fixture.sourceBranchId(), picking.getId());
+        pickingService.updateItem(
+                fixture.sourceBranchId(),
+                picking.getId(),
+                pickingItem.getId(),
+                new UpdatePickingItemRequest(new BigDecimal("2.000"), null, "pick-transfer"));
+        pickingService.complete(fixture.sourceBranchId(), picking.getId());
+        assertBalance("10.000", "2.000");
+        assertThat(reservations.findByTenantIdAndSourceTypeAndSourceId(
+                        fixture.tenantId(),
+                        InventoryReservationSourceType.transfer,
+                        transfer.id()))
+                .singleElement()
+                .extracting(reservation -> reservation.getStatus())
+                .isEqualTo(InventoryReservationStatus.active);
+
+        var packing = packings
+                .findByTenantIdAndBranchIdAndSourceTypeAndSourceId(
+                        fixture.tenantId(),
+                        fixture.sourceBranchId(),
+                        PackingSourceType.transfer,
+                        transfer.id())
+                .orElseThrow();
+        assertThatThrownBy(() -> dispatchService.confirmTransfer(
+                        fixture.sourceBranchId(),
+                        transfer.id(),
+                        new ConfirmTransferDispatchRequest("premature-transfer")))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("PACKING_NOT_FINALIZED"));
+        var prepared = packingService.savePreparation(
+                fixture.sourceBranchId(),
+                packing.getId(),
+                new SavePackingPreparationRequest(
+                        packing.getVersion(),
+                        "prepare-transfer",
+                        new PackingChecklistRequest(true, true, true),
+                        new BigDecimal("1.500"),
+                        1));
+        var labelled = packingService.generateLabel(
+                fixture.sourceBranchId(),
+                packing.getId(),
+                new PackingVersionedRequest(
+                        prepared.packing().version(), "label-transfer"));
+        var printed = packingService.registerLabelPrint(
+                fixture.sourceBranchId(),
+                packing.getId(),
+                new RegisterPackingLabelPrintRequest(
+                        labelled.packing().version(),
+                        "print-transfer",
+                        labelled.packing().labelGenerationId()));
+        var finalized = packingService.finalizePacking(
+                fixture.sourceBranchId(),
+                packing.getId(),
+                new PackingVersionedRequest(
+                        printed.packing().version(), "finalize-transfer"));
+        var finalizeReplay = packingService.finalizePacking(
+                fixture.sourceBranchId(),
+                packing.getId(),
+                new PackingVersionedRequest(
+                        printed.packing().version(), "finalize-transfer"));
+        assertThat(finalized.orderStatus()).isNull();
+        assertThat(finalized.transferStatus()).isEqualTo(InventoryTransferStatus.preparing);
+        assertThat(finalizeReplay.idempotent()).isTrue();
+        assertThat(finalizeReplay.packing().sourceReference()).isEqualTo(transfer.number());
+        assertBalance("10.000", "2.000");
+
+        assertThat(dispatchService.getQueue(fixture.sourceBranchId()))
+                .anySatisfy(row -> {
+                    assertThat(row.sourceId()).isEqualTo(transfer.id());
+                    assertThat(row.sourceReference()).isEqualTo(transfer.number());
+                    assertThat(row.orderId()).isNull();
+                });
+        var dispatched = dispatchService.confirmTransfer(
+                fixture.sourceBranchId(),
+                transfer.id(),
+                new ConfirmTransferDispatchRequest("dispatch-transfer"));
+        var replay = dispatchService.confirmTransfer(
+                fixture.sourceBranchId(),
+                transfer.id(),
+                new ConfirmTransferDispatchRequest("dispatch-transfer"));
+
+        assertThat(dispatched.transferStatus()).isEqualTo(InventoryTransferStatus.inTransit);
+        assertThat(replay.idempotent()).isTrue();
+        assertThat(replay.dispatchId()).isEqualTo(dispatched.dispatchId());
+        given(currentUser.require()).willReturn(new AuthenticatedUser(
+                UUID.randomUUID(),
+                fixture.tenantId(),
+                UserType.employee,
+                UUID.randomUUID(),
+                fixture.sourceBranchId(),
+                UUID.randomUUID()));
+        assertThatThrownBy(() -> dispatchService.confirmTransfer(
+                        fixture.sourceBranchId(),
+                        transfer.id(),
+                        new ConfirmTransferDispatchRequest("dispatch-transfer")))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("DISPATCH_OPERATION_ID_REUSED"));
+        assertThat(transfers.findByTenantIdAndId(fixture.tenantId(), transfer.id())
+                        .orElseThrow())
+                .satisfies(savedTransfer -> {
+                    assertThat(savedTransfer.getStatus()).isEqualTo(InventoryTransferStatus.inTransit);
+                    assertThat(savedTransfer.getDispatchedByUserId()).isEqualTo(fixture.actorId());
+                    assertThat(savedTransfer.getDispatchedAt()).isNotNull();
+                });
+        assertThat(items.findByTenantIdAndTransferIdOrderByIdAsc(
+                        fixture.tenantId(), transfer.id()))
+                .singleElement()
+                .satisfies(item -> {
+                    assertThat(item.getDispatchedQuantity()).isEqualByComparingTo("2.000");
+                    assertThat(item.getReceivedQuantity()).isEqualByComparingTo("0.000");
+                });
+        assertThat(service.listRequests(null, null, null, PageRequest.of(0, 20)).items())
+                .filteredOn(response -> response.id().equals(requestId))
+                .singleElement()
+                .satisfies(response -> assertThat(response.effectiveStatus())
+                        .isEqualTo(InventoryTransferRequestEffectiveStatus.inTransit));
+        assertBalance("8.000", "0.000");
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM inventory_movements WHERE reference_type = 'transfer' AND reference_id = ?",
+                        Long.class,
+                        transfer.id()))
+                .isOne();
+    }
+
+    @Test
+    void concurrentTransferDispatchReplaysWithoutDuplicatingInventoryEffects()
+            throws Exception {
+        ReadyTransfer readyTransfer = readyTransfer("concurrent-dispatch");
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            List<Future<com.omniretail.backend.logistics.dto.DispatchResponse>> futures =
+                    java.util.stream.IntStream.range(0, 2)
+                            .mapToObj(index -> executor.submit(() -> {
+                                ready.countDown();
+                                if (!start.await(10, TimeUnit.SECONDS)) {
+                                    throw new IllegalStateException(
+                                            "Los despachos no iniciaron a tiempo.");
+                                }
+                                return dispatchService.confirmTransfer(
+                                        fixture.sourceBranchId(),
+                                        readyTransfer.transfer().id(),
+                                        new ConfirmTransferDispatchRequest(
+                                                "same-transfer-dispatch"));
+                            }))
+                            .toList();
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            var first = futures.get(0).get(20, TimeUnit.SECONDS);
+            var second = futures.get(1).get(20, TimeUnit.SECONDS);
+            assertThat(first.dispatchId()).isEqualTo(second.dispatchId());
+            assertThat(List.of(first.idempotent(), second.idempotent()))
+                    .containsExactlyInAnyOrder(false, true);
+            assertThat(jdbc.queryForObject(
+                            "SELECT count(*) FROM dispatches WHERE source_type = 'transfer' AND source_id = ?",
+                            Long.class,
+                            readyTransfer.transfer().id()))
+                    .isOne();
+            assertThat(jdbc.queryForObject(
+                            "SELECT count(*) FROM inventory_movements WHERE reference_type = 'transfer' AND reference_id = ?",
+                            Long.class,
+                            readyTransfer.transfer().id()))
+                    .isOne();
+            assertBalance("8.000", "0.000");
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void cancellationAndDispatchCannotBothComplete() throws Exception {
+        ReadyTransfer readyTransfer = readyTransfer("cancel-vs-dispatch");
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            Future<Boolean> dispatch = executor.submit(() -> {
+                ready.countDown();
+                if (!start.await(10, TimeUnit.SECONDS)) return false;
+                try {
+                    dispatchService.confirmTransfer(
+                            fixture.sourceBranchId(),
+                            readyTransfer.transfer().id(),
+                            new ConfirmTransferDispatchRequest("race-dispatch"));
+                    return true;
+                } catch (BusinessException exception) {
+                    return false;
+                }
+            });
+            Future<Boolean> cancellation = executor.submit(() -> {
+                ready.countDown();
+                if (!start.await(10, TimeUnit.SECONDS)) return false;
+                try {
+                    service.cancelTransfer(
+                            readyTransfer.transfer().id(),
+                            new CancelInventoryTransferRequest("race-cancel"));
+                    return true;
+                } catch (BusinessException exception) {
+                    return false;
+                }
+            });
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            assertThat(List.of(
+                            dispatch.get(20, TimeUnit.SECONDS),
+                            cancellation.get(20, TimeUnit.SECONDS)))
+                    .containsExactlyInAnyOrder(true, false);
+            InventoryTransferStatus status = transfers
+                    .findByTenantIdAndId(
+                            fixture.tenantId(), readyTransfer.transfer().id())
+                    .orElseThrow()
+                    .getStatus();
+            assertThat(status)
+                    .isIn(InventoryTransferStatus.inTransit, InventoryTransferStatus.cancelled);
+            if (status == InventoryTransferStatus.inTransit) {
+                assertBalance("8.000", "0.000");
+                assertThat(jdbc.queryForObject(
+                                "SELECT count(*) FROM inventory_movements WHERE reference_type = 'transfer' AND reference_id = ?",
+                                Long.class,
+                                readyTransfer.transfer().id()))
+                        .isOne();
+            } else {
+                assertBalance("10.000", "0.000");
+                assertThat(jdbc.queryForObject(
+                                "SELECT count(*) FROM inventory_movements WHERE reference_type = 'transfer' AND reference_id = ?",
+                                Long.class,
+                                readyTransfer.transfer().id()))
+                        .isZero();
+            }
+        } finally {
+            executor.shutdownNow();
+        }
     }
 
     @Test
@@ -210,6 +526,63 @@ class InventoryTransferServiceIntegrationTest {
                 .extracting(reservation -> reservation.getStatus())
                 .isEqualTo(InventoryReservationStatus.released);
         assertBalance("10.000", "0.000");
+    }
+
+    private ReadyTransfer readyTransfer(String suffix) {
+        UUID requestId = createRequest();
+        InventoryTransferResponse transfer = service.approve(
+                requestId,
+                new ApproveInventoryTransferRequest("approve-" + suffix, null));
+        var picking = pickingOrders
+                .findByTenantIdAndSourceTypeAndSourceId(
+                        fixture.tenantId(), PickingSourceType.transfer, transfer.id())
+                .orElseThrow();
+        var pickingItem = pickingItems
+                .findByTenantIdAndPickingOrderId(fixture.tenantId(), picking.getId())
+                .getFirst();
+        pickingService.assign(fixture.sourceBranchId(), picking.getId());
+        pickingService.updateItem(
+                fixture.sourceBranchId(),
+                picking.getId(),
+                pickingItem.getId(),
+                new UpdatePickingItemRequest(
+                        pickingItem.getRequestedQuantity(), null, "pick-" + suffix));
+        pickingService.complete(fixture.sourceBranchId(), picking.getId());
+
+        var packing = packings
+                .findByTenantIdAndBranchIdAndSourceTypeAndSourceId(
+                        fixture.tenantId(),
+                        fixture.sourceBranchId(),
+                        PackingSourceType.transfer,
+                        transfer.id())
+                .orElseThrow();
+        var prepared = packingService.savePreparation(
+                fixture.sourceBranchId(),
+                packing.getId(),
+                new SavePackingPreparationRequest(
+                        packing.getVersion(),
+                        "prepare-" + suffix,
+                        new PackingChecklistRequest(true, true, true),
+                        new BigDecimal("1.500"),
+                        1));
+        var labelled = packingService.generateLabel(
+                fixture.sourceBranchId(),
+                packing.getId(),
+                new PackingVersionedRequest(
+                        prepared.packing().version(), "label-" + suffix));
+        var printed = packingService.registerLabelPrint(
+                fixture.sourceBranchId(),
+                packing.getId(),
+                new RegisterPackingLabelPrintRequest(
+                        labelled.packing().version(),
+                        "print-" + suffix,
+                        labelled.packing().labelGenerationId()));
+        packingService.finalizePacking(
+                fixture.sourceBranchId(),
+                packing.getId(),
+                new PackingVersionedRequest(
+                        printed.packing().version(), "finalize-" + suffix));
+        return new ReadyTransfer(transfer);
     }
 
     private UUID createRequest() {
@@ -338,4 +711,6 @@ class InventoryTransferServiceIntegrationTest {
             UUID destinationBranchId,
             UUID productId,
             UUID actorId) {}
+
+    private record ReadyTransfer(InventoryTransferResponse transfer) {}
 }

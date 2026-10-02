@@ -30,6 +30,7 @@ import com.omniretail.backend.inventory.repository.InventoryTransferItemReposito
 import com.omniretail.backend.inventory.repository.InventoryTransferRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferRequestRepository;
 import com.omniretail.backend.pos.service.DocumentCounterService;
+import com.omniretail.backend.logistics.service.PickingService;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
@@ -78,6 +79,7 @@ public class InventoryTransferService {
     private final InventoryReservationRepository reservationRepository;
     private final InventoryReservationLifecycleService reservationLifecycleService;
     private final DocumentCounterService documentCounterService;
+    private final PickingService pickingService;
 
     @Transactional
     public InventoryTransferRequestResponse createRequest(CreateInventoryTransferRequest request) {
@@ -210,6 +212,7 @@ public class InventoryTransferService {
                 null,
                 null,
                 quantity));
+        pickingService.ensureForTransfer(actor.tenantId(), transfer.getId());
 
         request.setStatus(InventoryTransferRequestStatus.approved);
         request.setReviewedByUserId(actor.userId());
@@ -321,7 +324,6 @@ public class InventoryTransferService {
         for (InventoryReservation reservation : orderedReservations) {
             reservationLifecycleService.release(actor.tenantId(), reservation.getId());
         }
-
         transfer.setStatus(InventoryTransferStatus.cancelled);
         transfer.setCancelledByUserId(actor.userId());
         transfer.setCancelledAt(Instant.now());

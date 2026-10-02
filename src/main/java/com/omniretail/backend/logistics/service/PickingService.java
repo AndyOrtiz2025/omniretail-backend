@@ -22,7 +22,12 @@ import com.omniretail.backend.ecommerce.repository.InventoryReservationRepositor
 import com.omniretail.backend.ecommerce.repository.OrderItemRepository;
 import com.omniretail.backend.ecommerce.repository.OrderRepository;
 import com.omniretail.backend.inventory.entity.InventoryBalance;
+import com.omniretail.backend.inventory.entity.InventoryTransfer;
+import com.omniretail.backend.inventory.entity.InventoryTransferItem;
+import com.omniretail.backend.inventory.entity.InventoryTransferStatus;
 import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
+import com.omniretail.backend.inventory.repository.InventoryTransferItemRepository;
+import com.omniretail.backend.inventory.repository.InventoryTransferRepository;
 import com.omniretail.backend.logistics.dto.CreatePickingIncidentRequest;
 import com.omniretail.backend.logistics.dto.PickingActionResponse;
 import com.omniretail.backend.logistics.dto.PickingDetailResponse;
@@ -53,6 +58,8 @@ import com.omniretail.backend.logistics.repository.PickingOrderRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
+import com.omniretail.backend.shared.security.SaasCapability;
+import com.omniretail.backend.shared.security.TenantCapabilityGuard;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -97,9 +104,12 @@ public class PickingService {
     private final CustomerRepository customerRepository;
     private final InventoryReservationRepository reservationRepository;
     private final InventoryBalanceRepository inventoryBalanceRepository;
+    private final InventoryTransferRepository transferRepository;
+    private final InventoryTransferItemRepository transferItemRepository;
     private final LocationRepository locationRepository;
     private final BranchAccessResolver branchAccessResolver;
     private final CurrentUser currentUser;
+    private final TenantCapabilityGuard tenantCapabilityGuard;
     private final JsonMapper jsonMapper;
 
     /** Se invoca dentro de la misma transaccion que confirma el checkout. */
@@ -177,12 +187,92 @@ public class PickingService {
         return Optional.of(picking);
     }
 
+    /** Se invoca dentro de la misma transaccion que aprueba la transferencia. */
+    @Transactional
+    public PickingOrder ensureForTransfer(UUID tenantId, UUID transferId) {
+        tenantCapabilityGuard.ensureTenantCapability(tenantId, SaasCapability.inventory);
+        InventoryTransfer transfer = transferRepository
+                .findForUpdateByTenantIdAndId(tenantId, transferId)
+                .orElseThrow(() -> notFound(
+                        "INVENTORY_TRANSFER_NOT_FOUND", "Transferencia no encontrada."));
+        requireEligibleTransfer(transfer);
+        Optional<PickingOrder> existing = pickingOrderRepository
+                .findByTenantIdAndSourceTypeAndSourceId(
+                        tenantId, PickingSourceType.transfer, transferId);
+        if (existing.isPresent()) {
+            requireMatchingTransfer(existing.get(), transfer);
+            return existing.get();
+        }
+
+        List<InventoryTransferItem> transferItems = transferItemRepository
+                .findByTenantIdAndTransferIdOrderByIdAsc(tenantId, transferId);
+        if (transferItems.isEmpty()) {
+            throw conflict(
+                    "PICKING_TRANSFER_ITEMS_REQUIRED",
+                    "La transferencia no contiene lineas para Picking.");
+        }
+        Map<UUID, Product> products = productRepository
+                .findByTenantIdAndIdIn(
+                        tenantId,
+                        transferItems.stream()
+                                .map(InventoryTransferItem::getProductId)
+                                .toList())
+                .stream()
+                .collect(Collectors.toMap(Product::getId, Function.identity()));
+        Map<ReservationKey, InventoryReservation> transferReservations = reservationRepository
+                .findByTenantIdAndSourceTypeAndSourceIdAndStatus(
+                        tenantId,
+                        InventoryReservationSourceType.transfer,
+                        transferId,
+                        InventoryReservationStatus.active)
+                .stream()
+                .collect(Collectors.toMap(
+                        reservation -> new ReservationKey(
+                                reservation.getSourceLineId(), reservation.getProductId()),
+                        Function.identity()));
+        if (transferReservations.size() != transferItems.size()) {
+            throw conflict(
+                    "PICKING_RESERVATION_REQUIRED",
+                    "La transferencia no posee reservas activas consistentes.");
+        }
+
+        PickingOrder picking = PickingOrder.builder()
+                .branchId(transfer.getSourceBranchId())
+                .sourceType(PickingSourceType.transfer)
+                .sourceId(transfer.getId())
+                .orderId(null)
+                .priority(PickingPriority.normal)
+                .build();
+        picking.setTenantId(tenantId);
+        picking = pickingOrderRepository.save(picking);
+
+        for (InventoryTransferItem transferItem : transferItems) {
+            Product product = products.get(transferItem.getProductId());
+            requireTransferProduct(product);
+            InventoryReservation reservation = transferReservations.get(
+                    new ReservationKey(transferItem.getId(), transferItem.getProductId()));
+            requireMatchingTransferReservation(transfer, transferItem, reservation);
+            PickingItem item = PickingItem.builder()
+                    .pickingOrderId(picking.getId())
+                    .sourceLineId(transferItem.getId())
+                    .orderItemId(null)
+                    .productId(transferItem.getProductId())
+                    .requestedQuantity(reservation.getQuantity())
+                    .locationId(firstLocation(reservation))
+                    .build();
+            item.setTenantId(tenantId);
+            pickingItemRepository.save(item);
+        }
+        return picking;
+    }
+
     public List<PickingQueueResponse> getQueue(UUID branchId) {
         AuthenticatedUser actor = actorForBranch(branchId);
         return pickingOrderRepository
-                .findByTenantIdAndBranchIdAndSourceTypeAndStatusInOrderByCreatedAtAsc(
-                        actor.tenantId(), branchId, PickingSourceType.order, QUEUE_STATUSES)
+                .findByTenantIdAndBranchIdAndStatusInOrderByCreatedAtAsc(
+                        actor.tenantId(), branchId, QUEUE_STATUSES)
                 .stream()
+                .filter(picking -> queueSourceIsActive(actor.tenantId(), picking))
                 .map(picking -> queueResponse(actor.tenantId(), picking))
                 .toList();
     }
@@ -190,7 +280,6 @@ public class PickingService {
     public PickingDetailResponse getDetail(UUID branchId, UUID pickingOrderId) {
         AuthenticatedUser actor = actorForBranch(branchId);
         PickingOrder picking = findScoped(actor.tenantId(), branchId, pickingOrderId);
-        requireOrderSource(picking);
         return detail(actor.tenantId(), picking);
     }
 
@@ -198,38 +287,41 @@ public class PickingService {
     public PickingActionResponse assign(UUID branchId, UUID pickingOrderId) {
         AuthenticatedUser actor = actorForBranch(branchId);
         PickingOrder picking = lockScoped(actor.tenantId(), branchId, pickingOrderId);
-        Order order = lockOrder(picking);
-        requireMutableOrderPicking(picking, order);
+        SourceContext source = lockSource(picking);
+        requireMutablePicking(picking, source);
         requireTraceabilitySupported(actor.tenantId(), picking.getId());
 
         if (actor.userId().equals(picking.getAssignedUserId())) {
-            return action(picking, order, true);
+            return action(picking, source, true);
         }
         if (picking.getAssignedUserId() != null) {
             throw conflict("PICKING_ALREADY_ASSIGNED", "El Picking ya está asignado a otro usuario.");
         }
         boolean hasProgress = hasProgress(actor.tenantId(), branchId, picking.getId());
-        if (hasProgress && order.getStatus() != OrderStatus.picking) {
+        if (hasProgress && source.order() != null
+                && source.order().getStatus() != OrderStatus.picking) {
             throw conflict("INVALID_PICKING_STATE", "El pedido no se encuentra en Picking.");
         }
-        if (!hasProgress && order.getStatus() != OrderStatus.confirmed
-                && order.getStatus() != OrderStatus.preparing) {
+        if (!hasProgress && source.order() != null
+                && source.order().getStatus() != OrderStatus.confirmed
+                && source.order().getStatus() != OrderStatus.preparing) {
             throw conflict("INVALID_ORDER_STATUS_TRANSITION", "El pedido no puede iniciar Picking.");
         }
         picking.setAssignedUserId(actor.userId());
         picking.setStatus(hasProgress ? PickingStatus.in_progress : PickingStatus.assigned);
-        if (order.getStatus() == OrderStatus.confirmed) order.setStatus(OrderStatus.preparing);
-        orderRepository.save(order);
-        return action(pickingOrderRepository.saveAndFlush(picking), order, false);
+        if (source.order() != null && source.order().getStatus() == OrderStatus.confirmed) {
+            source.order().setStatus(OrderStatus.preparing);
+            orderRepository.save(source.order());
+        }
+        return action(pickingOrderRepository.saveAndFlush(picking), source, false);
     }
 
     @Transactional
     public PickingReleaseResponse release(UUID branchId, UUID pickingOrderId, String reason) {
         AuthenticatedUser actor = actorForBranch(branchId);
         PickingOrder picking = lockScoped(actor.tenantId(), branchId, pickingOrderId);
-        requireOrderSource(picking);
         requireNonTerminal(picking);
-        lockOrder(picking);
+        lockSource(picking);
         if (!actor.userId().equals(picking.getAssignedUserId())) {
             throw conflict("PICKING_NOT_ASSIGNED_TO_ACTOR", "Solo el usuario asignado puede liberar el Picking.");
         }
@@ -257,7 +349,6 @@ public class PickingService {
             UpdatePickingItemRequest request) {
         AuthenticatedUser actor = actorForBranch(branchId);
         PickingOrder picking = lockScoped(actor.tenantId(), branchId, pickingOrderId);
-        requireOrderSource(picking);
         PickingItem item = pickingItemRepository
                 .findByScopeAndIdForUpdate(actor.tenantId(), branchId, pickingOrderId, pickingItemId)
                 .orElseThrow(() -> notFound("PICKING_ITEM_NOT_FOUND", "Linea de Picking no encontrada."));
@@ -278,7 +369,7 @@ public class PickingService {
         }
         requireNonTerminal(picking);
         requireAssignedActor(picking, actor);
-        Order order = lockOrder(picking);
+        SourceContext source = lockSource(picking);
         Product product = requireProduct(actor.tenantId(), item.getProductId());
         requireTraceabilitySupported(product);
 
@@ -300,9 +391,9 @@ public class PickingService {
         item.setStatus(itemStatus(target, item.getRequestedQuantity()));
         pickingItemRepository.saveAndFlush(item);
 
-        if (order.getStatus() == OrderStatus.preparing) {
-            order.setStatus(OrderStatus.picking);
-        } else if (order.getStatus() != OrderStatus.picking) {
+        if (source.order() != null && source.order().getStatus() == OrderStatus.preparing) {
+            source.order().setStatus(OrderStatus.picking);
+        } else if (source.order() != null && source.order().getStatus() != OrderStatus.picking) {
             throw conflict("INVALID_ORDER_STATUS_TRANSITION", "El pedido no se encuentra listo para Picking.");
         }
         if (picking.getStatus() == PickingStatus.assigned) {
@@ -311,7 +402,7 @@ public class PickingService {
         } else if (picking.getStatus() != PickingStatus.in_progress) {
             throw conflict("INVALID_PICKING_STATE", "El Picking no se encuentra iniciado.");
         }
-        orderRepository.save(order);
+        if (source.order() != null) orderRepository.save(source.order());
         pickingOrderRepository.save(picking);
 
         PickingLineResponse result = lineResponse(
@@ -331,10 +422,9 @@ public class PickingService {
             UUID branchId, UUID pickingOrderId, CreatePickingIncidentRequest request) {
         AuthenticatedUser actor = actorForBranch(branchId);
         PickingOrder picking = lockScoped(actor.tenantId(), branchId, pickingOrderId);
-        requireOrderSource(picking);
         requireNonTerminal(picking);
         requireAssignedActor(picking, actor);
-        lockOrder(picking);
+        lockSource(picking);
         if (request.pickingLineId() != null) {
             PickingItem item = pickingItemRepository
                     .findByScopeAndId(actor.tenantId(), branchId, request.pickingLineId())
@@ -363,10 +453,9 @@ public class PickingService {
             UUID branchId, UUID pickingOrderId, UUID incidentId) {
         AuthenticatedUser actor = actorForBranch(branchId);
         PickingOrder picking = lockScoped(actor.tenantId(), branchId, pickingOrderId);
-        requireOrderSource(picking);
         requireNonTerminal(picking);
         requireAssignedActor(picking, actor);
-        lockOrder(picking);
+        lockSource(picking);
         PickingIncident incident = pickingIncidentRepository
                 .findByScopeAndIdForUpdate(actor.tenantId(), branchId, pickingOrderId, incidentId)
                 .orElseThrow(() -> notFound("PICKING_INCIDENT_NOT_FOUND", "Incidencia no encontrada."));
@@ -386,12 +475,11 @@ public class PickingService {
     public PickingActionResponse complete(UUID branchId, UUID pickingOrderId) {
         AuthenticatedUser actor = actorForBranch(branchId);
         PickingOrder picking = lockScoped(actor.tenantId(), branchId, pickingOrderId);
-        Order order = lockOrder(picking);
-        requireOrderSource(picking);
+        SourceContext source = lockSource(picking);
         requireTraceabilitySupported(actor.tenantId(), picking.getId());
         if (picking.getStatus() == PickingStatus.completed) {
-            ensurePacking(picking, order, actor.userId());
-            return action(picking, order, true);
+            ensurePacking(picking, source, actor.userId());
+            return action(picking, source, true);
         }
         requireNonTerminal(picking);
         requireAssignedActor(picking, actor);
@@ -409,41 +497,44 @@ public class PickingService {
                 actor.tenantId(), branchId, pickingOrderId, PickingIncidentStatus.open)) {
             throw conflict("PICKING_HAS_OPEN_INCIDENTS", "El Picking posee incidencias abiertas.");
         }
-        if (order.getStatus() != OrderStatus.picking) {
+        if (source.order() != null && source.order().getStatus() != OrderStatus.picking) {
             throw conflict("INVALID_ORDER_STATUS_TRANSITION", "El pedido no se encuentra en Picking.");
         }
         Instant completedAt = Instant.now();
         picking.setStatus(PickingStatus.completed);
         picking.setCompletedAt(completedAt);
-        order.setStatus(OrderStatus.packing);
-        orderRepository.save(order);
+        if (source.order() != null) {
+            source.order().setStatus(OrderStatus.packing);
+            orderRepository.save(source.order());
+        }
         picking = pickingOrderRepository.saveAndFlush(picking);
-        ensurePacking(picking, order, actor.userId());
-        return action(picking, order, false);
+        ensurePacking(picking, source, actor.userId());
+        return action(picking, source, false);
     }
 
-    private Packing ensurePacking(PickingOrder picking, Order order, UUID actorUserId) {
+    private Packing ensurePacking(PickingOrder picking, SourceContext source, UUID actorUserId) {
         Optional<Packing> existing = packingRepository.findByTenantIdAndBranchIdAndPickingOrderId(
                 picking.getTenantId(), picking.getBranchId(), picking.getId());
         if (existing.isPresent()) {
             Packing packing = existing.get();
-            if (packing.getSourceType() != PackingSourceType.order
-                    || !order.getId().equals(packing.getSourceId())
-                    || !order.getId().equals(packing.getOrderId())) {
-                throw conflict("PACKING_SOURCE_CONFLICT", "Packing no coincide con su pedido.");
+            if (packing.getSourceType() != PackingSourceType.valueOf(picking.getSourceType().name())
+                    || !picking.getSourceId().equals(packing.getSourceId())
+                    || !java.util.Objects.equals(picking.getOrderId(), packing.getOrderId())) {
+                throw conflict("PACKING_SOURCE_CONFLICT", "Packing no coincide con su fuente.");
             }
             return packing;
         }
-        if (picking.getStatus() != PickingStatus.completed || order.getStatus() != OrderStatus.packing) {
+        if (picking.getStatus() != PickingStatus.completed
+                || (source.order() != null && source.order().getStatus() != OrderStatus.packing)) {
             throw conflict(
                     "PACKING_NOT_ELIGIBLE",
                     "Packing requiere un Picking completado y un pedido en Packing.");
         }
         Packing packing = Packing.builder()
                 .branchId(picking.getBranchId())
-                .sourceType(PackingSourceType.order)
-                .sourceId(order.getId())
-                .orderId(order.getId())
+                .sourceType(PackingSourceType.valueOf(picking.getSourceType().name()))
+                .sourceId(picking.getSourceId())
+                .orderId(picking.getOrderId())
                 .pickingOrderId(picking.getId())
                 .startedByUserId(actorUserId)
                 .startedAt(Instant.now())
@@ -482,6 +573,25 @@ public class PickingService {
         return order;
     }
 
+    private SourceContext lockSource(PickingOrder picking) {
+        if (picking.getSourceType() == PickingSourceType.order) {
+            Order order = lockOrder(picking);
+            return new SourceContext(order, null, order.getOrderNumber());
+        }
+        if (picking.getSourceType() == PickingSourceType.transfer && picking.getOrderId() == null) {
+            tenantCapabilityGuard.ensureTenantCapability(
+                    picking.getTenantId(), SaasCapability.inventory);
+            InventoryTransfer transfer = transferRepository
+                    .findForUpdateByTenantIdAndId(picking.getTenantId(), picking.getSourceId())
+                    .orElseThrow(() -> notFound(
+                            "INVENTORY_TRANSFER_NOT_FOUND", "Transferencia no encontrada."));
+            requireMatchingTransfer(picking, transfer);
+            requireCompatibleTransferState(picking, transfer);
+            return new SourceContext(null, transfer, transfer.getNumber());
+        }
+        throw conflict("PICKING_SOURCE_NOT_SUPPORTED", "La fuente de Picking no es valida.");
+    }
+
     private static void requireMatchingOrder(PickingOrder picking, Order order) {
         if (!order.getId().equals(picking.getOrderId())
                 || !order.getBranchId().equals(picking.getBranchId())) {
@@ -506,12 +616,76 @@ public class PickingService {
         }
     }
 
-    private static void requireMutableOrderPicking(PickingOrder picking, Order order) {
-        requireOrderSource(picking);
+    private static void requireMutablePicking(PickingOrder picking, SourceContext source) {
         requireNonTerminal(picking);
-        if (order.getSource() != OrderSource.ecommerce
-                || order.getDeliveryMethod() != DeliveryMethod.home_delivery) {
+        if (source.order() != null
+                && (source.order().getSource() != OrderSource.ecommerce
+                        || source.order().getDeliveryMethod() != DeliveryMethod.home_delivery)) {
             throw conflict("PICKING_ORDER_NOT_ELIGIBLE", "El pedido no admite Picking.");
+        }
+    }
+
+    private static void requireEligibleTransfer(InventoryTransfer transfer) {
+        if (transfer.getStatus() != InventoryTransferStatus.preparing) {
+            throw conflict(
+                    "PICKING_TRANSFER_NOT_ELIGIBLE",
+                    "La transferencia no se encuentra en preparacion.");
+        }
+    }
+
+    private static void requireCompatibleTransferState(
+            PickingOrder picking, InventoryTransfer transfer) {
+        if (transfer.getStatus() == InventoryTransferStatus.preparing) return;
+        if (picking.getStatus() == PickingStatus.completed
+                && (transfer.getStatus() == InventoryTransferStatus.inTransit
+                        || transfer.getStatus() == InventoryTransferStatus.received)) {
+            return;
+        }
+        throw conflict(
+                "PICKING_TRANSFER_NOT_ELIGIBLE",
+                "La transferencia no se encuentra en un estado compatible con Picking.");
+    }
+
+    private static void requireMatchingTransfer(
+            PickingOrder picking, InventoryTransfer transfer) {
+        if (picking.getSourceType() != PickingSourceType.transfer
+                || picking.getOrderId() != null
+                || !picking.getSourceId().equals(transfer.getId())
+                || !picking.getBranchId().equals(transfer.getSourceBranchId())) {
+            throw conflict(
+                    "PICKING_SOURCE_CONFLICT",
+                    "El Picking no coincide con su transferencia.");
+        }
+    }
+
+    private static void requireTransferProduct(Product product) {
+        if (product == null
+                || product.getProductType() != ProductType.physical
+                || !Boolean.TRUE.equals(product.getTrackingStock())) {
+            throw conflict(
+                    "PICKING_TRANSFER_PRODUCT_UNSUPPORTED",
+                    "Solo productos fisicos con control de inventario admiten Picking.");
+        }
+        requireTraceabilitySupported(product);
+    }
+
+    private static void requireMatchingTransferReservation(
+            InventoryTransfer transfer,
+            InventoryTransferItem item,
+            InventoryReservation reservation) {
+        if (reservation == null
+                || reservation.getStatus() != InventoryReservationStatus.active
+                || reservation.getSourceType() != InventoryReservationSourceType.transfer
+                || !transfer.getId().equals(reservation.getSourceId())
+                || !item.getId().equals(reservation.getSourceLineId())
+                || !item.getProductId().equals(reservation.getProductId())
+                || !transfer.getSourceBranchId().equals(reservation.getBranchId())
+                || reservation.getQuantity().compareTo(item.getRequestedQuantity()) != 0
+                || reservation.getOrderId() != null
+                || reservation.getOrderItemId() != null) {
+            throw conflict(
+                    "PICKING_RESERVATION_REQUIRED",
+                    "La linea de transferencia no posee una reserva activa consistente.");
         }
     }
 
@@ -579,6 +753,35 @@ public class PickingService {
     }
 
     private PickingQueueResponse queueResponse(UUID tenantId, PickingOrder picking) {
+        if (picking.getSourceType() == PickingSourceType.transfer) {
+            tenantCapabilityGuard.ensureTenantCapability(tenantId, SaasCapability.inventory);
+            InventoryTransfer transfer = transferRepository
+                    .findByTenantIdAndId(tenantId, picking.getSourceId())
+                    .orElseThrow(() -> notFound(
+                            "INVENTORY_TRANSFER_NOT_FOUND", "Transferencia no encontrada."));
+            requireMatchingTransfer(picking, transfer);
+            requireEligibleTransfer(transfer);
+            List<PickingItem> items = pickingItemRepository.findByScopeAndPickingOrderId(
+                    tenantId, picking.getBranchId(), picking.getId());
+            return new PickingQueueResponse(
+                    picking.getId(),
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    picking.getBranchId(),
+                    picking.getStatus(),
+                    picking.getPriority(),
+                    picking.getAssignedUserId(),
+                    progress(items),
+                    picking.getStartedAt(),
+                    picking.getCreatedAt(),
+                    picking.getUpdatedAt(),
+                    PickingSourceType.transfer,
+                    transfer.getId(),
+                    transfer.getNumber());
+        }
         Order order = orderRepository.findByTenantIdAndId(tenantId, picking.getOrderId())
                 .orElseThrow(() -> notFound("ORDER_NOT_FOUND", "Pedido no encontrado."));
         requireMatchingOrder(picking, order);
@@ -599,25 +802,55 @@ public class PickingService {
                 progress(items),
                 picking.getStartedAt(),
                 picking.getCreatedAt(),
-                picking.getUpdatedAt());
+                picking.getUpdatedAt(),
+                PickingSourceType.order,
+                order.getId(),
+                order.getOrderNumber());
+    }
+
+    private boolean queueSourceIsActive(UUID tenantId, PickingOrder picking) {
+        if (picking.getSourceType() == PickingSourceType.order) return true;
+        return picking.getSourceType() == PickingSourceType.transfer
+                && transferRepository.findByTenantIdAndId(tenantId, picking.getSourceId())
+                        .filter(transfer -> transfer.getStatus() == InventoryTransferStatus.preparing)
+                        .filter(transfer -> transfer.getSourceBranchId().equals(picking.getBranchId()))
+                        .isPresent();
     }
 
     private PickingDetailResponse detail(UUID tenantId, PickingOrder picking) {
-        Order order = orderRepository.findByTenantIdAndId(tenantId, picking.getOrderId())
-                .orElseThrow(() -> notFound("ORDER_NOT_FOUND", "Pedido no encontrado."));
-        requireMatchingOrder(picking, order);
-        requireEligibleOrderSource(order);
+        Order order;
+        String sourceReference;
+        if (picking.getSourceType() == PickingSourceType.order) {
+            order = orderRepository.findByTenantIdAndId(tenantId, picking.getOrderId())
+                    .orElseThrow(() -> notFound("ORDER_NOT_FOUND", "Pedido no encontrado."));
+            requireMatchingOrder(picking, order);
+            requireEligibleOrderSource(order);
+            sourceReference = order.getOrderNumber();
+        } else if (picking.getSourceType() == PickingSourceType.transfer) {
+            order = null;
+            tenantCapabilityGuard.ensureTenantCapability(tenantId, SaasCapability.inventory);
+            InventoryTransfer transfer = transferRepository
+                    .findByTenantIdAndId(tenantId, picking.getSourceId())
+                    .orElseThrow(() -> notFound(
+                            "INVENTORY_TRANSFER_NOT_FOUND", "Transferencia no encontrada."));
+            requireMatchingTransfer(picking, transfer);
+            requireCompatibleTransferState(picking, transfer);
+            sourceReference = transfer.getNumber();
+        } else {
+            throw conflict("PICKING_SOURCE_NOT_SUPPORTED", "La fuente de Picking no es valida.");
+        }
         List<PickingItem> items = pickingItemRepository.findByScopeAndPickingOrderId(
                 tenantId, picking.getBranchId(), picking.getId());
         Map<UUID, Product> products = productRepository
                 .findByTenantIdAndIdIn(tenantId, items.stream().map(PickingItem::getProductId).toList())
                 .stream()
                 .collect(Collectors.toMap(Product::getId, Function.identity()));
+        UUID orderId = order == null ? null : order.getId();
         List<PickingLineResponse> lines = items.stream()
                 .map(item -> lineResponse(
                         tenantId,
                         picking.getBranchId(),
-                        order.getId(),
+                        orderId,
                         item,
                         products.get(item.getProductId())))
                 .toList();
@@ -635,11 +868,11 @@ public class PickingService {
                 .toList();
         return new PickingDetailResponse(
                 picking.getId(),
-                order.getId(),
-                order.getOrderNumber(),
-                customerName(tenantId, order),
+                orderId,
+                order == null ? null : order.getOrderNumber(),
+                order == null ? null : customerName(tenantId, order),
                 null,
-                order.getDeliveryMethod(),
+                order == null ? null : order.getDeliveryMethod(),
                 picking.getSourceType(),
                 picking.getSourceId(),
                 picking.getBranchId(),
@@ -653,7 +886,8 @@ public class PickingService {
                 picking.getUpdatedAt(),
                 lines,
                 incidents,
-                releases);
+                releases,
+                sourceReference);
     }
 
     private PickingLineResponse lineResponse(
@@ -700,25 +934,29 @@ public class PickingService {
                         Boolean.TRUE.equals(product.getTrackingLot()),
                         Boolean.TRUE.equals(product.getTrackingExpiration()),
                         Boolean.TRUE.equals(product.getTrackingSerial())),
-                inventory);
+                inventory,
+                item.getSourceLineId());
     }
 
     private PickingLineResponse.InventoryAvailability inventoryAvailability(
             UUID tenantId, UUID branchId, UUID orderId, PickingItem item) {
         List<InventoryBalance> balances = inventoryBalanceRepository
                 .findByTenantIdAndBranchIdAndProductId(tenantId, branchId, item.getProductId());
-        InventoryReservation reservation = item.getOrderItemId() == null
-                ? null
-                : reservationRepository
-                        .findByTenantIdAndSourceTypeAndSourceLineIdAndStatus(
-                                tenantId,
-                                InventoryReservationSourceType.order,
-                                item.getOrderItemId(),
-                                InventoryReservationStatus.active)
-                        .filter(found -> branchId.equals(found.getBranchId()))
-                        .filter(found -> orderId.equals(found.getOrderId()))
-                        .filter(found -> item.getProductId().equals(found.getProductId()))
-                        .orElse(null);
+        InventoryReservationSourceType sourceType = item.getOrderItemId() == null
+                ? InventoryReservationSourceType.transfer
+                : InventoryReservationSourceType.order;
+        InventoryReservation reservation = reservationRepository
+                .findByTenantIdAndSourceTypeAndSourceLineIdAndStatus(
+                        tenantId,
+                        sourceType,
+                        item.getSourceLineId(),
+                        InventoryReservationStatus.active)
+                .filter(found -> branchId.equals(found.getBranchId()))
+                .filter(found -> sourceType == InventoryReservationSourceType.transfer
+                        ? found.getOrderId() == null
+                        : orderId.equals(found.getOrderId()))
+                .filter(found -> item.getProductId().equals(found.getProductId()))
+                .orElse(null);
         Map<UUID, BigDecimal> ownReservationByBalance = new HashMap<>();
         if (reservation != null) {
             List<ReservationAllocation> allocations =
@@ -842,15 +1080,18 @@ public class PickingService {
     }
 
     private static PickingActionResponse action(
-            PickingOrder picking, Order order, boolean idempotent) {
+            PickingOrder picking, SourceContext source, boolean idempotent) {
         return new PickingActionResponse(
                 picking.getId(),
-                order.getId(),
+                source.order() == null ? null : source.order().getId(),
                 picking.getStatus(),
                 picking.getAssignedUserId(),
-                order.getStatus(),
+                source.order() == null ? null : source.order().getStatus(),
                 picking.getUpdatedAt(),
-                idempotent);
+                idempotent,
+                picking.getSourceType(),
+                picking.getSourceId(),
+                source.reference());
     }
 
     private UUID firstLocation(InventoryReservation reservation) {
@@ -888,6 +1129,9 @@ public class PickingService {
     }
 
     private record ReservationKey(UUID sourceLineId, UUID productId) {}
+
+    private record SourceContext(
+            Order order, InventoryTransfer transfer, String reference) {}
 
     private record ReservationAllocation(
             UUID id,

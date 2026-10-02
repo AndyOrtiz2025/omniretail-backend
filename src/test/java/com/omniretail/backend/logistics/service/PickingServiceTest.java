@@ -88,23 +88,11 @@ class PickingServiceTest {
     }
 
     @Test
-    void rejectsStorePickupAndTransferFunctionalSources() {
+    void rejectsStorePickupOrders() {
         Fixture storePickup = fixture("store_pickup", false);
         assertCode(
                 () -> service.ensureForOrder(storePickup.tenantId(), storePickup.orderId()),
                 "PICKING_ORDER_NOT_ELIGIBLE");
-
-        Fixture fixture = fixture("home_delivery", false);
-        UUID pickingId = UUID.randomUUID();
-        jdbc.update("""
-                INSERT INTO picking_orders
-                    (id, tenant_id, branch_id, source_type, source_id, status, priority)
-                VALUES (?, ?, ?, 'transfer', ?, 'pending', 'normal')
-                """, pickingId, fixture.tenantId(), fixture.branchId(), UUID.randomUUID());
-        actor(fixture);
-        assertCode(
-                () -> service.getDetail(fixture.branchId(), pickingId),
-                "PICKING_SOURCE_NOT_SUPPORTED");
     }
 
     @Test
