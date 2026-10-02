@@ -1,0 +1,5 @@
+package com.omniretail.backend.logistics.repository;
+import com.omniretail.backend.logistics.entity.DispatchPackage;
+import java.util.*;
+import org.springframework.data.jpa.repository.JpaRepository;
+public interface DispatchPackageRepository extends JpaRepository<DispatchPackage, UUID> { List<DispatchPackage> findByDispatchIdOrderByNumberAsc(UUID dispatchId); }

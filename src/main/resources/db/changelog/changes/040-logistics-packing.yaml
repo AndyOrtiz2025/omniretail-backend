@@ -1,0 +1,295 @@
+databaseChangeLog:
+  - changeSet:
+      id: 040-logistics-packing
+      author: omniretail
+      changes:
+        - addUniqueConstraint:
+            tableName: picking_orders
+            columnNames: tenant_id, branch_id, id, source_type, source_id
+            constraintName: uk_picking_orders_packing_source
+
+        - createTable:
+            tableName: packings
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: branch_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: source_type
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: source_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: order_id
+                  type: UUID
+              - column:
+                  name: picking_order_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  defaultValue: in_progress
+                  constraints:
+                    nullable: false
+              - column:
+                  name: package_protection_checked
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: document_included_checked
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: recipient_verified_checked
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: total_weight
+                  type: NUMERIC(12,3)
+              - column:
+                  name: package_count
+                  type: INTEGER
+              - column:
+                  name: label_generation_id
+                  type: VARCHAR(128)
+              - column:
+                  name: label_code
+                  type: VARCHAR(150)
+              - column:
+                  name: label_generated_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: label_printed_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: started_by_user_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: finalized_by_user_id
+                  type: UUID
+              - column:
+                  name: started_at
+                  type: TIMESTAMPTZ
+                  constraints:
+                    nullable: false
+              - column:
+                  name: finalized_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: version
+                  type: BIGINT
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+
+        - addForeignKeyConstraint:
+            baseTableName: packings
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_packings_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: packings
+            baseColumnNames: branch_id
+            referencedTableName: branches
+            referencedColumnNames: id
+            constraintName: fk_packings_branch
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: packings
+            baseColumnNames: tenant_id, branch_id, picking_order_id, source_type, source_id
+            referencedTableName: picking_orders
+            referencedColumnNames: tenant_id, branch_id, id, source_type, source_id
+            constraintName: fk_packings_tenant_branch_picking_source
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: packings
+            baseColumnNames: order_id
+            referencedTableName: orders
+            referencedColumnNames: id
+            constraintName: fk_packings_order
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: packings
+            baseColumnNames: started_by_user_id
+            referencedTableName: users
+            referencedColumnNames: id
+            constraintName: fk_packings_started_by
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: packings
+            baseColumnNames: finalized_by_user_id
+            referencedTableName: users
+            referencedColumnNames: id
+            constraintName: fk_packings_finalized_by
+            onDelete: RESTRICT
+
+        - addUniqueConstraint:
+            tableName: packings
+            columnNames: tenant_id, source_type, source_id
+            constraintName: uk_packings_tenant_source
+        - addUniqueConstraint:
+            tableName: packings
+            columnNames: tenant_id, picking_order_id
+            constraintName: uk_packings_tenant_picking
+        - addUniqueConstraint:
+            tableName: packings
+            columnNames: tenant_id, branch_id, id
+            constraintName: uk_packings_tenant_branch_id
+
+        - sql:
+            sql: "ALTER TABLE packings ADD CONSTRAINT ck_packings_source_type CHECK (source_type IN ('order', 'transfer'))"
+        - sql:
+            sql: "ALTER TABLE packings ADD CONSTRAINT ck_packings_source_reference CHECK ((source_type = 'order' AND order_id IS NOT NULL AND source_id = order_id) OR (source_type = 'transfer' AND order_id IS NULL))"
+        - sql:
+            sql: "ALTER TABLE packings ADD CONSTRAINT ck_packings_status CHECK (status IN ('in_progress', 'finalized'))"
+        - sql:
+            sql: "ALTER TABLE packings ADD CONSTRAINT ck_packings_weight CHECK (total_weight IS NULL OR total_weight > 0)"
+        - sql:
+            sql: "ALTER TABLE packings ADD CONSTRAINT ck_packings_package_count CHECK (package_count IS NULL OR package_count > 0)"
+        - sql:
+            sql: "ALTER TABLE packings ADD CONSTRAINT ck_packings_finalization CHECK ((status = 'in_progress' AND finalized_by_user_id IS NULL AND finalized_at IS NULL) OR (status = 'finalized' AND finalized_by_user_id IS NOT NULL AND finalized_at IS NOT NULL))"
+        - sql:
+            sql: "ALTER TABLE packings ADD CONSTRAINT ck_packings_label CHECK ((label_generation_id IS NULL AND label_code IS NULL AND label_generated_at IS NULL AND label_printed_at IS NULL) OR (label_generation_id IS NOT NULL AND label_code IS NOT NULL AND label_generated_at IS NOT NULL AND (label_printed_at IS NULL OR label_printed_at >= label_generated_at)))"
+        - sql:
+            sql: "ALTER TABLE packings ADD CONSTRAINT ck_packings_version CHECK (version >= 0)"
+
+        - createIndex:
+            tableName: packings
+            indexName: idx_packings_tenant_branch_status_created
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: branch_id
+              - column:
+                  name: status
+              - column:
+                  name: created_at
+
+        - createTable:
+            tableName: packing_operations
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: branch_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: packing_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: operation_id
+                  type: VARCHAR(128)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: operation_type
+                  type: VARCHAR(30)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: fingerprint
+                  type: TEXT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: result_version
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: result_packing
+                  type: JSONB
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+
+        - addForeignKeyConstraint:
+            baseTableName: packing_operations
+            baseColumnNames: tenant_id, branch_id, packing_id
+            referencedTableName: packings
+            referencedColumnNames: tenant_id, branch_id, id
+            constraintName: fk_packing_operations_tenant_branch_packing
+            onDelete: CASCADE
+        - addUniqueConstraint:
+            tableName: packing_operations
+            columnNames: tenant_id, operation_id
+            constraintName: uk_packing_operations_tenant_operation
+        - sql:
+            sql: "ALTER TABLE packing_operations ADD CONSTRAINT ck_packing_operations_type CHECK (operation_type IN ('save_preparation', 'generate_label', 'register_label_print', 'finalize'))"
+        - sql:
+            sql: "ALTER TABLE packing_operations ADD CONSTRAINT ck_packing_operations_result_version CHECK (result_version >= 0)"
+        - createIndex:
+            tableName: packing_operations
+            indexName: idx_packing_operations_tenant_branch_packing_created
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: branch_id
+              - column:
+                  name: packing_id
+              - column:
+                  name: created_at

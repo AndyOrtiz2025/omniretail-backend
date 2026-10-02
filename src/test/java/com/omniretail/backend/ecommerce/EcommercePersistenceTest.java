@@ -9,6 +9,7 @@ import com.omniretail.backend.ecommerce.entity.Customer;
 import com.omniretail.backend.ecommerce.entity.CustomerStatus;
 import com.omniretail.backend.ecommerce.entity.DeliveryMethod;
 import com.omniretail.backend.ecommerce.entity.InventoryReservation;
+import com.omniretail.backend.ecommerce.entity.InventoryReservationSourceType;
 import com.omniretail.backend.ecommerce.entity.Order;
 import com.omniretail.backend.ecommerce.entity.OrderItem;
 import com.omniretail.backend.ecommerce.entity.OrderSource;
@@ -123,10 +124,14 @@ class EcommercePersistenceTest {
         entityManager.flush();
 
         InventoryReservation reservation = InventoryReservation.builder()
+                .sourceType(InventoryReservationSourceType.order)
+                .sourceId(order.getId())
+                .sourceLineId(item.getId())
                 .branchId(fixture.branchId())
                 .orderId(order.getId())
                 .orderItemId(item.getId())
                 .productId(fixture.productId())
+                .quantity(item.getInventoryQuantity())
                 .build();
         reservation.setTenantId(fixture.tenantId());
         entityManager.persist(reservation);

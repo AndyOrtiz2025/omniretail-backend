@@ -1,0 +1,72 @@
+databaseChangeLog:
+  - changeSet:
+      id: 039-logistics-picking-idempotency
+      author: omniretail
+      changes:
+        - addUniqueConstraint:
+            tableName: picking_items
+            columnNames: tenant_id, id
+            constraintName: uk_picking_items_tenant_id
+
+        - createTable:
+            tableName: picking_item_update_operations
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: picking_item_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: operation_id
+                  type: VARCHAR(128)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: fingerprint
+                  type: TEXT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: result_item
+                  type: JSONB
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: picking_item_update_operations
+            baseColumnNames: tenant_id, picking_item_id
+            referencedTableName: picking_items
+            referencedColumnNames: tenant_id, id
+            constraintName: fk_picking_item_operations_tenant_item
+            onDelete: CASCADE
+        - addUniqueConstraint:
+            tableName: picking_item_update_operations
+            columnNames: tenant_id, operation_id
+            constraintName: uk_picking_item_operations_tenant_operation
+        - createIndex:
+            tableName: picking_item_update_operations
+            indexName: idx_picking_item_operations_tenant_item_created
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: picking_item_id
+              - column:
+                  name: created_at

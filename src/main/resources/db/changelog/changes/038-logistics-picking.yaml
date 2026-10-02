@@ -1,0 +1,462 @@
+databaseChangeLog:
+  - changeSet:
+      id: 038-logistics-picking
+      author: omniretail
+      changes:
+        - createTable:
+            tableName: picking_orders
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: branch_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: source_type
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: source_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: order_id
+                  type: UUID
+              - column:
+                  name: assigned_user_id
+                  type: UUID
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  defaultValue: pending
+                  constraints:
+                    nullable: false
+              - column:
+                  name: priority
+                  type: VARCHAR(20)
+                  defaultValue: normal
+                  constraints:
+                    nullable: false
+              - column:
+                  name: started_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: completed_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: picking_orders
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_picking_orders_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: picking_orders
+            baseColumnNames: branch_id
+            referencedTableName: branches
+            referencedColumnNames: id
+            constraintName: fk_picking_orders_branch
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: picking_orders
+            baseColumnNames: order_id
+            referencedTableName: orders
+            referencedColumnNames: id
+            constraintName: fk_picking_orders_order
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: picking_orders
+            baseColumnNames: assigned_user_id
+            referencedTableName: users
+            referencedColumnNames: id
+            constraintName: fk_picking_orders_assigned_user
+            onDelete: RESTRICT
+        - addUniqueConstraint:
+            tableName: picking_orders
+            columnNames: tenant_id, source_type, source_id
+            constraintName: uk_picking_orders_tenant_source
+        - addUniqueConstraint:
+            tableName: picking_orders
+            columnNames: tenant_id, id
+            constraintName: uk_picking_orders_tenant_id
+        - addUniqueConstraint:
+            tableName: picking_orders
+            columnNames: tenant_id, branch_id, id
+            constraintName: uk_picking_orders_tenant_branch_id
+        - sql:
+            sql: "ALTER TABLE picking_orders ADD CONSTRAINT ck_picking_orders_source_type CHECK (source_type IN ('order', 'transfer'))"
+        - sql:
+            sql: "ALTER TABLE picking_orders ADD CONSTRAINT ck_picking_orders_source_reference CHECK ((source_type = 'order' AND order_id IS NOT NULL AND source_id = order_id) OR (source_type = 'transfer' AND order_id IS NULL))"
+        - sql:
+            sql: "ALTER TABLE picking_orders ADD CONSTRAINT ck_picking_orders_status CHECK (status IN ('pending', 'assigned', 'in_progress', 'completed', 'cancelled'))"
+        - sql:
+            sql: "ALTER TABLE picking_orders ADD CONSTRAINT ck_picking_orders_priority CHECK (priority IN ('low', 'normal', 'high', 'urgent'))"
+        - sql:
+            sql: "ALTER TABLE picking_orders ADD CONSTRAINT ck_picking_orders_assignment CHECK (status <> 'assigned' OR assigned_user_id IS NOT NULL)"
+        - sql:
+            sql: "ALTER TABLE picking_orders ADD CONSTRAINT ck_picking_orders_completion CHECK ((status = 'completed' AND completed_at IS NOT NULL) OR (status <> 'completed' AND completed_at IS NULL))"
+        - createIndex:
+            tableName: picking_orders
+            indexName: idx_picking_orders_tenant_branch_status
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: branch_id
+              - column:
+                  name: status
+              - column:
+                  name: created_at
+        - createIndex:
+            tableName: picking_orders
+            indexName: idx_picking_orders_tenant_branch_assignment
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: branch_id
+              - column:
+                  name: assigned_user_id
+              - column:
+                  name: status
+
+        - createTable:
+            tableName: picking_items
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: picking_order_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: source_line_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: order_item_id
+                  type: UUID
+              - column:
+                  name: product_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: requested_quantity
+                  type: NUMERIC(12,3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: picked_quantity
+                  type: NUMERIC(12,3)
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: location_id
+                  type: UUID
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  defaultValue: pending
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: picking_items
+            baseColumnNames: tenant_id, picking_order_id
+            referencedTableName: picking_orders
+            referencedColumnNames: tenant_id, id
+            constraintName: fk_picking_items_tenant_order
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: picking_items
+            baseColumnNames: order_item_id
+            referencedTableName: order_items
+            referencedColumnNames: id
+            constraintName: fk_picking_items_order_item
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: picking_items
+            baseColumnNames: tenant_id, product_id
+            referencedTableName: products
+            referencedColumnNames: tenant_id, id
+            constraintName: fk_picking_items_tenant_product
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: picking_items
+            baseColumnNames: location_id
+            referencedTableName: locations
+            referencedColumnNames: id
+            constraintName: fk_picking_items_location
+            onDelete: RESTRICT
+        - addUniqueConstraint:
+            tableName: picking_items
+            columnNames: picking_order_id, source_line_id, product_id
+            constraintName: uk_picking_items_order_source_line_product
+        - sql:
+            sql: "ALTER TABLE picking_items ADD CONSTRAINT ck_picking_items_source_line CHECK (order_item_id IS NULL OR order_item_id = source_line_id)"
+        - sql:
+            sql: "ALTER TABLE picking_items ADD CONSTRAINT ck_picking_items_quantities CHECK (requested_quantity > 0 AND picked_quantity >= 0 AND picked_quantity <= requested_quantity)"
+        - sql:
+            sql: "ALTER TABLE picking_items ADD CONSTRAINT ck_picking_items_status CHECK (status IN ('pending', 'partial', 'completed', 'incident'))"
+        - sql:
+            sql: "ALTER TABLE picking_items ADD CONSTRAINT ck_picking_items_status_quantity CHECK ((status = 'pending' AND picked_quantity = 0) OR (status = 'partial' AND picked_quantity > 0 AND picked_quantity < requested_quantity) OR (status = 'completed' AND picked_quantity = requested_quantity) OR status = 'incident')"
+        - createIndex:
+            tableName: picking_items
+            indexName: idx_picking_items_tenant_order
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: picking_order_id
+
+        - createTable:
+            tableName: picking_incidents
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: branch_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: picking_order_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: picking_item_id
+                  type: UUID
+              - column:
+                  name: incident_type
+                  type: VARCHAR(30)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: quantity_affected
+                  type: NUMERIC(12,3)
+              - column:
+                  name: comment
+                  type: VARCHAR(500)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  defaultValue: open
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_by_user_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: resolved_by_user_id
+                  type: UUID
+              - column:
+                  name: resolved_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: picking_incidents
+            baseColumnNames: branch_id
+            referencedTableName: branches
+            referencedColumnNames: id
+            constraintName: fk_picking_incidents_branch
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: picking_incidents
+            baseColumnNames: tenant_id, branch_id, picking_order_id
+            referencedTableName: picking_orders
+            referencedColumnNames: tenant_id, branch_id, id
+            constraintName: fk_picking_incidents_tenant_order
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: picking_incidents
+            baseColumnNames: picking_item_id
+            referencedTableName: picking_items
+            referencedColumnNames: id
+            constraintName: fk_picking_incidents_item
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: picking_incidents
+            baseColumnNames: created_by_user_id
+            referencedTableName: users
+            referencedColumnNames: id
+            constraintName: fk_picking_incidents_created_by
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: picking_incidents
+            baseColumnNames: resolved_by_user_id
+            referencedTableName: users
+            referencedColumnNames: id
+            constraintName: fk_picking_incidents_resolved_by
+            onDelete: RESTRICT
+        - sql:
+            sql: "ALTER TABLE picking_incidents ADD CONSTRAINT ck_picking_incidents_type CHECK (incident_type IN ('missing', 'damaged', 'invalid_lot_serial', 'quantity_difference', 'location_empty'))"
+        - sql:
+            sql: "ALTER TABLE picking_incidents ADD CONSTRAINT ck_picking_incidents_status CHECK (status IN ('open', 'resolved'))"
+        - sql:
+            sql: "ALTER TABLE picking_incidents ADD CONSTRAINT ck_picking_incidents_quantity CHECK (quantity_affected IS NULL OR quantity_affected > 0)"
+        - sql:
+            sql: "ALTER TABLE picking_incidents ADD CONSTRAINT ck_picking_incidents_resolution CHECK ((status = 'open' AND resolved_by_user_id IS NULL AND resolved_at IS NULL) OR (status = 'resolved' AND resolved_by_user_id IS NOT NULL AND resolved_at IS NOT NULL))"
+        - createIndex:
+            tableName: picking_incidents
+            indexName: idx_picking_incidents_tenant_branch_order_status
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: branch_id
+              - column:
+                  name: picking_order_id
+              - column:
+                  name: status
+
+        - createTable:
+            tableName: picking_assignment_releases
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: branch_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: picking_order_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: actor_user_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: reason
+                  type: VARCHAR(500)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: released_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: picking_assignment_releases
+            baseColumnNames: branch_id
+            referencedTableName: branches
+            referencedColumnNames: id
+            constraintName: fk_picking_releases_branch
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: picking_assignment_releases
+            baseColumnNames: tenant_id, branch_id, picking_order_id
+            referencedTableName: picking_orders
+            referencedColumnNames: tenant_id, branch_id, id
+            constraintName: fk_picking_releases_tenant_order
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: picking_assignment_releases
+            baseColumnNames: actor_user_id
+            referencedTableName: users
+            referencedColumnNames: id
+            constraintName: fk_picking_releases_actor
+            onDelete: RESTRICT
+        - createIndex:
+            tableName: picking_assignment_releases
+            indexName: idx_picking_releases_tenant_branch_order
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: branch_id
+              - column:
+                  name: picking_order_id
+              - column:
+                  name: released_at

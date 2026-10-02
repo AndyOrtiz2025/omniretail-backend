@@ -1,0 +1,63 @@
+databaseChangeLog:
+  - changeSet:
+      id: 041-logistics-dispatch
+      author: omniretail
+      changes:
+        - createTable:
+            tableName: dispatches
+            columns:
+              - column: {name: id, type: UUID, defaultValueComputed: gen_random_uuid(), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: tenant_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: branch_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: source_type, type: VARCHAR(20), constraints: {nullable: false}}
+              - column: {name: source_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: order_id, type: UUID}
+              - column: {name: packing_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: status, type: VARCHAR(20), defaultValue: dispatched, constraints: {nullable: false}}
+              - column: {name: transport_mode, type: VARCHAR(20), constraints: {nullable: false}}
+              - column: {name: carrier_name, type: VARCHAR(200)}
+              - column: {name: tracking_number, type: VARCHAR(200)}
+              - column: {name: dispatched_by_user_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: dispatched_at, type: TIMESTAMPTZ, constraints: {nullable: false}}
+              - column: {name: delivered_at, type: TIMESTAMPTZ}
+              - column: {name: created_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+              - column: {name: updated_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+        - addForeignKeyConstraint: {baseTableName: dispatches, baseColumnNames: tenant_id, referencedTableName: tenants, referencedColumnNames: id, constraintName: fk_dispatches_tenant, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: dispatches, baseColumnNames: branch_id, referencedTableName: branches, referencedColumnNames: id, constraintName: fk_dispatches_branch, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: dispatches, baseColumnNames: order_id, referencedTableName: orders, referencedColumnNames: id, constraintName: fk_dispatches_order, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: dispatches, baseColumnNames: 'tenant_id, branch_id, packing_id', referencedTableName: packings, referencedColumnNames: 'tenant_id, branch_id, id', constraintName: fk_dispatches_packing, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: dispatches, baseColumnNames: dispatched_by_user_id, referencedTableName: users, referencedColumnNames: id, constraintName: fk_dispatches_user, onDelete: RESTRICT}
+        - addUniqueConstraint: {tableName: dispatches, columnNames: 'tenant_id, source_type, source_id', constraintName: uk_dispatches_tenant_source}
+        - addUniqueConstraint: {tableName: dispatches, columnNames: 'tenant_id, packing_id', constraintName: uk_dispatches_tenant_packing}
+        - addUniqueConstraint: {tableName: dispatches, columnNames: 'tenant_id, branch_id, id', constraintName: uk_dispatches_tenant_branch_id}
+        - sql: {sql: "ALTER TABLE dispatches ADD CONSTRAINT ck_dispatches_source CHECK ((source_type = 'order' AND order_id IS NOT NULL AND source_id = order_id) OR (source_type = 'transfer' AND order_id IS NULL))"}
+        - sql: {sql: "ALTER TABLE dispatches ADD CONSTRAINT ck_dispatches_source_type CHECK (source_type IN ('order', 'transfer'))"}
+        - sql: {sql: "ALTER TABLE dispatches ADD CONSTRAINT ck_dispatches_status CHECK (status IN ('dispatched', 'delivered'))"}
+        - sql: {sql: "ALTER TABLE dispatches ADD CONSTRAINT ck_dispatches_transport CHECK (transport_mode IN ('own_fleet', 'third_party'))"}
+        - createIndex: {tableName: dispatches, indexName: idx_dispatches_tenant_branch_created, columns: [{column: {name: tenant_id}}, {column: {name: branch_id}}, {column: {name: created_at}}]}
+        - createTable:
+            tableName: dispatch_packages
+            columns:
+              - column: {name: id, type: UUID, defaultValueComputed: gen_random_uuid(), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: dispatch_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: number, type: VARCHAR(80), constraints: {nullable: false}}
+              - column: {name: weight, type: 'NUMERIC(12,3)'}
+              - column: {name: description, type: VARCHAR(500)}
+              - column: {name: created_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+        - addForeignKeyConstraint: {baseTableName: dispatch_packages, baseColumnNames: dispatch_id, referencedTableName: dispatches, referencedColumnNames: id, constraintName: fk_dispatch_packages_dispatch, onDelete: CASCADE}
+        - addUniqueConstraint: {tableName: dispatch_packages, columnNames: 'dispatch_id, number', constraintName: uk_dispatch_packages_number}
+        - sql: {sql: "ALTER TABLE dispatch_packages ADD CONSTRAINT ck_dispatch_packages_weight CHECK (weight IS NULL OR weight > 0)"}
+        - createTable:
+            tableName: dispatch_operations
+            columns:
+              - column: {name: id, type: UUID, defaultValueComputed: gen_random_uuid(), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: tenant_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: branch_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: dispatch_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: operation_id, type: VARCHAR(128), constraints: {nullable: false}}
+              - column: {name: fingerprint, type: TEXT, constraints: {nullable: false}}
+              - column: {name: result_dispatch, type: JSONB, constraints: {nullable: false}}
+              - column: {name: created_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+        - addForeignKeyConstraint: {baseTableName: dispatch_operations, baseColumnNames: 'tenant_id, branch_id, dispatch_id', referencedTableName: dispatches, referencedColumnNames: 'tenant_id, branch_id, id', constraintName: fk_dispatch_operations_dispatch, onDelete: CASCADE}
+        - addUniqueConstraint: {tableName: dispatch_operations, columnNames: 'tenant_id, operation_id', constraintName: uk_dispatch_operations_tenant_operation}
+        - createIndex: {tableName: dispatch_operations, indexName: idx_dispatch_operations_tenant_branch_dispatch_created, columns: [{column: {name: tenant_id}}, {column: {name: branch_id}}, {column: {name: dispatch_id}}, {column: {name: created_at}}]}

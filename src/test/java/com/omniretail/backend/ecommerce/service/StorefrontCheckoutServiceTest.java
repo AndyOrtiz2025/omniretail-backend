@@ -19,8 +19,8 @@ import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.administration.repository.BranchRepository;
 import com.omniretail.backend.administration.repository.EcommerceConfigRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
-import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
+import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.repository.ProductRepository;
@@ -30,6 +30,7 @@ import com.omniretail.backend.catalog.service.ProductKitService;
 import com.omniretail.backend.ecommerce.dto.StorefrontCheckoutItemRequest;
 import com.omniretail.backend.ecommerce.dto.StorefrontCheckoutRequest;
 import com.omniretail.backend.ecommerce.dto.StorefrontCheckoutResponse;
+import com.omniretail.backend.ecommerce.entity.InventoryReservationSourceType;
 import com.omniretail.backend.ecommerce.entity.Order;
 import com.omniretail.backend.ecommerce.entity.OrderSource;
 import com.omniretail.backend.ecommerce.entity.OrderStatus;
@@ -38,8 +39,9 @@ import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.ecommerce.repository.InventoryReservationRepository;
 import com.omniretail.backend.ecommerce.repository.OrderItemRepository;
 import com.omniretail.backend.ecommerce.repository.OrderRepository;
-import com.omniretail.backend.inventory.entity.InventoryBalance;
-import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
+import com.omniretail.backend.inventory.dto.ReserveInventoryCommand;
+import com.omniretail.backend.inventory.service.InventoryReservationLifecycleService;
+import com.omniretail.backend.logistics.service.PickingService;
 import com.omniretail.backend.pos.entity.Payment;
 import com.omniretail.backend.pos.entity.PaymentStatus;
 import com.omniretail.backend.pos.repository.PaymentRepository;
@@ -58,7 +60,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.test.util.ReflectionTestUtils;
 import tools.jackson.databind.json.JsonMapper;
 
 @ExtendWith(MockitoExtension.class)
@@ -72,7 +73,8 @@ class StorefrontCheckoutServiceTest {
     @Mock private OrderRepository orderRepository;
     @Mock private OrderItemRepository orderItemRepository;
     @Mock private InventoryReservationRepository reservationRepository;
-    @Mock private InventoryBalanceRepository balanceRepository;
+    @Mock private InventoryReservationLifecycleService reservationLifecycleService;
+    @Mock private PickingService pickingService;
     @Mock private PaymentRepository paymentRepository;
     @Mock private TenantCapabilityGuard capabilityGuard;
     @Mock private UnitConversionRepository unitConversionRepository;
@@ -89,7 +91,8 @@ class StorefrontCheckoutServiceTest {
         service = new StorefrontCheckoutService(
                 tenantRepository, ecommerceConfigRepository, branchRepository, productRepository,
                 customerRepository, orderRepository, orderItemRepository, reservationRepository,
-                balanceRepository, paymentRepository, capabilityGuard, unitConversionRepository,
+                reservationLifecycleService, pickingService, paymentRepository, capabilityGuard,
+                unitConversionRepository,
                 productPriceResolver,
                 productKitService,
                 JsonMapper.builder().build());
@@ -128,13 +131,6 @@ class StorefrontCheckoutServiceTest {
         Product product = product(true, ProductType.physical);
         when(productRepository.findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
                 tenantId, productId, ProductStatus.published)).thenReturn(Optional.of(product));
-        InventoryBalance balance = mock(InventoryBalance.class);
-        UUID balanceId = UUID.randomUUID();
-        when(balance.getId()).thenReturn(balanceId);
-        when(balance.getQuantity()).thenReturn(new BigDecimal("3"));
-        when(balance.getReservedQuantity()).thenReturn(BigDecimal.ZERO);
-        when(balanceRepository.findByTenantIdAndBranchIdAndProductIdAndLocationIdIsNull(
-                tenantId, branchId, productId)).thenReturn(Optional.of(balance));
         Order savedOrder = mock(Order.class);
         UUID orderId = UUID.randomUUID();
         when(savedOrder.getId()).thenReturn(orderId);
@@ -149,6 +145,8 @@ class StorefrontCheckoutServiceTest {
         when(savedOrder.getTenantId()).thenReturn(tenantId);
         when(orderRepository.save(any(Order.class))).thenReturn(savedOrder);
         com.omniretail.backend.ecommerce.entity.OrderItem savedItem = mock(com.omniretail.backend.ecommerce.entity.OrderItem.class);
+        UUID orderItemId = UUID.randomUUID();
+        when(savedItem.getId()).thenReturn(orderItemId);
         when(savedItem.getInventoryQuantity()).thenReturn(BigDecimal.ONE);
         when(orderItemRepository.save(any())).thenReturn(savedItem);
         Payment payment = mock(Payment.class);
@@ -171,12 +169,17 @@ class StorefrontCheckoutServiceTest {
         ArgumentCaptor<Payment> paymentCaptor = ArgumentCaptor.forClass(Payment.class);
         verify(paymentRepository).save(paymentCaptor.capture());
         assertThat(paymentCaptor.getValue().getStatus()).isEqualTo(PaymentStatus.approved);
-        ArgumentCaptor<com.omniretail.backend.ecommerce.entity.InventoryReservation> reservationCaptor =
-                ArgumentCaptor.forClass(com.omniretail.backend.ecommerce.entity.InventoryReservation.class);
-        verify(reservationRepository).save(reservationCaptor.capture());
-        assertThat(reservationCaptor.getValue().getAllocations())
-                .contains("\"id\"", balanceId.toString(), "\"locationId\":null",
-                        "\"reservedQuantity\":1", "\"consumedQuantity\":0");
+        ArgumentCaptor<ReserveInventoryCommand> reservationCaptor =
+                ArgumentCaptor.forClass(ReserveInventoryCommand.class);
+        verify(reservationLifecycleService).reserve(reservationCaptor.capture());
+        verify(pickingService).ensureForOrder(tenantId, orderId);
+        assertThat(reservationCaptor.getValue().sourceType())
+                .isEqualTo(InventoryReservationSourceType.order);
+        assertThat(reservationCaptor.getValue().sourceId()).isEqualTo(orderId);
+        assertThat(reservationCaptor.getValue().sourceLineId()).isEqualTo(orderItemId);
+        assertThat(reservationCaptor.getValue().orderId()).isEqualTo(orderId);
+        assertThat(reservationCaptor.getValue().orderItemId()).isEqualTo(orderItemId);
+        assertThat(reservationCaptor.getValue().quantity()).isEqualByComparingTo(BigDecimal.ONE);
     }
 
     @Test
@@ -229,42 +232,40 @@ class StorefrontCheckoutServiceTest {
     }
 
     @Test
-    void kitCheckoutReservesEachComponentAndStoresSnapshot() {
-        UUID componentId = UUID.randomUUID();
+    void rejectsKitCheckoutWhenComponentSourceLinesCannotBeRepresented() {
+        UUID firstComponentId = UUID.randomUUID();
+        UUID secondComponentId = UUID.randomUUID();
         Product kit = product(false, ProductType.kit);
         when(productRepository.findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
                 tenantId, productId, ProductStatus.published)).thenReturn(Optional.of(kit));
         when(productKitService.fulfillment(tenantId, kit, new BigDecimal("2")))
-                .thenReturn(List.of(new ProductKitService.FulfillmentComponent(
-                        componentId, new BigDecimal("3.000"), new BigDecimal("6.000"))));
-        InventoryBalance balance = mock(InventoryBalance.class);
-        when(balance.getId()).thenReturn(UUID.randomUUID());
-        when(balance.getQuantity()).thenReturn(new BigDecimal("10.000"));
-        when(balance.getReservedQuantity()).thenReturn(BigDecimal.ZERO);
-        when(balanceRepository.findByTenantIdAndBranchIdAndProductIdAndLocationIdIsNull(
-                tenantId, branchId, componentId)).thenReturn(Optional.of(balance));
-        Order savedOrder = mock(Order.class); UUID orderId = UUID.randomUUID();
-        when(savedOrder.getId()).thenReturn(orderId); when(savedOrder.getOrderNumber()).thenReturn("WEB-KIT");
-        when(savedOrder.getTrackingToken()).thenReturn("kit"); when(savedOrder.getTotal()).thenReturn(new BigDecimal("40.00"));
-        when(savedOrder.getStatus()).thenReturn(OrderStatus.confirmed);
-        when(savedOrder.getDeliveryAddress()).thenReturn("{\"city\":\"Guatemala\"}");
-        when(savedOrder.getTenantId()).thenReturn(tenantId); when(orderRepository.save(any())).thenReturn(savedOrder);
-        when(orderItemRepository.save(any())).thenAnswer(call -> {
-            var item = call.getArgument(0, com.omniretail.backend.ecommerce.entity.OrderItem.class);
-            ReflectionTestUtils.setField(item, "id", UUID.randomUUID()); return item;
-        });
-        Payment payment = mock(Payment.class); when(payment.getStatus()).thenReturn(PaymentStatus.approved);
-        when(paymentRepository.save(any())).thenReturn(payment);
-        when(reservationRepository.findByTenantIdAndOrderId(tenantId, orderId)).thenReturn(List.of());
+                .thenReturn(List.of(
+                        new ProductKitService.FulfillmentComponent(
+                                firstComponentId,
+                                new BigDecimal("3.000"),
+                                new BigDecimal("6.000")),
+                        new ProductKitService.FulfillmentComponent(
+                                secondComponentId,
+                                new BigDecimal("1.000"),
+                                new BigDecimal("2.000"))));
+        Order savedOrder = mock(Order.class);
+        UUID orderId = UUID.randomUUID();
+        when(savedOrder.getId()).thenReturn(orderId);
+        when(orderRepository.save(any())).thenReturn(savedOrder);
+        when(orderItemRepository.save(any())).thenAnswer(call -> call.getArgument(0));
 
-        service.checkout("ferreteria", "checkout-1", request(new BigDecimal("2")));
+        assertThatThrownBy(() -> service.checkout(
+                        "ferreteria", "checkout-1", request(new BigDecimal("2"))))
+                .isInstanceOf(BusinessException.class)
+                .extracting(exception -> ((BusinessException) exception).getCode())
+                .isEqualTo("KIT_FULFILLMENT_NOT_SUPPORTED");
 
-        verify(reservationRepository).save(org.mockito.ArgumentMatchers.argThat(reservation ->
-                reservation.getProductId().equals(componentId)
-                        && reservation.getAllocations().contains("\"reservedQuantity\":6.000")));
+        verify(reservationLifecycleService, never()).reserve(any());
+        verify(pickingService, never()).ensureForOrder(any(), any());
         verify(orderItemRepository).save(org.mockito.ArgumentMatchers.argThat(item ->
                 item.getProductId().equals(productId)
-                        && item.getFulfillmentComponents().contains(componentId.toString())));
+                        && item.getFulfillmentComponents().contains(firstComponentId.toString())
+                        && item.getFulfillmentComponents().contains(secondComponentId.toString())));
     }
 
     @Test
@@ -291,11 +292,6 @@ class StorefrontCheckoutServiceTest {
         Product product = product(true, ProductType.physical);
         when(productRepository.findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
                 tenantId, productId, ProductStatus.published)).thenReturn(Optional.of(product));
-        InventoryBalance balance = mock(InventoryBalance.class);
-        when(balance.getQuantity()).thenReturn(BigDecimal.ZERO);
-        when(balance.getReservedQuantity()).thenReturn(BigDecimal.ZERO);
-        when(balanceRepository.findByTenantIdAndBranchIdAndProductIdAndLocationIdIsNull(
-                tenantId, branchId, productId)).thenReturn(Optional.of(balance));
         Order savedOrder = mock(Order.class);
         when(savedOrder.getId()).thenReturn(UUID.randomUUID());
         when(orderRepository.save(any(Order.class))).thenReturn(savedOrder);
@@ -303,6 +299,8 @@ class StorefrontCheckoutServiceTest {
                 mock(com.omniretail.backend.ecommerce.entity.OrderItem.class);
         when(savedItem.getInventoryQuantity()).thenReturn(BigDecimal.ONE);
         when(orderItemRepository.save(any())).thenReturn(savedItem);
+        when(reservationLifecycleService.reserve(any(ReserveInventoryCommand.class)))
+                .thenThrow(BusinessException.conflict("INSUFFICIENT_STOCK", "Stock insuficiente."));
 
         assertThatThrownBy(() -> service.checkout("ferreteria", "checkout-1", request(BigDecimal.ONE)))
                 .isInstanceOf(BusinessException.class)
@@ -358,8 +356,7 @@ class StorefrontCheckoutServiceTest {
             verify(orderRepository).save(orderCaptor.capture());
             assertThat(orderCaptor.getValue().getCustomerId()).isEqualTo(customerId);
             assertThat(orderCaptor.getValue().getGuestCustomer()).isNull();
-            verify(balanceRepository, never()).findByTenantIdAndBranchIdAndProductIdAndLocationIdIsNull(
-                    any(), any(), any());
+            verify(reservationLifecycleService, never()).reserve(any());
         } finally {
             SecurityContextHolder.clearContext();
         }

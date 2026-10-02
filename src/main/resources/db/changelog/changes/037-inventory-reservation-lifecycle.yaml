@@ -1,0 +1,37 @@
+databaseChangeLog:
+  - changeSet:
+      id: 037-inventory-reservation-lifecycle
+      author: omniretail
+      changes:
+        - addColumn:
+            tableName: inventory_reservations
+            columns:
+              - column:
+                  name: quantity
+                  type: NUMERIC(12,3)
+
+        - sql:
+            sql: >-
+              UPDATE inventory_reservations reservation
+              SET quantity = COALESCE(item.inventory_quantity, item.quantity)
+              FROM order_items item
+              WHERE reservation.order_item_id = item.id
+                AND reservation.quantity IS NULL
+
+        - sql:
+            sql: >-
+              UPDATE inventory_reservations
+              SET quantity = NULLIF(allocations -> 0 ->> 'reservedQuantity', '')::NUMERIC
+              WHERE quantity IS NULL
+                AND jsonb_array_length(allocations) > 0
+
+        - addNotNullConstraint:
+            tableName: inventory_reservations
+            columnName: quantity
+            columnDataType: NUMERIC(12,3)
+
+        - sql:
+            sql: >-
+              ALTER TABLE inventory_reservations
+              ADD CONSTRAINT ck_inventory_reservations_quantity
+              CHECK (quantity > 0)

@@ -1,0 +1,85 @@
+databaseChangeLog:
+  - changeSet:
+      id: 036-inventory-reservation-sources
+      author: omniretail
+      changes:
+        - addColumn:
+            tableName: inventory_reservations
+            columns:
+              - column:
+                  name: source_type
+                  type: VARCHAR(20)
+              - column:
+                  name: source_id
+                  type: UUID
+              - column:
+                  name: source_line_id
+                  type: UUID
+
+        - sql:
+            sql: >-
+              UPDATE inventory_reservations
+              SET source_type = 'order',
+                  source_id = order_id,
+                  source_line_id = order_item_id
+              WHERE source_type IS NULL
+
+        - addNotNullConstraint:
+            tableName: inventory_reservations
+            columnName: source_type
+            columnDataType: VARCHAR(20)
+        - addNotNullConstraint:
+            tableName: inventory_reservations
+            columnName: source_id
+            columnDataType: UUID
+        - addNotNullConstraint:
+            tableName: inventory_reservations
+            columnName: source_line_id
+            columnDataType: UUID
+
+        - dropNotNullConstraint:
+            tableName: inventory_reservations
+            columnName: order_id
+            columnDataType: UUID
+        - dropNotNullConstraint:
+            tableName: inventory_reservations
+            columnName: order_item_id
+            columnDataType: UUID
+
+        - addUniqueConstraint:
+            tableName: inventory_reservations
+            columnNames: tenant_id, source_type, source_line_id
+            constraintName: uk_inventory_reservations_source_line
+
+        - createIndex:
+            tableName: inventory_reservations
+            indexName: idx_inventory_reservations_tenant_source
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: source_type
+              - column:
+                  name: source_id
+
+        - sql:
+            sql: >-
+              ALTER TABLE inventory_reservations
+              ADD CONSTRAINT ck_inventory_reservations_source_type
+              CHECK (source_type IN ('order', 'transfer'))
+
+        - sql:
+            sql: >-
+              ALTER TABLE inventory_reservations
+              ADD CONSTRAINT ck_inventory_reservations_source_legacy_consistency
+              CHECK (
+                (source_type = 'order'
+                  AND order_id IS NOT NULL
+                  AND order_item_id IS NOT NULL
+                  AND source_id = order_id
+                  AND source_line_id = order_item_id)
+                OR
+                (source_type = 'transfer'
+                  AND order_id IS NULL
+                  AND order_item_id IS NULL)
+              )

@@ -110,6 +110,79 @@ public class InventoryStockService {
         return saveInboundMovement(command, balance, quantityBefore);
     }
 
+    @Transactional
+    public InventoryBalance reserveStock(
+            UUID tenantId, UUID branchId, UUID productId, BigDecimal quantity) {
+        validateQuantity(quantity);
+        InventoryBalance balance = requireDefaultBalance(
+                tenantId, branchId, productId, InventoryStockService::insufficientStock);
+        try {
+            balance.reserve(quantity);
+        } catch (IllegalStateException exception) {
+            throw insufficientStock();
+        }
+        return balance;
+    }
+
+    @Transactional
+    public void consumeReservedStock(
+            UUID tenantId, UUID branchId, UUID productId, BigDecimal quantity) {
+        validateQuantity(quantity);
+        InventoryBalance balance = requireDefaultBalance(
+                tenantId, branchId, productId, InventoryStockService::inconsistentReservation);
+        try {
+            balance.consumeReservation(quantity);
+        } catch (IllegalStateException exception) {
+            throw inconsistentReservation();
+        }
+    }
+
+    /** Consume exactamente el balance que fue reservado, conservando la ubicacion de la reserva. */
+    @Transactional
+    public void consumeReservedStock(
+            UUID tenantId, UUID branchId, UUID productId, UUID balanceId, BigDecimal quantity) {
+        validateQuantity(quantity);
+        InventoryBalance balance = inventoryBalanceRepository.findByTenantIdAndId(tenantId, balanceId)
+                .orElseThrow(InventoryStockService::inconsistentReservation);
+        if (!balance.getBranchId().equals(branchId) || !balance.getProductId().equals(productId)) {
+            throw inconsistentReservation();
+        }
+        try {
+            balance.consumeReservation(quantity);
+        } catch (IllegalStateException exception) {
+            throw inconsistentReservation();
+        }
+    }
+
+    @Transactional
+    public void releaseReservedStock(
+            UUID tenantId, UUID branchId, UUID productId, BigDecimal quantity) {
+        validateQuantity(quantity);
+        InventoryBalance balance = requireDefaultBalance(
+                tenantId, branchId, productId, InventoryStockService::inconsistentReservation);
+        try {
+            balance.releaseReservation(quantity);
+        } catch (IllegalStateException exception) {
+            throw inconsistentReservation();
+        }
+    }
+
+    @Transactional
+    public void releaseReservedStock(
+            UUID tenantId, UUID branchId, UUID productId, UUID balanceId, BigDecimal quantity) {
+        validateQuantity(quantity);
+        InventoryBalance balance = inventoryBalanceRepository.findByTenantIdAndId(tenantId, balanceId)
+                .orElseThrow(InventoryStockService::inconsistentReservation);
+        if (!balance.getBranchId().equals(branchId) || !balance.getProductId().equals(productId)) {
+            throw inconsistentReservation();
+        }
+        try {
+            balance.releaseReservation(quantity);
+        } catch (IllegalStateException exception) {
+            throw inconsistentReservation();
+        }
+    }
+
     private InventoryMovement saveInboundMovement(
             AddStockCommand command, InventoryBalance balance, BigDecimal quantityBefore) {
         return inventoryMovementRepository.save(InventoryMovement.builder()
@@ -194,5 +267,22 @@ public class InventoryStockService {
 
     private static BusinessException insufficientStock() {
         return BusinessException.conflict(INSUFFICIENT_STOCK_CODE, INSUFFICIENT_STOCK_MESSAGE);
+    }
+
+    private InventoryBalance requireDefaultBalance(
+            UUID tenantId,
+            UUID branchId,
+            UUID productId,
+            java.util.function.Supplier<? extends RuntimeException> missingBalanceException) {
+        return inventoryBalanceRepository
+                .findByTenantIdAndBranchIdAndProductIdAndLocationIdIsNull(
+                        tenantId, branchId, productId)
+                .orElseThrow(missingBalanceException);
+    }
+
+    private static BusinessException inconsistentReservation() {
+        return BusinessException.conflict(
+                "INVENTORY_RESERVATION_INCONSISTENT",
+                "La reserva no coincide con el balance de inventario.");
     }
 }
