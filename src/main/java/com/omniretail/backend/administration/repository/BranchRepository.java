@@ -3,6 +3,7 @@ package com.omniretail.backend.administration.repository;
 import com.omniretail.backend.administration.entity.Branch;
 import com.omniretail.backend.administration.entity.BranchStatus;
 import java.util.List;
+import java.util.Collection;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
@@ -20,6 +21,8 @@ public interface BranchRepository extends JpaRepository<Branch, UUID> {
     Page<Branch> findByTenantIdAndStatus(UUID tenantId, BranchStatus status, Pageable pageable);
 
     List<Branch> findByTenantId(UUID tenantId);
+
+    List<Branch> findByTenantIdAndIdIn(UUID tenantId, Collection<UUID> ids);
 
     List<Branch> findByTenantIdAndStatus(UUID tenantId, BranchStatus status);
 

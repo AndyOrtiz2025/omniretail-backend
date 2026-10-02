@@ -46,6 +46,7 @@ import org.springframework.transaction.annotation.Transactional;
 class InventoryControllerTest {
 
     private static final String BALANCES = "/api/v1/inventory/balances";
+    private static final String STOCK = "/api/v1/inventory/stock";
     private static final String READ_PERMISSION = "inventory.stock.read";
 
     @Autowired
@@ -108,6 +109,30 @@ class InventoryControllerTest {
                 .andExpect(jsonPath("$.pageSize").value(20))
                 .andExpect(jsonPath("$.totalItems").value(1))
                 .andExpect(jsonPath("$.totalPages").value(1));
+    }
+
+    @Test
+    void stockEndpointRequiresPermissionAndReturnsCombinedSummary() throws Exception {
+        Fixture fixture = createFixture();
+
+        mockMvc.perform(get(STOCK)
+                        .header("Authorization", token(fixture.tenantId()))
+                        .param("branchId", fixture.firstBranchId().toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].productId").value(fixture.productId().toString()))
+                .andExpect(jsonPath("$.items[0].status").value("out_of_stock"))
+                .andExpect(jsonPath("$.summary.activeProducts").value(1))
+                .andExpect(jsonPath("$.summary.lowStock").value(0))
+                .andExpect(jsonPath("$.summary.outOfStock").value(1));
+
+        given(permissionResolver.hasPermission(
+                        any(UUID.class), any(UUID.class), eq(READ_PERMISSION)))
+                .willReturn(false);
+        mockMvc.perform(get(STOCK)
+                        .header("Authorization", token(fixture.tenantId()))
+                        .param("branchId", fixture.firstBranchId().toString()))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
     }
 
     @Test

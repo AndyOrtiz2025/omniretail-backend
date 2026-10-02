@@ -3,6 +3,7 @@ package com.omniretail.backend.catalog.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -18,11 +19,14 @@ import com.omniretail.backend.catalog.dto.ProductTrackingDto;
 import com.omniretail.backend.catalog.entity.CategoryStatus;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductPriceHistory;
+import com.omniretail.backend.catalog.entity.ProductMedia;
+import com.omniretail.backend.catalog.entity.ProductMediaType;
 import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.entity.UnitStatus;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.catalog.repository.ProductMediaRepository;
 import com.omniretail.backend.catalog.repository.ProductKitComponentRepository;
 import com.omniretail.backend.catalog.repository.ProductPriceHistoryRepository;
 import com.omniretail.backend.catalog.repository.UnitConversionRepository;
@@ -48,6 +52,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
+import org.springframework.test.util.ReflectionTestUtils;
 
 @ExtendWith(MockitoExtension.class)
 class ProductServiceTest {
@@ -56,6 +61,9 @@ class ProductServiceTest {
 
     @Mock
     private ProductRepository productRepository;
+
+    @Mock
+    private ProductMediaRepository productMediaRepository;
 
     @Mock
     private ProductPriceHistoryRepository productPriceHistoryRepository;
@@ -105,6 +113,7 @@ class ProductServiceTest {
     void setUp() {
         service = new ProductService(
                 productRepository,
+                productMediaRepository,
                 productPriceHistoryRepository,
                 categoryRepository,
                 unitRepository,
@@ -126,17 +135,18 @@ class ProductServiceTest {
     @Test
     void listUsesAuthenticatedTenantId() {
         PageRequest pageable = PageRequest.of(0, 20);
-        given(productRepository.findByTenantId(TENANT_ID, pageable)).willReturn(new PageImpl<>(List.of()));
+        given(productRepository.findAll(any(org.springframework.data.jpa.domain.Specification.class), eq(pageable)))
+                .willReturn(new PageImpl<>(List.of()));
 
         service.list(pageable);
 
-        verify(productRepository).findByTenantId(TENANT_ID, pageable);
+        verify(productRepository).findAll(any(org.springframework.data.jpa.domain.Specification.class), eq(pageable));
     }
 
     @Test
     void listDelegatesPaginationToTenantScopedQuery() {
         PageRequest pageable = PageRequest.of(3, 7);
-        given(productRepository.findByTenantId(TENANT_ID, pageable))
+        given(productRepository.findAll(any(org.springframework.data.jpa.domain.Specification.class), eq(pageable)))
                 .willReturn(new PageImpl<>(List.of(), pageable, 25));
 
         var response = service.list(pageable);
@@ -144,7 +154,37 @@ class ProductServiceTest {
         assertThat(response.page()).isEqualTo(4);
         assertThat(response.pageSize()).isEqualTo(7);
         assertThat(response.totalItems()).isEqualTo(25);
-        verify(productRepository).findByTenantId(TENANT_ID, pageable);
+        verify(productRepository).findAll(any(org.springframework.data.jpa.domain.Specification.class), eq(pageable));
+    }
+
+    @Test
+    void listLoadsPrimaryImagesOnceForTheCurrentPageAndUsesNullWhenMissing() {
+        PageRequest pageable = PageRequest.of(0, 20);
+        Product withImage = listProduct("SKU-IMAGE");
+        Product withoutImage = listProduct("SKU-NO-IMAGE");
+        ProductMedia primary = ProductMedia.builder()
+                .productId(withImage.getId())
+                .type(ProductMediaType.image)
+                .url("/media/products/primary.webp")
+                .primary(true)
+                .sortOrder(0)
+                .build();
+        primary.setTenantId(TENANT_ID);
+        ReflectionTestUtils.setField(primary, "id", UUID.randomUUID());
+        given(productRepository.findAll(any(org.springframework.data.jpa.domain.Specification.class), eq(pageable)))
+                .willReturn(new PageImpl<>(List.of(withImage, withoutImage), pageable, 2));
+        given(productMediaRepository
+                .findByTenantIdAndProductIdInAndPrimaryTrueAndTypeOrderByProductIdAscSortOrderAscIdAsc(
+                        eq(TENANT_ID), any(), eq(ProductMediaType.image)))
+                .willReturn(List.of(primary));
+
+        var response = service.list(pageable);
+
+        assertThat(response.items()).extracting(item -> item.primaryImageUrl())
+                .containsExactly("/media/products/primary.webp", (String) null);
+        verify(productMediaRepository)
+                .findByTenantIdAndProductIdInAndPrimaryTrueAndTypeOrderByProductIdAscSortOrderAscIdAsc(
+                        eq(TENANT_ID), any(), eq(ProductMediaType.image));
     }
 
     @Test
@@ -421,6 +461,29 @@ class ProductServiceTest {
         ArgumentCaptor<Product> captor = ArgumentCaptor.forClass(Product.class);
         verify(productRepository).saveAndFlush(captor.capture());
         return captor.getValue();
+    }
+
+    private static Product listProduct(String sku) {
+        Product product = Product.builder()
+                .sku(sku)
+                .name("Producto " + sku)
+                .brand("Marca")
+                .productType(ProductType.physical)
+                .categoryId(UUID.randomUUID())
+                .baseUnitId(UUID.randomUUID())
+                .salePrice(BigDecimal.TEN)
+                .status(ProductStatus.published)
+                .trackingStock(true)
+                .trackingLot(false)
+                .trackingExpiration(false)
+                .trackingSerial(false)
+                .channelEcommerce(true)
+                .channelPos(true)
+                .channelMobileApp(false)
+                .build();
+        product.setTenantId(TENANT_ID);
+        ReflectionTestUtils.setField(product, "id", UUID.randomUUID());
+        return product;
     }
 
     private static void assertNotFound(Runnable operation, String code) {

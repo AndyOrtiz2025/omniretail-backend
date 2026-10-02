@@ -4,6 +4,7 @@ import com.omniretail.backend.pos.entity.Sale;
 import com.omniretail.backend.pos.entity.SaleStatus;
 import java.time.Instant;
 import java.util.List;
+import java.util.Collection;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -35,6 +36,8 @@ public interface SaleRepository extends JpaRepository<Sale, UUID> {
     List<Sale> findByTenantIdAndCustomerIdAndStatusNot(UUID tenantId, UUID customerId, SaleStatus status);
 
     List<Sale> findByTenantId(UUID tenantId);
+
+    List<Sale> findByTenantIdAndIdIn(UUID tenantId, Collection<UUID> ids);
 
     Page<Sale> findByTenantIdAndBranchId(UUID tenantId, UUID branchId, Pageable pageable);
 

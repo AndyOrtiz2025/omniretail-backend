@@ -1,8 +1,13 @@
 package com.omniretail.backend.catalog.controller;
 
 import com.omniretail.backend.catalog.dto.ProductCreateRequest;
+import com.omniretail.backend.catalog.dto.ProductChannel;
 import com.omniretail.backend.catalog.dto.ProductDto;
+import com.omniretail.backend.catalog.dto.ProductListDto;
+import com.omniretail.backend.catalog.dto.ProductPromotionFilter;
 import com.omniretail.backend.catalog.dto.ProductUpdateRequest;
+import com.omniretail.backend.catalog.entity.ProductStatus;
+import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.service.ProductService;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.security.RequirePermission;
@@ -11,6 +16,7 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.enums.ParameterIn;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.Valid;
+import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Pageable;
@@ -22,6 +28,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -52,8 +59,24 @@ public class ProductController {
                 example = "sku,asc",
                 schema = @Schema(type = "string"))
     })
-    public PageResponse<ProductDto> list(@Parameter(hidden = true) Pageable pageable) {
-        return productService.list(pageable);
+    public PageResponse<ProductListDto> list(
+            @RequestParam(required = false) String search,
+            @RequestParam(required = false) ProductStatus status,
+            @RequestParam(required = false) ProductType productType,
+            @RequestParam(required = false) UUID categoryId,
+            @RequestParam(required = false) List<ProductChannel> channels,
+            @RequestParam(defaultValue = "all") ProductPromotionFilter promotion,
+            @Parameter(hidden = true) Pageable pageable) {
+        if ((search == null || search.isBlank())
+                && status == null
+                && productType == null
+                && categoryId == null
+                && (channels == null || channels.isEmpty())
+                && promotion == ProductPromotionFilter.all) {
+            return productService.list(pageable);
+        }
+        return productService.list(
+                search, status, productType, categoryId, channels, promotion, pageable);
     }
 
     @PostMapping
