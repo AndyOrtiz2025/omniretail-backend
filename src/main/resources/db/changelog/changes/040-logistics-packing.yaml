@@ -1,6 +1,6 @@
 databaseChangeLog:
   - changeSet:
-      id: 036-logistics-packing
+      id: 040-logistics-packing
       author: omniretail
       changes:
         - addUniqueConstraint:

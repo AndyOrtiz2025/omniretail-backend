@@ -3,6 +3,7 @@ package com.omniretail.backend.catalog.controller;
 import com.omniretail.backend.catalog.dto.CreatePromotionRequest;
 import com.omniretail.backend.catalog.dto.PromotionResponse;
 import com.omniretail.backend.catalog.dto.PromotionSummaryResponse;
+import com.omniretail.backend.catalog.dto.UpdatePromotionRequest;
 import com.omniretail.backend.catalog.service.PromotionService;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.security.RequirePermission;
@@ -18,6 +19,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -29,8 +31,8 @@ public class PromotionController {
 
     @GetMapping
     @RequirePermission("catalog.promotions.read")
-    public PageResponse<PromotionSummaryResponse> list(Pageable pageable) {
-        return promotionService.list(pageable);
+    public PageResponse<PromotionSummaryResponse> list(@RequestParam(required = false) UUID productId, Pageable pageable) {
+        return promotionService.list(productId, pageable);
     }
 
     @GetMapping("/{id}")
@@ -45,6 +47,16 @@ public class PromotionController {
     public PromotionResponse create(@Valid @RequestBody CreatePromotionRequest request) {
         return promotionService.create(request);
     }
+
+    @PutMapping("/{id}")
+    @RequirePermission("catalog.promotions.manage")
+    public PromotionResponse update(@PathVariable UUID id, @Valid @RequestBody UpdatePromotionRequest request) {
+        return promotionService.update(id, request);
+    }
+
+    @PutMapping("/{id}/end")
+    @RequirePermission("catalog.promotions.manage")
+    public PromotionResponse end(@PathVariable UUID id) { return promotionService.end(id); }
 
     @PutMapping("/{id}/cancel")
     @RequirePermission("catalog.promotions.manage")

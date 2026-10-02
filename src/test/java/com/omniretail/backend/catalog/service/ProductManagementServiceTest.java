@@ -24,6 +24,7 @@ import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.entity.UnitStatus;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.catalog.repository.ProductKitComponentRepository;
 import com.omniretail.backend.catalog.repository.ProductPriceHistoryRepository;
 import com.omniretail.backend.catalog.repository.UnitConversionRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
@@ -68,6 +69,8 @@ class ProductManagementServiceTest {
     @Mock private SupplierProductRepository supplierProductRepository;
     @Mock private PurchaseOrderItemRepository purchaseOrderItemRepository;
     @Mock private SaleItemRepository saleItemRepository;
+    @Mock private ProductKitComponentRepository productKitComponentRepository;
+    @Mock private ProductKitService productKitService;
     @Mock private BusinessConfigService businessConfigService;
     @Mock private TenantCapabilityGuard tenantCapabilityGuard;
     @Mock private CurrentUser currentUser;
@@ -88,6 +91,8 @@ class ProductManagementServiceTest {
                 supplierProductRepository,
                 purchaseOrderItemRepository,
                 saleItemRepository,
+                productKitComponentRepository,
+                productKitService,
                 businessConfigService,
                 tenantCapabilityGuard,
                 currentUser);
@@ -95,6 +100,8 @@ class ProductManagementServiceTest {
         given(currentUser.require()).willReturn(new AuthenticatedUser(
                 UUID.randomUUID(), TENANT, UserType.employee, null, null, UUID.randomUUID()));
         lenient().when(productRepository.findByTenantIdAndId(TENANT, PRODUCT_ID))
+                .thenReturn(Optional.of(product));
+        lenient().when(productRepository.findForUpdateByTenantIdAndId(TENANT, PRODUCT_ID))
                 .thenReturn(Optional.of(product));
         lenient().when(productRepository.saveAndFlush(any(Product.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
@@ -116,7 +123,7 @@ class ProductManagementServiceTest {
     @Test
     void updateAndArchiveHideProductsOutsideTheAuthenticatedTenant() {
         UUID foreignProduct = UUID.randomUUID();
-        given(productRepository.findByTenantIdAndId(TENANT, foreignProduct))
+        given(productRepository.findForUpdateByTenantIdAndId(TENANT, foreignProduct))
                 .willReturn(Optional.empty());
 
         assertCode(() -> service.update(foreignProduct, request(
@@ -294,6 +301,10 @@ class ProductManagementServiceTest {
         assertCode(() -> service.update(PRODUCT_ID, request(
                 "sku", null, ProductType.kit, CATEGORY_ID, BASE_UNIT_ID,
                 null, null, tracking(false, false, false, false))), "PRODUCT_KIT_NOT_SUPPORTED");
+        product.setProductType(ProductType.kit);
+        assertCode(() -> service.update(PRODUCT_ID, request(
+                "sku", null, ProductType.physical, CATEGORY_ID, BASE_UNIT_ID,
+                null, null, tracking(false, false, false, false))), "PRODUCT_KIT_NOT_SUPPORTED");
         product.setStatus(ProductStatus.archived);
         assertCode(() -> service.update(PRODUCT_ID, request(
                 "sku", null, ProductType.physical, CATEGORY_ID, BASE_UNIT_ID,
@@ -434,6 +445,47 @@ class ProductManagementServiceTest {
     }
 
     @Test
+    void archiveRejectsComponentReferencedByPublishedKit() {
+        given(productKitComponentRepository.existsInPublishedKit(TENANT, PRODUCT_ID)).willReturn(true);
+        assertCode(() -> service.archive(PRODUCT_ID), "KIT_COMPONENT_IN_USE");
+        assertThat(product.getStatus()).isEqualTo(ProductStatus.published);
+    }
+
+    @Test
+    void restoreValidatesReferencesIsIdempotentAndHidesCrossTenantProducts() {
+        product.setStatus(ProductStatus.archived);
+        given(categoryRepository.existsByIdAndTenantIdAndStatus(CATEGORY_ID, TENANT, CategoryStatus.active))
+                .willReturn(true);
+        given(unitRepository.existsByIdAndTenantIdAndStatus(BASE_UNIT_ID, TENANT, UnitStatus.active))
+                .willReturn(true);
+
+        ProductDto restored = service.restore(PRODUCT_ID);
+
+        assertThat(restored.status()).isEqualTo(ProductStatus.published);
+        verify(productRepository).saveAndFlush(product);
+        service.restore(PRODUCT_ID);
+        verify(productRepository, org.mockito.Mockito.times(1)).saveAndFlush(product);
+
+        UUID foreignId = UUID.randomUUID();
+        assertCode(() -> service.restore(foreignId), "PRODUCT_NOT_FOUND");
+    }
+
+    @Test
+    void restoreRejectsInactiveCatalogReferencesAndInvalidKitComponents() {
+        product.setStatus(ProductStatus.archived);
+        assertCode(() -> service.restore(PRODUCT_ID), "CATEGORY_NOT_FOUND");
+
+        given(categoryRepository.existsByIdAndTenantIdAndStatus(CATEGORY_ID, TENANT, CategoryStatus.active))
+                .willReturn(true);
+        given(unitRepository.existsByIdAndTenantIdAndStatus(BASE_UNIT_ID, TENANT, UnitStatus.active))
+                .willReturn(true);
+        product.setProductType(ProductType.kit);
+        org.mockito.Mockito.doThrow(BusinessException.conflict("KIT_COMPONENTS_REQUIRED", "Faltan componentes."))
+                .when(productKitService).validatePublishable(TENANT, product);
+        assertCode(() -> service.restore(PRODUCT_ID), "KIT_COMPONENTS_REQUIRED");
+    }
+
+    @Test
     void expectedDatabaseUniqueRacesTranslateAndUnrelatedIntegrityErrorsPropagate() {
         given(productRepository.saveAndFlush(any(Product.class)))
                 .willThrow(new DataIntegrityViolationException("constraint uk_products_tenant_sku"));
@@ -456,15 +508,31 @@ class ProductManagementServiceTest {
     }
 
     @Test
-    void createRejectsKitsAndForcesServiceTrackingOff() {
+    void publishedKitCreationRequiresComponentConfigurationAndServiceTrackingIsForcedOff() {
         allowCreateReferences();
         assertCode(() -> service.create(createRequest(
                 ProductType.kit, tracking(false, false, false, false))),
-                "PRODUCT_KIT_NOT_SUPPORTED");
+                "KIT_COMPONENTS_REQUIRED");
 
         ProductDto serviceProduct = service.create(createRequest(
                 ProductType.service, tracking(true, true, true, true)));
         assertThat(serviceProduct.tracking()).isEqualTo(tracking(false, false, false, false));
+    }
+
+    @Test
+    void createsArchivedKitWithoutStockSoComponentsCanBeConfiguredBeforeRestore() {
+        allowCreateReferences();
+        ProductCreateRequest request = new ProductCreateRequest("KIT-DRAFT", null, "Kit", null, null,
+                ProductType.kit, CATEGORY_ID, BASE_UNIT_ID, null, null, BigDecimal.TEN,
+                ProductStatus.archived, tracking(true, true, true, true),
+                new ProductChannelsDto(true, true, false));
+
+        ProductDto created = service.create(request);
+
+        assertThat(created.productType()).isEqualTo(ProductType.kit);
+        assertThat(created.status()).isEqualTo(ProductStatus.archived);
+        assertThat(created.tracking()).isEqualTo(tracking(false, false, false, false));
+        verify(tenantCapabilityGuard).ensureTenantCapability(TENANT, SaasCapability.catalogKits);
     }
 
     @Test

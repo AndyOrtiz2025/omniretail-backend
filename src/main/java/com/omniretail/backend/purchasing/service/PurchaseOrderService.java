@@ -12,6 +12,7 @@ import com.omniretail.backend.administration.service.BranchAccessResolver.Branch
 import com.omniretail.backend.administration.service.BusinessConfigService;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductStatus;
+import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.entity.Unit;
 import com.omniretail.backend.catalog.entity.UnitStatus;
 import com.omniretail.backend.catalog.repository.ProductRepository;
@@ -289,6 +290,7 @@ public class PurchaseOrderService {
                         "La relacion comercial del producto no esta activa.");
             }
             Product product = requireProduct(tenantId, request.productId());
+            requireDirectlyPurchasable(product);
             Unit purchaseUnit = requireUnit(tenantId, supplierProduct.getPurchaseUnitId());
             Unit baseUnit = requireUnit(tenantId, product.getBaseUnitId());
             validateFactor(product, supplierProduct);
@@ -324,6 +326,7 @@ public class PurchaseOrderService {
                     "La relacion comercial del producto no esta activa.");
         }
         Product product = requireProduct(tenantId, item.getProductId());
+        requireDirectlyPurchasable(product);
         if (product.getStatus() != ProductStatus.published) {
             throw businessError(
                     "PURCHASE_ORDER_PRODUCT_INVALID", "El producto no esta publicado para compras.");
@@ -365,6 +368,12 @@ public class PurchaseOrderService {
             case draft, pending_approval -> requireAnyPermission(actor, DRAFT_CANCEL_PERMISSIONS);
             case approved -> requireAnyPermission(actor, List.of("purchasing.orders.approve"));
             case cancelled, sent, partially_received, received -> throw invalidStatus();
+        }
+    }
+
+    private static void requireDirectlyPurchasable(Product product) {
+        if (product.getProductType() == ProductType.kit) {
+            throw businessError("PURCHASE_ORDER_KIT_NOT_ALLOWED", "Los kits no se compran directamente a proveedores.");
         }
     }
 

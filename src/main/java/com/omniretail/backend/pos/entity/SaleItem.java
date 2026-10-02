@@ -16,6 +16,8 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 /** Linea historica de una venta; sus valores y snapshots no se actualizan despues de crearla. */
 @Entity
@@ -70,4 +72,8 @@ public class SaleItem {
     @DecimalMin("0.00")
     @Column(name = "subtotal", nullable = false, updatable = false, precision = 12, scale = 2)
     private BigDecimal subtotal;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "fulfillment_components", columnDefinition = "jsonb", updatable = false)
+    private String fulfillmentComponents;
 }

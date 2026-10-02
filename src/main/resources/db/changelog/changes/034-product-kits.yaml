@@ -1,0 +1,56 @@
+databaseChangeLog:
+  - changeSet:
+      id: 034-product-kits
+      author: melbyn
+      changes:
+        - sql:
+            sql: "ALTER TABLE products ADD CONSTRAINT ck_products_kit_no_own_tracking CHECK (product_type <> 'kit' OR (tracking_stock = false AND tracking_lot = false AND tracking_expiration = false AND tracking_serial = false))"
+        - createTable:
+            tableName: product_kit_components
+            columns:
+              - column: { name: id, type: UUID, defaultValueComputed: gen_random_uuid(), constraints: { primaryKey: true, nullable: false } }
+              - column: { name: tenant_id, type: UUID, constraints: { nullable: false } }
+              - column: { name: kit_product_id, type: UUID, constraints: { nullable: false } }
+              - column: { name: component_product_id, type: UUID, constraints: { nullable: false } }
+              - column: { name: quantity_per_kit, type: "NUMERIC(12,3)", constraints: { nullable: false } }
+              - column: { name: created_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: { nullable: false } }
+              - column: { name: updated_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: { nullable: false } }
+        - addForeignKeyConstraint:
+            baseTableName: product_kit_components
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_product_kit_components_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: product_kit_components
+            baseColumnNames: tenant_id, kit_product_id
+            referencedTableName: products
+            referencedColumnNames: tenant_id, id
+            constraintName: fk_product_kit_components_kit
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: product_kit_components
+            baseColumnNames: tenant_id, component_product_id
+            referencedTableName: products
+            referencedColumnNames: tenant_id, id
+            constraintName: fk_product_kit_components_component
+            onDelete: RESTRICT
+        - addUniqueConstraint:
+            tableName: product_kit_components
+            columnNames: tenant_id, kit_product_id, component_product_id
+            constraintName: uk_product_kit_components_component
+        - sql:
+            sql: "ALTER TABLE product_kit_components ADD CONSTRAINT ck_product_kit_components_quantity CHECK (quantity_per_kit > 0)"
+        - sql:
+            sql: "ALTER TABLE product_kit_components ADD CONSTRAINT ck_product_kit_components_self CHECK (kit_product_id <> component_product_id)"
+        - createIndex:
+            tableName: product_kit_components
+            indexName: idx_product_kit_components_component
+            columns:
+              - column: { name: tenant_id }
+              - column: { name: component_product_id }
+        - addColumn:
+            tableName: sale_items
+            columns:
+              - column: { name: fulfillment_components, type: JSONB }

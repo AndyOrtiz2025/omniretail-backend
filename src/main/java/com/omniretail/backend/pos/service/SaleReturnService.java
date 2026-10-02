@@ -4,6 +4,7 @@ import com.omniretail.backend.administration.service.BranchAccessResolver;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.catalog.service.KitFulfillmentSnapshot;
 import com.omniretail.backend.inventory.dto.AddStockCommand;
 import com.omniretail.backend.inventory.service.InventoryStockService;
 import com.omniretail.backend.pos.dto.CreateSaleReturnRequest;
@@ -122,12 +123,22 @@ public class SaleReturnService {
             returnItem.setTenantId(actor.tenantId());
             created.add(returnItems.save(returnItem));
 
-            Product product = products.findByTenantIdAndId(actor.tenantId(), item.getProductId()).orElse(null);
-            if (product != null && Boolean.TRUE.equals(product.getTrackingStock())
-                    && product.getProductType() == ProductType.physical) {
-                inventory.incrementStock(new AddStockCommand(actor.tenantId(), sale.getBranchId(),
-                        product.getId(), line.quantity(), "Devolución venta POS #" + sale.getNumber(),
-                        "POS_SALE_RETURN", saleReturn.getId(), actor.userId()));
+            List<KitFulfillmentSnapshot.Component> fulfillment = KitFulfillmentSnapshot.decode(item.getFulfillmentComponents());
+            if (!fulfillment.isEmpty()) {
+                for (KitFulfillmentSnapshot.Component component : fulfillment) {
+                    inventory.incrementStock(new AddStockCommand(actor.tenantId(), sale.getBranchId(),
+                            component.productId(), line.quantity().multiply(component.quantityPerKit()),
+                            "Devolucion venta kit POS #" + sale.getNumber(), "POS_KIT_SALE_RETURN",
+                            saleReturn.getId(), actor.userId()));
+                }
+            } else {
+                Product product = products.findByTenantIdAndId(actor.tenantId(), item.getProductId()).orElse(null);
+                if (product != null && Boolean.TRUE.equals(product.getTrackingStock())
+                        && product.getProductType() == ProductType.physical) {
+                    inventory.incrementStock(new AddStockCommand(actor.tenantId(), sale.getBranchId(),
+                            product.getId(), line.quantity(), "Devolución venta POS #" + sale.getNumber(),
+                            "POS_SALE_RETURN", saleReturn.getId(), actor.userId()));
+                }
             }
         }
 

@@ -1,6 +1,6 @@
 databaseChangeLog:
   - changeSet:
-      id: 032-inventory-reservation-sources
+      id: 036-inventory-reservation-sources
       author: omniretail
       changes:
         - addColumn:

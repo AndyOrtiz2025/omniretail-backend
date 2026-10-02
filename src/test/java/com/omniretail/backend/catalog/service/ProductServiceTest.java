@@ -23,6 +23,7 @@ import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.entity.UnitStatus;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.catalog.repository.ProductKitComponentRepository;
 import com.omniretail.backend.catalog.repository.ProductPriceHistoryRepository;
 import com.omniretail.backend.catalog.repository.UnitConversionRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
@@ -84,6 +85,12 @@ class ProductServiceTest {
     private SaleItemRepository saleItemRepository;
 
     @Mock
+    private ProductKitComponentRepository productKitComponentRepository;
+
+    @Mock
+    private ProductKitService productKitService;
+
+    @Mock
     private BusinessConfigService businessConfigService;
 
     @Mock
@@ -107,6 +114,8 @@ class ProductServiceTest {
                 supplierProductRepository,
                 purchaseOrderItemRepository,
                 saleItemRepository,
+                productKitComponentRepository,
+                productKitService,
                 businessConfigService,
                 tenantCapabilityGuard,
                 currentUser);

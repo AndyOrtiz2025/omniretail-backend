@@ -306,7 +306,7 @@ class PickingServiceTest {
                 """, Integer.class)).isOne();
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM databasechangelog
-                WHERE id = '035-logistics-picking-idempotency'
+                WHERE id = '039-logistics-picking-idempotency'
                 """, Integer.class)).isOne();
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM pg_constraint

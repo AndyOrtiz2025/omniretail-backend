@@ -34,3 +34,6 @@ build/
 
 ### Entorno local (secretos y puertos propios) ###
 .env
+
+### Media local administrada por la aplicacion ###
+data/media/

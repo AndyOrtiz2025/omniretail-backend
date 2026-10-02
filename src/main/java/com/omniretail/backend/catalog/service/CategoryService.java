@@ -8,6 +8,7 @@ import com.omniretail.backend.catalog.entity.CategoryStatus;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.CurrentUser;
+import com.omniretail.backend.shared.media.MediaStorageService;
 import java.text.Normalizer;
 import java.util.HashSet;
 import java.util.List;
@@ -18,6 +19,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
 @Service
 @RequiredArgsConstructor
@@ -31,6 +33,7 @@ public class CategoryService {
             "La jerarquía de categorías no puede contener ciclos.";
 
     private final CategoryRepository categoryRepository;
+    private final MediaStorageService mediaStorageService;
     private final CurrentUser currentUser;
 
     public List<CategoryResponse> list(CategoryStatus status) {
@@ -114,12 +117,46 @@ public class CategoryService {
         categoryRepository.saveAndFlush(category);
     }
 
+    @Transactional
+    public CategoryResponse uploadImage(UUID id, MultipartFile file) {
+        UUID tenantId = currentUser.require().tenantId();
+        Category category = requireCategoryForUpdate(tenantId, id);
+        String newUrl = mediaStorageService.storeImage(tenantId, "categories", id, file);
+        String previous = category.getImageUrl();
+        try {
+            category.setImageUrl(newUrl);
+            Category saved = categoryRepository.saveAndFlush(category);
+            mediaStorageService.deleteAfterCommit(previous);
+            return CategoryResponse.from(saved);
+        } catch (RuntimeException exception) {
+            mediaStorageService.deleteQuietly(newUrl);
+            throw exception;
+        }
+    }
+
+    @Transactional
+    public CategoryResponse deleteImage(UUID id) {
+        UUID tenantId = currentUser.require().tenantId();
+        Category category = requireCategoryForUpdate(tenantId, id);
+        String previous = category.getImageUrl();
+        category.setImageUrl(null);
+        Category saved = categoryRepository.saveAndFlush(category);
+        mediaStorageService.deleteAfterCommit(previous);
+        return CategoryResponse.from(saved);
+    }
+
     private Category requireCategory(UUID tenantId, UUID id) {
         return categoryRepository.findByTenantIdAndId(tenantId, id)
                 .orElseThrow(() -> new BusinessException(
                         HttpStatus.NOT_FOUND,
                         "CATEGORY_NOT_FOUND",
                         CATEGORY_NOT_FOUND));
+    }
+
+    private Category requireCategoryForUpdate(UUID tenantId, UUID id) {
+        return categoryRepository.findForUpdateByTenantIdAndId(tenantId, id)
+                .orElseThrow(() -> new BusinessException(
+                        HttpStatus.NOT_FOUND, "CATEGORY_NOT_FOUND", "Categoria no encontrada."));
     }
 
     private Category requireActiveParent(UUID tenantId, UUID parentId) {

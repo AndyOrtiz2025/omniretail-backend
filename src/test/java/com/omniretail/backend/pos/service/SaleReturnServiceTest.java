@@ -106,6 +106,24 @@ class SaleReturnServiceTest {
                 .isInstanceOfSatisfying(BusinessException.class, ex -> assertThat(ex.getCode()).isEqualTo("RETURN_QUANTITY_EXCEEDED"));
     }
 
+    @Test
+    void partialKitReturnRestoresSnapshotComponents() {
+        UUID componentId = UUID.randomUUID();
+        Sale sale = sale(SaleStatus.completed);
+        SaleItem kitItem = item(new BigDecimal("2.000"));
+        ReflectionTestUtils.setField(kitItem, "fulfillmentComponents",
+                "[{\"productId\":\"" + componentId + "\",\"quantityPerKit\":3.000}]");
+        when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
+        when(saleItems.findByTenantIdAndSaleId(tenant, sale.getId())).thenReturn(List.of(kitItem));
+        when(payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(tenant, sale.getId())).thenReturn(List.of());
+
+        service.create(sale.getId(), request(BigDecimal.ONE));
+
+        verify(inventory).incrementStock(argThat(command -> command.productId().equals(componentId)
+                && command.qty().compareTo(new BigDecimal("3.000")) == 0));
+        verify(products, never()).findByTenantIdAndId(tenant, productId);
+    }
+
     private CreateSaleReturnRequest request(BigDecimal quantity) {
         return new CreateSaleReturnRequest("Cliente devolvió el producto", List.of(new CreateSaleReturnRequest.Line(itemId, quantity)));
     }

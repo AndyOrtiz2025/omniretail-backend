@@ -16,6 +16,7 @@ import com.omniretail.backend.catalog.entity.UnitStatus;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.ProductPriceHistoryRepository;
+import com.omniretail.backend.catalog.repository.ProductKitComponentRepository;
 import com.omniretail.backend.catalog.repository.UnitConversionRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
 import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
@@ -54,6 +55,8 @@ public class ProductService {
     private final SupplierProductRepository supplierProductRepository;
     private final PurchaseOrderItemRepository purchaseOrderItemRepository;
     private final SaleItemRepository saleItemRepository;
+    private final ProductKitComponentRepository productKitComponentRepository;
+    private final ProductKitService productKitService;
     private final BusinessConfigService businessConfigService;
     private final TenantCapabilityGuard tenantCapabilityGuard;
     private final CurrentUser currentUser;
@@ -80,7 +83,11 @@ public class ProductService {
         validateBarcodeIsAvailable(tenantId, barcode, null);
         validateCatalogReferencesForCreate(tenantId, request);
         BusinessConfigResponse config = businessConfigService.getConfig();
-        requireSupportedType(request.productType(), config);
+        requireSupportedType(request.productType(), config, tenantId);
+        if (request.productType() == ProductType.kit && request.status() == ProductStatus.published) {
+            throw BusinessException.conflict("KIT_COMPONENTS_REQUIRED",
+                    "Crea el kit archivado, configura sus componentes y luego restauralo.");
+        }
         requireUnitsAndPackagingForCreate(request, config);
 
         TrackingValues tracking = effectiveTracking(request.productType(), request.tracking());
@@ -125,7 +132,7 @@ public class ProductService {
     @Transactional
     public ProductDto update(UUID id, ProductUpdateRequest request) {
         UUID tenantId = currentUser.require().tenantId();
-        Product product = requireProduct(tenantId, id);
+        Product product = requireProductForUpdate(tenantId, id);
         if (product.getStatus() == ProductStatus.archived) {
             throw BusinessException.conflict("PRODUCT_ARCHIVED", "Un producto archivado no puede editarse.");
         }
@@ -137,7 +144,8 @@ public class ProductService {
         BusinessConfigResponse config = businessConfigService.getConfig();
 
         boolean typeChanged = request.productType() != product.getProductType();
-        if (request.productType() == ProductType.kit && typeChanged) {
+        if (typeChanged && (request.productType() == ProductType.kit
+                || product.getProductType() == ProductType.kit)) {
             throw kitNotSupported();
         }
         if (typeChanged) {
@@ -146,7 +154,7 @@ public class ProductService {
                         "PRODUCT_TYPE_CHANGE_NOT_ALLOWED",
                         "El tipo del producto no puede cambiar porque posee historial estructural.");
             }
-            requireSupportedType(request.productType(), config);
+            requireSupportedType(request.productType(), config, tenantId);
         }
 
         validateChangedCategory(tenantId, product, request.categoryId());
@@ -164,7 +172,13 @@ public class ProductService {
         validateUnitsAndPackagingForUpdate(product, request, config);
 
         TrackingValues currentTracking = TrackingValues.from(product);
+        validateKitTrackingForUpdate(request.productType(), request.tracking());
         TrackingValues requestedTracking = effectiveTracking(request.productType(), request.tracking());
+        if (productKitComponentRepository.existsInPublishedKit(tenantId, product.getId())
+                && (request.productType() != ProductType.physical || !requestedTracking.stock())) {
+            throw BusinessException.conflict("KIT_COMPONENT_IN_USE",
+                    "El producto debe seguir siendo fisico y controlar inventario mientras sea componente de un kit publicado.");
+        }
         validateTrackingCoherence(requestedTracking);
         validateBusinessCapabilitiesForUpdate(
                 product.getProductType(), request.productType(), currentTracking, requestedTracking, config);
@@ -203,7 +217,7 @@ public class ProductService {
     @Transactional
     public void archive(UUID id) {
         UUID tenantId = currentUser.require().tenantId();
-        Product product = requireProduct(tenantId, id);
+        Product product = requireProductForUpdate(tenantId, id);
         if (product.getStatus() == ProductStatus.archived) {
             return;
         }
@@ -217,8 +231,33 @@ public class ProductService {
                     "PRODUCT_ARCHIVE_HAS_OPEN_PO",
                     "El producto no puede archivarse porque aparece en una orden de compra abierta.");
         }
+        if (productKitComponentRepository.existsInPublishedKit(tenantId, product.getId())) {
+            throw BusinessException.conflict("KIT_COMPONENT_IN_USE",
+                    "El producto es componente de un kit publicado y no puede archivarse.");
+        }
         product.setStatus(ProductStatus.archived);
         productRepository.saveAndFlush(product);
+    }
+
+    @Transactional
+    public ProductDto restore(UUID id) {
+        UUID tenantId = currentUser.require().tenantId();
+        Product product = requireProductForUpdate(tenantId, id);
+        if (product.getStatus() == ProductStatus.published) return toDto(product);
+        requireActiveCategory(product.getCategoryId(), tenantId);
+        requireOwnedActiveUnit(product.getBaseUnitId(), tenantId);
+        if (product.getInventoryUnitId() != null) requireOwnedActiveUnit(product.getInventoryUnitId(), tenantId);
+        if (product.getSaleUnitId() != null) requireOwnedActiveUnit(product.getSaleUnitId(), tenantId);
+        BusinessConfigResponse config = businessConfigService.getConfig();
+        requireSupportedType(product.getProductType(), config, tenantId);
+        TrackingValues tracking = effectiveTracking(product.getProductType(), new ProductTrackingDto(
+                product.getTrackingStock(), product.getTrackingLot(), product.getTrackingExpiration(), product.getTrackingSerial()));
+        validateTrackingCoherence(tracking);
+        validateBusinessCapabilitiesForCreate(product.getProductType(), tracking, config);
+        requireTraceabilityEntitlements(tenantId, TrackingValues.NONE, tracking);
+        if (product.getProductType() == ProductType.kit) productKitService.validatePublishable(tenantId, product);
+        product.setStatus(ProductStatus.published);
+        return toDto(productRepository.saveAndFlush(product));
     }
 
     private Product saveWithUniqueTranslation(Product product) {
@@ -239,6 +278,12 @@ public class ProductService {
     private Product requireProduct(UUID tenantId, UUID id) {
         return productRepository
                 .findByTenantIdAndId(tenantId, id)
+                .orElseThrow(() -> new BusinessException(
+                        HttpStatus.NOT_FOUND, "PRODUCT_NOT_FOUND", "Producto no encontrado."));
+    }
+
+    private Product requireProductForUpdate(UUID tenantId, UUID id) {
+        return productRepository.findForUpdateByTenantIdAndId(tenantId, id)
                 .orElseThrow(() -> new BusinessException(
                         HttpStatus.NOT_FOUND, "PRODUCT_NOT_FOUND", "Producto no encontrado."));
     }
@@ -306,9 +351,10 @@ public class ProductService {
         }
     }
 
-    private static void requireSupportedType(ProductType type, BusinessConfigResponse config) {
+    private void requireSupportedType(ProductType type, BusinessConfigResponse config, UUID tenantId) {
         if (type == ProductType.kit) {
-            throw kitNotSupported();
+            if (!config.supportsKits()) throw capabilityDisabled("El negocio no tiene habilitados los kits.");
+            tenantCapabilityGuard.ensureTenantCapability(tenantId, SaasCapability.catalogKits);
         }
         if (type == ProductType.service && !config.supportsServices()) {
             throw capabilityDisabled("El negocio no tiene habilitados los productos de servicio.");
@@ -316,7 +362,7 @@ public class ProductService {
     }
 
     private static TrackingValues effectiveTracking(ProductType type, ProductTrackingDto requested) {
-        if (type == ProductType.service) {
+        if (type == ProductType.service || type == ProductType.kit) {
             return TrackingValues.NONE;
         }
         return new TrackingValues(
@@ -324,6 +370,17 @@ public class ProductService {
                 Boolean.TRUE.equals(requested.lot()),
                 Boolean.TRUE.equals(requested.expiration()),
                 Boolean.TRUE.equals(requested.serial()));
+    }
+
+    private static void validateKitTrackingForUpdate(
+            ProductType requestedType, ProductTrackingDto requestedTracking) {
+        if (requestedType == ProductType.kit
+                && (Boolean.TRUE.equals(requestedTracking.stock())
+                        || Boolean.TRUE.equals(requestedTracking.lot())
+                        || Boolean.TRUE.equals(requestedTracking.expiration())
+                        || Boolean.TRUE.equals(requestedTracking.serial()))) {
+            throw capabilityDisabled("Los kits no pueden habilitar seguimiento de inventario propio.");
+        }
     }
 
     private static void validateTrackingCoherence(TrackingValues tracking) {
@@ -475,7 +532,7 @@ public class ProductService {
         return new BusinessException(
                 HttpStatus.BAD_REQUEST,
                 "PRODUCT_KIT_NOT_SUPPORTED",
-                "Los kits estarán disponibles cuando exista el dominio de componentes.");
+                "El tipo kit solo puede definirse durante la creación y no puede convertirse después.");
     }
 
     private static BusinessException capabilityDisabled(String message) {

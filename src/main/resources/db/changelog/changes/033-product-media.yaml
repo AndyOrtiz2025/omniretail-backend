@@ -1,0 +1,45 @@
+databaseChangeLog:
+  - changeSet:
+      id: 033-product-media
+      author: melbyn
+      changes:
+        - createTable:
+            tableName: product_media
+            columns:
+              - column: { name: id, type: UUID, defaultValueComputed: gen_random_uuid(), constraints: { primaryKey: true, nullable: false } }
+              - column: { name: tenant_id, type: UUID, constraints: { nullable: false } }
+              - column: { name: product_id, type: UUID, constraints: { nullable: false } }
+              - column: { name: type, type: VARCHAR(20), constraints: { nullable: false } }
+              - column: { name: url, type: TEXT, constraints: { nullable: false } }
+              - column: { name: alt_text, type: TEXT }
+              - column: { name: is_primary, type: BOOLEAN, defaultValueBoolean: false, constraints: { nullable: false } }
+              - column: { name: sort_order, type: INTEGER, constraints: { nullable: false } }
+              - column: { name: created_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: { nullable: false } }
+              - column: { name: updated_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: { nullable: false } }
+        - addForeignKeyConstraint:
+            baseTableName: product_media
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_product_media_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: product_media
+            baseColumnNames: tenant_id, product_id
+            referencedTableName: products
+            referencedColumnNames: tenant_id, id
+            constraintName: fk_product_media_product
+            onDelete: CASCADE
+        - sql:
+            sql: "ALTER TABLE product_media ADD CONSTRAINT ck_product_media_type CHECK (type IN ('image', 'video'))"
+        - sql:
+            sql: "ALTER TABLE product_media ADD CONSTRAINT ck_product_media_sort_order CHECK (sort_order >= 0)"
+        - createIndex:
+            tableName: product_media
+            indexName: idx_product_media_product_sort
+            columns:
+              - column: { name: tenant_id }
+              - column: { name: product_id }
+              - column: { name: sort_order }
+        - sql:
+            sql: "CREATE UNIQUE INDEX uk_product_media_primary ON product_media (tenant_id, product_id) WHERE is_primary"

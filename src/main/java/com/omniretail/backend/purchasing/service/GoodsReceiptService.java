@@ -3,6 +3,7 @@ package com.omniretail.backend.purchasing.service;
 import com.omniretail.backend.administration.service.BranchAccessResolver;
 import com.omniretail.backend.administration.service.BranchAccessResolver.BranchAccess;
 import com.omniretail.backend.catalog.entity.Product;
+import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.entity.Location;
 import com.omniretail.backend.catalog.entity.LocationStatus;
 import com.omniretail.backend.catalog.entity.Unit;
@@ -267,6 +268,9 @@ public class GoodsReceiptService {
                 throw purchaseOrderItemNotFound();
             }
             Product product = requireProduct(tenantId, orderItem.getProductId());
+            if (product.getProductType() == ProductType.kit) {
+                throw badRequest("GOODS_RECEIPT_KIT_NOT_ALLOWED", "Los kits no se reciben como inventario propio.");
+            }
             Unit purchaseUnit = requireUnit(tenantId, orderItem.getUnitId());
             Unit baseUnit = requireUnit(tenantId, product.getBaseUnitId());
             validateReceivedQuantity(request.receivedQuantity(), purchaseUnit);
