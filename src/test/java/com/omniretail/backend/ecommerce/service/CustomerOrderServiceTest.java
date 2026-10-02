@@ -59,6 +59,12 @@ class CustomerOrderServiceTest {
         Fixture fixture = fixture();
         UUID ownOrder = order(fixture, fixture.customerId(), "WEB-DETAIL", "picking", "ecommerce");
         orderItem(fixture, ownOrder, "SKU-DETAIL");
+        jdbc.update("""
+                UPDATE orders SET delivery_address = CAST(? AS jsonb) WHERE id = ?
+                """, """
+                {"recipientName":"Ana Cliente","recipientPhone":"5555-0000","line1":"Calle 1",
+                 "city":"Guatemala","stateOrDepartment":"Guatemala","country":"GT"}
+                """, ownOrder);
         actor(fixture);
 
         CustomerOrderDetailResponse response = service.getById(ownOrder);
@@ -68,6 +74,12 @@ class CustomerOrderServiceTest {
         assertThat(response.items()).singleElement().satisfies(item -> {
             assertThat(item.sku()).isEqualTo("SKU-DETAIL");
             assertThat(item.quantity()).isEqualByComparingTo("1.000");
+        });
+        assertThat(response.deliveryAddress()).isNotNull().satisfies(address -> {
+            assertThat(address.recipientName()).isEqualTo("Ana Cliente");
+            assertThat(address.line1()).isEqualTo("Calle 1");
+            assertThat(address.department()).isEqualTo("Guatemala");
+            assertThat(address.country()).isEqualTo("GT");
         });
     }
 

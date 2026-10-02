@@ -1,7 +1,5 @@
 package com.omniretail.backend.ecommerce.service;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.ecommerce.dto.CustomerOrderDetailResponse;
 import com.omniretail.backend.ecommerce.dto.CustomerOrderResponse;
@@ -30,6 +28,8 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.json.JsonMapper;
 
 /** Consulta el historial exclusivamente para el Customer asociado a la sesión actual. */
 @Service
@@ -42,7 +42,7 @@ public class CustomerOrderService {
     private final OrderRepository orderRepository;
     private final OrderItemRepository orderItemRepository;
     private final PaymentRepository paymentRepository;
-    private final ObjectMapper objectMapper;
+    private final JsonMapper jsonMapper;
 
     public PageResponse<CustomerOrderResponse> list(Pageable pageable) {
         AuthenticatedUser actor = currentUser.require();
@@ -117,7 +117,7 @@ public class CustomerOrderService {
             return null;
         }
         try {
-            Map<String, Object> map = objectMapper.readValue(rawJson, new TypeReference<>() {});
+            Map<String, Object> map = jsonMapper.readValue(rawJson, new TypeReference<>() {});
             return new CustomerOrderDetailResponse.DeliveryAddressDto(
                     stringValue(map.get("recipientName")),
                     stringValue(map.get("recipientPhone")),
