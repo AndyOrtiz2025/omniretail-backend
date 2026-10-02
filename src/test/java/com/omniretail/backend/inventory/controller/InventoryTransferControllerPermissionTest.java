@@ -6,6 +6,7 @@ import com.omniretail.backend.inventory.dto.ApproveInventoryTransferRequest;
 import com.omniretail.backend.inventory.dto.CancelInventoryTransferRequest;
 import com.omniretail.backend.inventory.dto.CreateInventoryTransferRequest;
 import com.omniretail.backend.inventory.dto.RejectInventoryTransferRequest;
+import com.omniretail.backend.inventory.dto.ReceiveInventoryTransferRequest;
 import com.omniretail.backend.inventory.entity.InventoryTransferRequestStatus;
 import com.omniretail.backend.inventory.entity.InventoryTransferStatus;
 import com.omniretail.backend.shared.security.RequirePermission;
@@ -42,6 +43,8 @@ class InventoryTransferControllerPermissionTest {
                 "detail", UUID.class));
         assertManagePermission(InventoryTransferController.class.getDeclaredMethod(
                 "cancel", UUID.class, CancelInventoryTransferRequest.class));
+        assertManagePermission(InventoryTransferController.class.getDeclaredMethod(
+                "receive", UUID.class, ReceiveInventoryTransferRequest.class));
     }
 
     private static void assertManagePermission(Method method) {

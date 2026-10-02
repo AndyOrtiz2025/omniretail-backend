@@ -7,26 +7,38 @@ import com.omniretail.backend.administration.service.BranchAccessResolver;
 import com.omniretail.backend.administration.service.BranchAccessResolver.BranchAccess;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductType;
+import com.omniretail.backend.catalog.entity.Location;
+import com.omniretail.backend.catalog.entity.LocationStatus;
+import com.omniretail.backend.catalog.repository.LocationRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.ecommerce.entity.InventoryReservation;
 import com.omniretail.backend.ecommerce.entity.InventoryReservationSourceType;
 import com.omniretail.backend.ecommerce.entity.InventoryReservationStatus;
 import com.omniretail.backend.ecommerce.repository.InventoryReservationRepository;
 import com.omniretail.backend.inventory.dto.ApproveInventoryTransferRequest;
+import com.omniretail.backend.inventory.dto.AddStockCommand;
 import com.omniretail.backend.inventory.dto.CancelInventoryTransferRequest;
 import com.omniretail.backend.inventory.dto.CreateInventoryTransferRequest;
 import com.omniretail.backend.inventory.dto.InventoryTransferItemResponse;
+import com.omniretail.backend.inventory.dto.InventoryTransferReceiptItemResponse;
+import com.omniretail.backend.inventory.dto.InventoryTransferReceiptResponse;
 import com.omniretail.backend.inventory.dto.InventoryTransferRequestEffectiveStatus;
 import com.omniretail.backend.inventory.dto.InventoryTransferRequestResponse;
 import com.omniretail.backend.inventory.dto.InventoryTransferResponse;
+import com.omniretail.backend.inventory.dto.ReceiveInventoryTransferItemRequest;
+import com.omniretail.backend.inventory.dto.ReceiveInventoryTransferRequest;
 import com.omniretail.backend.inventory.dto.RejectInventoryTransferRequest;
 import com.omniretail.backend.inventory.dto.ReserveInventoryCommand;
 import com.omniretail.backend.inventory.entity.InventoryTransfer;
 import com.omniretail.backend.inventory.entity.InventoryTransferItem;
+import com.omniretail.backend.inventory.entity.InventoryTransferReceipt;
+import com.omniretail.backend.inventory.entity.InventoryTransferReceiptItem;
 import com.omniretail.backend.inventory.entity.InventoryTransferRequest;
 import com.omniretail.backend.inventory.entity.InventoryTransferRequestStatus;
 import com.omniretail.backend.inventory.entity.InventoryTransferStatus;
 import com.omniretail.backend.inventory.repository.InventoryTransferItemRepository;
+import com.omniretail.backend.inventory.repository.InventoryTransferReceiptItemRepository;
+import com.omniretail.backend.inventory.repository.InventoryTransferReceiptRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferRequestRepository;
 import com.omniretail.backend.pos.service.DocumentCounterService;
@@ -72,12 +84,16 @@ public class InventoryTransferService {
     private final TenantCapabilityGuard tenantCapabilityGuard;
     private final BranchAccessResolver branchAccessResolver;
     private final BranchRepository branchRepository;
+    private final LocationRepository locationRepository;
     private final ProductRepository productRepository;
     private final InventoryTransferRequestRepository requestRepository;
     private final InventoryTransferRepository transferRepository;
     private final InventoryTransferItemRepository itemRepository;
+    private final InventoryTransferReceiptRepository receiptRepository;
+    private final InventoryTransferReceiptItemRepository receiptItemRepository;
     private final InventoryReservationRepository reservationRepository;
     private final InventoryReservationLifecycleService reservationLifecycleService;
+    private final InventoryStockService inventoryStockService;
     private final DocumentCounterService documentCounterService;
     private final PickingService pickingService;
 
@@ -329,6 +345,235 @@ public class InventoryTransferService {
         transfer.setCancelledAt(Instant.now());
         transfer.setCancelReason(cancellation == null ? null : normalize(cancellation.reason()));
         return transferResponse(transferRepository.saveAndFlush(transfer), items);
+    }
+
+    @Transactional
+    public InventoryTransferReceiptResponse receiveTransfer(
+            UUID transferId, ReceiveInventoryTransferRequest request) {
+        AuthenticatedUser actor = requireInventoryActor();
+        InventoryTransfer transfer = transferRepository
+                .findForUpdateByTenantIdAndId(actor.tenantId(), transferId)
+                .orElseThrow(InventoryTransferService::transferNotFound);
+        requireAccess(actor, transfer.getDestinationBranchId());
+
+        ReceiptPayload payload = requireReceiptPayload(transfer, request);
+        InventoryTransferReceipt existing = receiptRepository
+                .findByTenantIdAndConfirmationId(actor.tenantId(), payload.confirmationId())
+                .orElse(null);
+        if (existing != null) {
+            return requireMatchingReceiptReplay(transfer, existing, payload.fingerprint());
+        }
+        if (transfer.getStatus() != InventoryTransferStatus.inTransit) {
+            throw invalidTransferState(
+                    "Solo una transferencia en tránsito puede recibir mercancía.");
+        }
+
+        requireOperationalBranch(actor.tenantId(), transfer.getDestinationBranchId());
+        Location destinationLocation = requireDestinationLocation(
+                actor.tenantId(), transfer.getDestinationBranchId(), payload.destinationLocationId());
+        List<InventoryTransferItem> transferItems = itemRepository
+                .findByTenantIdAndTransferIdOrderByIdAsc(actor.tenantId(), transfer.getId());
+        Map<UUID, InventoryTransferItem> itemsById = transferItems.stream()
+                .collect(Collectors.toMap(InventoryTransferItem::getId, Function.identity()));
+        List<ResolvedReceiptItem> resolvedItems = payload.items().stream()
+                .map(item -> resolveReceiptItem(actor.tenantId(), transfer, itemsById, item))
+                .toList();
+
+        Instant now = Instant.now();
+        InventoryTransferReceipt receipt = InventoryTransferReceipt.builder()
+                .transferId(transfer.getId())
+                .confirmationId(payload.confirmationId())
+                .operationFingerprint(payload.fingerprint())
+                .receivedByUserId(actor.userId())
+                .receivedAt(now)
+                .build();
+        receipt.setTenantId(actor.tenantId());
+        try {
+            receipt = receiptRepository.saveAndFlush(receipt);
+        } catch (DataIntegrityViolationException exception) {
+            throw receiptConfirmationConflict();
+        }
+
+        List<InventoryTransferReceiptItem> receiptItems = new java.util.ArrayList<>();
+        for (ResolvedReceiptItem resolved : resolvedItems) {
+            InventoryTransferItem item = resolved.item();
+            item.setReceivedQuantity(item.getReceivedQuantity().add(resolved.quantity()));
+            itemRepository.save(item);
+
+            InventoryTransferReceiptItem receiptItem = InventoryTransferReceiptItem.builder()
+                    .receiptId(receipt.getId())
+                    .transferItemId(item.getId())
+                    .productId(item.getProductId())
+                    .locationId(destinationLocation.getId())
+                    .quantity(resolved.quantity())
+                    .build();
+            receiptItem.setTenantId(actor.tenantId());
+            receiptItems.add(receiptItemRepository.save(receiptItem));
+
+            inventoryStockService.incrementStockAtLocation(
+                    new AddStockCommand(
+                            actor.tenantId(),
+                            transfer.getDestinationBranchId(),
+                            item.getProductId(),
+                            resolved.quantity(),
+                            "Recepción de traslado " + transfer.getNumber(),
+                            "transfer",
+                            transfer.getId(),
+                            actor.userId()),
+                    destinationLocation.getId());
+        }
+
+        if (!transferItems.isEmpty()
+                && transferItems.stream().allMatch(item ->
+                        item.getReceivedQuantity().compareTo(item.getDispatchedQuantity()) == 0)) {
+            transfer.setStatus(InventoryTransferStatus.received);
+            transfer.setReceivedByUserId(actor.userId());
+            transfer.setReceivedAt(now);
+        }
+        transferRepository.saveAndFlush(transfer);
+        return receiptResponse(
+                receipt,
+                receiptItems,
+                transfer,
+                destinationLocation.getId(),
+                false);
+    }
+
+    private ReceiptPayload requireReceiptPayload(
+            InventoryTransfer transfer, ReceiveInventoryTransferRequest request) {
+        String confirmationId = request == null ? null : normalize(request.confirmationId());
+        if (confirmationId == null
+                || confirmationId.length() > 128
+                || request.destinationLocationId() == null
+                || request.items() == null
+                || request.items().isEmpty()) {
+            throw invalidReceipt("La confirmación, ubicación destino y líneas son requeridas.");
+        }
+        Set<UUID> seen = new java.util.HashSet<>();
+        List<ReceiveInventoryTransferItemRequest> items = request.items().stream()
+                .map(item -> {
+                    if (item == null
+                            || item.itemId() == null
+                            || item.receivedQuantity() == null
+                            || item.receivedQuantity().signum() <= 0
+                            || !fitsDecimal(item.receivedQuantity(), 12, 3)) {
+                        throw invalidReceipt(
+                                "Cada línea debe identificar un ítem y una cantidad positiva de hasta tres decimales.");
+                    }
+                    if (!seen.add(item.itemId())) {
+                        throw invalidReceipt("Una línea de transferencia no puede repetirse.");
+                    }
+                    return item;
+                })
+                .sorted(Comparator.comparing(ReceiveInventoryTransferItemRequest::itemId))
+                .toList();
+        return new ReceiptPayload(
+                confirmationId,
+                request.destinationLocationId(),
+                items,
+                receiptFingerprint(
+                        transfer.getId(), request.destinationLocationId(), items));
+    }
+
+    private InventoryTransferReceiptResponse requireMatchingReceiptReplay(
+            InventoryTransfer transfer,
+            InventoryTransferReceipt receipt,
+            String fingerprint) {
+        if (!Objects.equals(receipt.getTransferId(), transfer.getId())
+                || !Objects.equals(receipt.getOperationFingerprint(), fingerprint)) {
+            throw receiptConfirmationConflict();
+        }
+        List<InventoryTransferReceiptItem> receiptItems = receiptItemRepository
+                .findByTenantIdAndReceiptIdOrderByIdAsc(transfer.getTenantId(), receipt.getId());
+        UUID locationId = receiptItems.stream()
+                .map(InventoryTransferReceiptItem::getLocationId)
+                .distinct()
+                .reduce((first, second) -> {
+                    throw receiptConfirmationConflict();
+                })
+                .orElseThrow(InventoryTransferService::receiptConfirmationConflict);
+        return receiptResponse(receipt, receiptItems, transfer, locationId, true);
+    }
+
+    private Location requireDestinationLocation(
+            UUID tenantId, UUID destinationBranchId, UUID locationId) {
+        Location location = locationRepository
+                .findByTenantIdAndId(tenantId, locationId)
+                .orElseThrow(InventoryTransferService::invalidDestinationLocation);
+        if (!Objects.equals(location.getBranchId(), destinationBranchId)
+                || location.getStatus() != LocationStatus.active) {
+            throw invalidDestinationLocation();
+        }
+        return location;
+    }
+
+    private ResolvedReceiptItem resolveReceiptItem(
+            UUID tenantId,
+            InventoryTransfer transfer,
+            Map<UUID, InventoryTransferItem> itemsById,
+            ReceiveInventoryTransferItemRequest request) {
+        InventoryTransferItem item = itemsById.get(request.itemId());
+        if (item == null || !Objects.equals(item.getTransferId(), transfer.getId())) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "INVENTORY_TRANSFER_RECEIPT_ITEM_NOT_FOUND",
+                    "La línea no pertenece a la transferencia.");
+        }
+        Product product = requireProduct(tenantId, item.getProductId());
+        requireTransferable(product);
+        BigDecimal receivedAfter = item.getReceivedQuantity().add(request.receivedQuantity());
+        if (item.getDispatchedQuantity().signum() <= 0
+                || receivedAfter.compareTo(item.getDispatchedQuantity()) > 0) {
+            throw BusinessException.conflict(
+                    "INVENTORY_TRANSFER_OVER_RECEIPT",
+                    "La cantidad recibida excede la cantidad despachada.");
+        }
+        return new ResolvedReceiptItem(item, request.receivedQuantity());
+    }
+
+    private static InventoryTransferReceiptResponse receiptResponse(
+            InventoryTransferReceipt receipt,
+            List<InventoryTransferReceiptItem> items,
+            InventoryTransfer transfer,
+            UUID destinationLocationId,
+            boolean idempotent) {
+        return new InventoryTransferReceiptResponse(
+                receipt.getId(),
+                receipt.getTransferId(),
+                receipt.getConfirmationId(),
+                transfer.getDestinationBranchId(),
+                destinationLocationId,
+                receipt.getReceivedByUserId(),
+                receipt.getReceivedAt(),
+                items.stream()
+                        .map(InventoryTransferReceiptItemResponse::from)
+                        .toList(),
+                transfer.getStatus(),
+                idempotent);
+    }
+
+    private static String receiptFingerprint(
+            UUID transferId,
+            UUID destinationLocationId,
+            List<ReceiveInventoryTransferItemRequest> items) {
+        String value = transferId
+                + "|receive|"
+                + destinationLocationId
+                + items.stream()
+                        .map(item -> "|"
+                                + item.itemId()
+                                + ":"
+                                + item.receivedQuantity()
+                                        .stripTrailingZeros()
+                                        .toPlainString())
+                        .reduce("", String::concat);
+        try {
+            return HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256")
+                            .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 no está disponible.", exception);
+        }
     }
 
     private AuthenticatedUser requireInventoryActor() {
@@ -670,4 +915,31 @@ public class InventoryTransferService {
                 "INVENTORY_TRANSFER_RESERVATION_INCONSISTENT",
                 "Las reservas de la transferencia no coinciden con sus líneas.");
     }
+
+    private static BusinessException invalidReceipt(String message) {
+        return new BusinessException(
+                HttpStatus.BAD_REQUEST, "INVALID_INVENTORY_TRANSFER_RECEIPT", message);
+    }
+
+    private static BusinessException invalidDestinationLocation() {
+        return new BusinessException(
+                HttpStatus.BAD_REQUEST,
+                "INVENTORY_TRANSFER_DESTINATION_LOCATION_INVALID",
+                "La ubicación destino no está disponible para esta transferencia.");
+    }
+
+    private static BusinessException receiptConfirmationConflict() {
+        return BusinessException.conflict(
+                "INVENTORY_TRANSFER_RECEIPT_CONFIRMATION_CONFLICT",
+                "confirmationId ya fue utilizado con una recepción diferente.");
+    }
+
+    private record ReceiptPayload(
+            String confirmationId,
+            UUID destinationLocationId,
+            List<ReceiveInventoryTransferItemRequest> items,
+            String fingerprint) {}
+
+    private record ResolvedReceiptItem(
+            InventoryTransferItem item, BigDecimal quantity) {}
 }

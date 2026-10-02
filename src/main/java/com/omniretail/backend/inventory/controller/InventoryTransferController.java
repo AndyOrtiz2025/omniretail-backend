@@ -1,7 +1,9 @@
 package com.omniretail.backend.inventory.controller;
 
 import com.omniretail.backend.inventory.dto.CancelInventoryTransferRequest;
+import com.omniretail.backend.inventory.dto.InventoryTransferReceiptResponse;
 import com.omniretail.backend.inventory.dto.InventoryTransferResponse;
+import com.omniretail.backend.inventory.dto.ReceiveInventoryTransferRequest;
 import com.omniretail.backend.inventory.entity.InventoryTransferStatus;
 import com.omniretail.backend.inventory.service.InventoryTransferService;
 import com.omniretail.backend.shared.dto.PageResponse;
@@ -49,5 +51,13 @@ public class InventoryTransferController {
             @PathVariable UUID id,
             @Valid @RequestBody(required = false) CancelInventoryTransferRequest request) {
         return inventoryTransferService.cancelTransfer(id, request);
+    }
+
+    @PostMapping("/{id}/receipts")
+    @RequirePermission("inventory.transfers.manage")
+    public InventoryTransferReceiptResponse receive(
+            @PathVariable UUID id,
+            @Valid @RequestBody ReceiveInventoryTransferRequest request) {
+        return inventoryTransferService.receiveTransfer(id, request);
     }
 }

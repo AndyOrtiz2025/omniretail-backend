@@ -17,11 +17,15 @@ import com.omniretail.backend.inventory.dto.CancelInventoryTransferRequest;
 import com.omniretail.backend.inventory.dto.CreateInventoryTransferRequest;
 import com.omniretail.backend.inventory.dto.InventoryTransferRequestEffectiveStatus;
 import com.omniretail.backend.inventory.dto.InventoryTransferResponse;
+import com.omniretail.backend.inventory.dto.ReceiveInventoryTransferItemRequest;
+import com.omniretail.backend.inventory.dto.ReceiveInventoryTransferRequest;
 import com.omniretail.backend.inventory.entity.InventoryTransferReason;
 import com.omniretail.backend.inventory.entity.InventoryTransferRequestStatus;
 import com.omniretail.backend.inventory.entity.InventoryTransferStatus;
 import com.omniretail.backend.inventory.repository.InventoryTransferItemRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferRepository;
+import com.omniretail.backend.inventory.repository.InventoryTransferReceiptItemRepository;
+import com.omniretail.backend.inventory.repository.InventoryTransferReceiptRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferRequestRepository;
 import com.omniretail.backend.logistics.entity.PickingSourceType;
 import com.omniretail.backend.logistics.entity.PackingSourceType;
@@ -74,6 +78,8 @@ class InventoryTransferServiceIntegrationTest {
     @Autowired private InventoryTransferRequestRepository requests;
     @Autowired private InventoryTransferRepository transfers;
     @Autowired private InventoryTransferItemRepository items;
+    @Autowired private InventoryTransferReceiptRepository receipts;
+    @Autowired private InventoryTransferReceiptItemRepository receiptItems;
     @Autowired private InventoryReservationRepository reservations;
     @Autowired private PickingOrderRepository pickingOrders;
     @Autowired private PickingItemRepository pickingItems;
@@ -426,6 +432,317 @@ class InventoryTransferServiceIntegrationTest {
     }
 
     @Test
+    void totalReceiptIncreasesDestinationStockAndCompletesTransfer() {
+        InventoryTransferResponse transfer = dispatchedTransfer("receipt-total", "2.000");
+
+        var receipt = service.receiveTransfer(
+                transfer.id(), receiptRequest(transfer, "receipt-total", "2.000"));
+
+        assertThat(receipt.idempotent()).isFalse();
+        assertThat(receipt.destinationBranchId()).isEqualTo(fixture.destinationBranchId());
+        assertThat(receipt.destinationLocationId()).isEqualTo(fixture.destinationLocationId());
+        assertThat(receipt.transferStatus()).isEqualTo(InventoryTransferStatus.received);
+        assertThat(receipt.items()).singleElement().satisfies(item -> {
+            assertThat(item.transferItemId()).isEqualTo(transfer.items().getFirst().id());
+            assertThat(item.receivedQuantity()).isEqualByComparingTo("2.000");
+        });
+        assertThat(service.getTransfer(transfer.id())).satisfies(saved -> {
+            assertThat(saved.status()).isEqualTo(InventoryTransferStatus.received);
+            assertThat(saved.items().getFirst().receivedQuantity()).isEqualByComparingTo("2.000");
+            assertThat(saved.receivedByUserId()).isEqualTo(fixture.actorId());
+            assertThat(saved.receivedAt()).isNotNull();
+        });
+        assertBalance("8.000", "0.000");
+        assertDestinationBalance("2.000", "0.000");
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*) FROM inventory_movements
+                        WHERE tenant_id = ? AND branch_id = ? AND product_id = ?
+                          AND type = 'in' AND reference_type = 'transfer'
+                          AND reference_id = ? AND to_location_id = ?
+                        """,
+                        Long.class,
+                        fixture.tenantId(),
+                        fixture.destinationBranchId(),
+                        fixture.productId(),
+                        transfer.id(),
+                        fixture.destinationLocationId()))
+                .isOne();
+        assertThat(service.listRequests(null, null, null, PageRequest.of(0, 20)).items())
+                .filteredOn(item -> item.id().equals(transfer.items().getFirst().sourceRequestId()))
+                .singleElement()
+                .satisfies(item -> assertThat(item.effectiveStatus())
+                        .isEqualTo(InventoryTransferRequestEffectiveStatus.received));
+    }
+
+    @Test
+    void partialReceiptsAccumulateAndOnlyTheLastOneCompletesTransfer() {
+        InventoryTransferResponse transfer = dispatchedTransfer("receipt-partial", "10.000");
+
+        var first = service.receiveTransfer(
+                transfer.id(), receiptRequest(transfer, "receipt-partial-a", "4.000"));
+        assertThat(first.transferStatus()).isEqualTo(InventoryTransferStatus.inTransit);
+        assertThat(service.getTransfer(transfer.id()).items().getFirst().receivedQuantity())
+                .isEqualByComparingTo("4.000");
+
+        var second = service.receiveTransfer(
+                transfer.id(), receiptRequest(transfer, "receipt-partial-b", "6.000"));
+        assertThat(second.transferStatus()).isEqualTo(InventoryTransferStatus.received);
+        assertThat(service.getTransfer(transfer.id()).items().getFirst().receivedQuantity())
+                .isEqualByComparingTo("10.000");
+        assertThat(receipts.findByTenantIdAndTransferIdOrderByReceivedAtAsc(
+                        fixture.tenantId(), transfer.id()))
+                .hasSize(2);
+        assertDestinationBalance("10.000", "0.000");
+    }
+
+    @Test
+    void overReceiptRollsBackWithoutPartialEffects() {
+        InventoryTransferResponse transfer = dispatchedTransfer("receipt-over", "10.000");
+        service.receiveTransfer(
+                transfer.id(), receiptRequest(transfer, "receipt-over-a", "4.000"));
+
+        assertCode(
+                () -> service.receiveTransfer(
+                        transfer.id(), receiptRequest(transfer, "receipt-over-b", "7.000")),
+                "INVENTORY_TRANSFER_OVER_RECEIPT");
+
+        assertThat(service.getTransfer(transfer.id()).items().getFirst().receivedQuantity())
+                .isEqualByComparingTo("4.000");
+        assertDestinationBalance("4.000", "0.000");
+        assertThat(receipts.findByTenantIdAndTransferIdOrderByReceivedAtAsc(
+                        fixture.tenantId(), transfer.id()))
+                .hasSize(1);
+        assertThat(inboundMovementCount(transfer.id())).isOne();
+    }
+
+    @Test
+    void exactTerminalReplayIsIdempotentButCollisionsAndNewReceiptsFail() {
+        InventoryTransferResponse transfer = dispatchedTransfer("receipt-replay", "2.000");
+        ReceiveInventoryTransferRequest request =
+                receiptRequest(transfer, "receipt-replay", "2.000");
+        var first = service.receiveTransfer(transfer.id(), request);
+        var replay = service.receiveTransfer(transfer.id(), request);
+
+        assertThat(replay.id()).isEqualTo(first.id());
+        assertThat(replay.idempotent()).isTrue();
+        assertThat(receipts.findByTenantIdAndTransferIdOrderByReceivedAtAsc(
+                        fixture.tenantId(), transfer.id()))
+                .hasSize(1);
+        assertThat(receiptItems.findByTenantIdAndReceiptIdOrderByIdAsc(
+                        fixture.tenantId(), first.id()))
+                .hasSize(1);
+        assertDestinationBalance("2.000", "0.000");
+        assertThat(inboundMovementCount(transfer.id())).isOne();
+
+        assertCode(
+                () -> service.receiveTransfer(
+                        transfer.id(), receiptRequest(transfer, "receipt-replay", "1.000")),
+                "INVENTORY_TRANSFER_RECEIPT_CONFIRMATION_CONFLICT");
+        assertCode(
+                () -> service.receiveTransfer(
+                        transfer.id(), receiptRequest(transfer, "receipt-new", "1.000")),
+                "INVALID_INVENTORY_TRANSFER_STATE");
+    }
+
+    @Test
+    void destinationLocationAndDestinationBranchAccessAreEnforced() {
+        InventoryTransferResponse transfer = dispatchedTransfer("receipt-location", "2.000");
+        UUID sourceLocation = insertLocation(
+                fixture.tenantId(), fixture.sourceBranchId(), "SOURCE-RECEIPT", "active");
+        UUID inactiveLocation = insertLocation(
+                fixture.tenantId(), fixture.destinationBranchId(), "INACTIVE", "inactive");
+        Fixture otherTenant = fixture("1.000");
+
+        assertCode(
+                () -> service.receiveTransfer(
+                        transfer.id(),
+                        receiptRequest(transfer, "wrong-branch", "1.000", sourceLocation)),
+                "INVENTORY_TRANSFER_DESTINATION_LOCATION_INVALID");
+        assertCode(
+                () -> service.receiveTransfer(
+                        transfer.id(),
+                        receiptRequest(transfer, "inactive", "1.000", inactiveLocation)),
+                "INVENTORY_TRANSFER_DESTINATION_LOCATION_INVALID");
+        assertCode(
+                () -> service.receiveTransfer(
+                        transfer.id(),
+                        receiptRequest(
+                                transfer,
+                                "other-tenant",
+                                "1.000",
+                                otherTenant.destinationLocationId())),
+                "INVENTORY_TRANSFER_DESTINATION_LOCATION_INVALID");
+
+        given(branchAccessResolver.resolve(any())).willReturn(
+                new BranchAccess(false, Set.of(fixture.destinationBranchId())));
+        service.receiveTransfer(
+                transfer.id(), receiptRequest(transfer, "destination-only", "1.000"));
+        given(branchAccessResolver.resolve(any())).willReturn(new BranchAccess(false, Set.of()));
+        assertCode(
+                () -> service.receiveTransfer(
+                        transfer.id(), receiptRequest(transfer, "no-access", "1.000")),
+                "BRANCH_ACCESS_DENIED");
+    }
+
+    @Test
+    void receiptRejectsUnknownDuplicateInvalidAndTraceableItems() {
+        InventoryTransferResponse transfer = dispatchedTransfer("receipt-validation", "2.000");
+        UUID itemId = transfer.items().getFirst().id();
+
+        assertCode(
+                () -> service.receiveTransfer(
+                        transfer.id(),
+                        new ReceiveInventoryTransferRequest(
+                                "duplicate",
+                                fixture.destinationLocationId(),
+                                List.of(
+                                        new ReceiveInventoryTransferItemRequest(
+                                                itemId, BigDecimal.ONE),
+                                        new ReceiveInventoryTransferItemRequest(
+                                                itemId, BigDecimal.ONE)))),
+                "INVALID_INVENTORY_TRANSFER_RECEIPT");
+        assertCode(
+                () -> service.receiveTransfer(
+                        transfer.id(),
+                        new ReceiveInventoryTransferRequest(
+                                "unknown",
+                                fixture.destinationLocationId(),
+                                List.of(new ReceiveInventoryTransferItemRequest(
+                                        UUID.randomUUID(), BigDecimal.ONE)))),
+                "INVENTORY_TRANSFER_RECEIPT_ITEM_NOT_FOUND");
+        assertCode(
+                () -> service.receiveTransfer(
+                        transfer.id(),
+                        new ReceiveInventoryTransferRequest(
+                                "zero",
+                                fixture.destinationLocationId(),
+                                List.of(new ReceiveInventoryTransferItemRequest(
+                                        itemId, BigDecimal.ZERO)))),
+                "INVALID_INVENTORY_TRANSFER_RECEIPT");
+
+        jdbc.update("UPDATE products SET tracking_lot = true WHERE id = ?", fixture.productId());
+        assertCode(
+                () -> service.receiveTransfer(
+                        transfer.id(), receiptRequest(transfer, "traceability", "1.000")),
+                "INVENTORY_TRANSFER_TRACEABILITY_UNSUPPORTED");
+        jdbc.update(
+                """
+                UPDATE products
+                SET product_type = 'kit', tracking_stock = false, tracking_lot = false,
+                    tracking_expiration = false, tracking_serial = false
+                WHERE id = ?
+                """,
+                fixture.productId());
+        assertCode(
+                () -> service.receiveTransfer(
+                        transfer.id(), receiptRequest(transfer, "kit", "1.000")),
+                "INVENTORY_TRANSFER_PRODUCT_UNSUPPORTED");
+        assertDestinationBalance("0.000", "0.000");
+    }
+
+    @Test
+    void preparingCancelledAndCrossTenantTransfersCannotBeReceived() {
+        UUID requestId = createRequest();
+        InventoryTransferResponse preparing = service.approve(
+                requestId, new ApproveInventoryTransferRequest("approve-not-dispatched", null));
+        assertCode(
+                () -> service.receiveTransfer(
+                        preparing.id(), receiptRequest(preparing, "preparing", "1.000")),
+                "INVALID_INVENTORY_TRANSFER_STATE");
+        InventoryTransferResponse cancelled = service.cancelTransfer(
+                preparing.id(), new CancelInventoryTransferRequest("cancelled"));
+        assertCode(
+                () -> service.receiveTransfer(
+                        cancelled.id(), receiptRequest(cancelled, "cancelled", "1.000")),
+                "INVALID_INVENTORY_TRANSFER_STATE");
+
+        Fixture original = fixture;
+        Fixture otherTenant = fixture("1.000");
+        useActor(otherTenant);
+        assertCode(
+                () -> service.receiveTransfer(
+                        preparing.id(),
+                        new ReceiveInventoryTransferRequest(
+                                "cross-tenant",
+                                original.destinationLocationId(),
+                                List.of(new ReceiveInventoryTransferItemRequest(
+                                        preparing.items().getFirst().id(), BigDecimal.ONE)))),
+                "INVENTORY_TRANSFER_NOT_FOUND");
+    }
+
+    @Test
+    void concurrentReceiptsCannotOverReceive() throws Exception {
+        InventoryTransferResponse transfer = dispatchedTransfer("receipt-concurrent", "10.000");
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            List<Future<Boolean>> futures = java.util.stream.IntStream.range(0, 2)
+                    .mapToObj(index -> executor.submit(() -> {
+                        ready.countDown();
+                        if (!start.await(10, TimeUnit.SECONDS)) return false;
+                        try {
+                            service.receiveTransfer(
+                                    transfer.id(),
+                                    receiptRequest(
+                                            transfer,
+                                            "receipt-concurrent-" + index,
+                                            "6.000"));
+                            return true;
+                        } catch (BusinessException exception) {
+                            return false;
+                        }
+                    }))
+                    .toList();
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            assertThat(List.of(
+                            futures.get(0).get(20, TimeUnit.SECONDS),
+                            futures.get(1).get(20, TimeUnit.SECONDS)))
+                    .containsExactlyInAnyOrder(true, false);
+            assertThat(service.getTransfer(transfer.id()).items().getFirst().receivedQuantity())
+                    .isEqualByComparingTo("6.000");
+            assertDestinationBalance("6.000", "0.000");
+            assertThat(inboundMovementCount(transfer.id())).isOne();
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void concurrentExactConfirmationReplaysWithoutDuplicateEffects() throws Exception {
+        InventoryTransferResponse transfer = dispatchedTransfer("receipt-same", "2.000");
+        ReceiveInventoryTransferRequest request = receiptRequest(
+                transfer, "receipt-same-confirmation", "2.000");
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            var futures = java.util.stream.IntStream.range(0, 2)
+                    .mapToObj(index -> executor.submit(() -> {
+                        ready.countDown();
+                        if (!start.await(10, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("Las recepciones no iniciaron a tiempo.");
+                        }
+                        return service.receiveTransfer(transfer.id(), request);
+                    }))
+                    .toList();
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            var first = futures.get(0).get(20, TimeUnit.SECONDS);
+            var second = futures.get(1).get(20, TimeUnit.SECONDS);
+            assertThat(first.id()).isEqualTo(second.id());
+            assertThat(List.of(first.idempotent(), second.idempotent()))
+                    .containsExactlyInAnyOrder(false, true);
+            assertDestinationBalance("2.000", "0.000");
+            assertThat(inboundMovementCount(transfer.id())).isOne();
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
     void insufficientStockRollsBackTransferItemRequestAndCounter() {
         UUID requestId = createRequest();
         jdbc.update(
@@ -529,7 +846,11 @@ class InventoryTransferServiceIntegrationTest {
     }
 
     private ReadyTransfer readyTransfer(String suffix) {
-        UUID requestId = createRequest();
+        return readyTransfer(suffix, "2.000");
+    }
+
+    private ReadyTransfer readyTransfer(String suffix, String quantity) {
+        UUID requestId = createRequest(quantity);
         InventoryTransferResponse transfer = service.approve(
                 requestId,
                 new ApproveInventoryTransferRequest("approve-" + suffix, null));
@@ -585,12 +906,43 @@ class InventoryTransferServiceIntegrationTest {
         return new ReadyTransfer(transfer);
     }
 
+    private InventoryTransferResponse dispatchedTransfer(String suffix, String quantity) {
+        InventoryTransferResponse transfer = readyTransfer(suffix, quantity).transfer();
+        dispatchService.confirmTransfer(
+                fixture.sourceBranchId(),
+                transfer.id(),
+                new ConfirmTransferDispatchRequest("dispatch-" + suffix));
+        return service.getTransfer(transfer.id());
+    }
+
+    private ReceiveInventoryTransferRequest receiptRequest(
+            InventoryTransferResponse transfer, String confirmationId, String quantity) {
+        return receiptRequest(
+                transfer, confirmationId, quantity, fixture.destinationLocationId());
+    }
+
+    private ReceiveInventoryTransferRequest receiptRequest(
+            InventoryTransferResponse transfer,
+            String confirmationId,
+            String quantity,
+            UUID locationId) {
+        return new ReceiveInventoryTransferRequest(
+                confirmationId,
+                locationId,
+                List.of(new ReceiveInventoryTransferItemRequest(
+                        transfer.items().getFirst().id(), new BigDecimal(quantity))));
+    }
+
     private UUID createRequest() {
+        return createRequest("2.000");
+    }
+
+    private UUID createRequest(String quantity) {
         return service.createRequest(new CreateInventoryTransferRequest(
                         fixture.destinationBranchId(),
                         fixture.sourceBranchId(),
                         fixture.productId(),
-                        new BigDecimal("2.000"),
+                        new BigDecimal(quantity),
                         InventoryTransferReason.replenishment,
                         "reposición"))
                 .id();
@@ -614,12 +966,21 @@ class InventoryTransferServiceIntegrationTest {
         UUID productId = UUID.randomUUID();
         UUID categoryId = UUID.randomUUID();
         UUID unitId = UUID.randomUUID();
+        UUID destinationLocationId = UUID.randomUUID();
         jdbc.update(
                 "INSERT INTO tenants (id, name, slug) VALUES (?, 'Transfer lifecycle', ?)",
                 tenantId,
                 "transfer-lifecycle-" + tenantId);
         insertBranch(tenantId, sourceBranchId, "SOURCE");
         insertBranch(tenantId, destinationBranchId, "DESTINATION");
+        jdbc.update(
+                """
+                INSERT INTO locations (id, tenant_id, branch_id, code, name, type, status)
+                VALUES (?, ?, ?, 'RECEIVING', 'Recepción', 'warehouse', 'active')
+                """,
+                destinationLocationId,
+                tenantId,
+                destinationBranchId);
         jdbc.update(
                 """
                 INSERT INTO users (id, tenant_id, name, email, type, branch_id)
@@ -667,7 +1028,29 @@ class InventoryTransferServiceIntegrationTest {
                 productId,
                 stock);
         return new Fixture(
-                tenantId, sourceBranchId, destinationBranchId, productId, actorId);
+                tenantId,
+                sourceBranchId,
+                destinationBranchId,
+                destinationLocationId,
+                productId,
+                actorId);
+    }
+
+    private UUID insertLocation(
+            UUID tenantId, UUID branchId, String code, String status) {
+        UUID locationId = UUID.randomUUID();
+        jdbc.update(
+                """
+                INSERT INTO locations (id, tenant_id, branch_id, code, name, type, status)
+                VALUES (?, ?, ?, ?, ?, 'warehouse', ?)
+                """,
+                locationId,
+                tenantId,
+                branchId,
+                code + "-" + locationId.toString().substring(0, 8),
+                code,
+                status);
+        return locationId;
     }
 
     private void insertBranch(UUID tenantId, UUID branchId, String code) {
@@ -705,10 +1088,59 @@ class InventoryTransferServiceIntegrationTest {
                 .isEqualByComparingTo(reservedQuantity);
     }
 
+    private void assertDestinationBalance(String quantity, String reservedQuantity) {
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT COALESCE(sum(quantity), 0) FROM inventory_balances
+                        WHERE tenant_id = ? AND branch_id = ? AND product_id = ?
+                          AND location_id = ?
+                        """,
+                        BigDecimal.class,
+                        fixture.tenantId(),
+                        fixture.destinationBranchId(),
+                        fixture.productId(),
+                        fixture.destinationLocationId()))
+                .isEqualByComparingTo(quantity);
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT COALESCE(sum(reserved_quantity), 0) FROM inventory_balances
+                        WHERE tenant_id = ? AND branch_id = ? AND product_id = ?
+                          AND location_id = ?
+                        """,
+                        BigDecimal.class,
+                        fixture.tenantId(),
+                        fixture.destinationBranchId(),
+                        fixture.productId(),
+                        fixture.destinationLocationId()))
+                .isEqualByComparingTo(reservedQuantity);
+    }
+
+    private Long inboundMovementCount(UUID transferId) {
+        return jdbc.queryForObject(
+                """
+                SELECT count(*) FROM inventory_movements
+                WHERE tenant_id = ? AND branch_id = ? AND type = 'in'
+                  AND reference_type = 'transfer' AND reference_id = ?
+                """,
+                Long.class,
+                fixture.tenantId(),
+                fixture.destinationBranchId(),
+                transferId);
+    }
+
+    private static void assertCode(
+            org.assertj.core.api.ThrowableAssert.ThrowingCallable action, String code) {
+        assertThatThrownBy(action)
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode()).isEqualTo(code));
+    }
+
     private record Fixture(
             UUID tenantId,
             UUID sourceBranchId,
             UUID destinationBranchId,
+            UUID destinationLocationId,
             UUID productId,
             UUID actorId) {}
 
