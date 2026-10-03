@@ -25,6 +25,10 @@ import com.omniretail.backend.inventory.dto.InventoryTransferReceiptResponse;
 import com.omniretail.backend.inventory.dto.InventoryTransferRequestEffectiveStatus;
 import com.omniretail.backend.inventory.dto.InventoryTransferRequestResponse;
 import com.omniretail.backend.inventory.dto.InventoryTransferResponse;
+import com.omniretail.backend.inventory.dto.InventoryHistoricalTraceDetail;
+import com.omniretail.backend.inventory.dto.InventoryPhysicalSelection;
+import com.omniretail.backend.inventory.dto.InventoryTraceabilitySelection;
+import com.omniretail.backend.inventory.dto.InventoryTransferTrackingSelectionRequest;
 import com.omniretail.backend.inventory.dto.ReceiveInventoryTransferItemRequest;
 import com.omniretail.backend.inventory.dto.ReceiveInventoryTransferRequest;
 import com.omniretail.backend.inventory.dto.RejectInventoryTransferRequest;
@@ -36,13 +40,20 @@ import com.omniretail.backend.inventory.entity.InventoryTransferReceiptItem;
 import com.omniretail.backend.inventory.entity.InventoryTransferRequest;
 import com.omniretail.backend.inventory.entity.InventoryTransferRequestStatus;
 import com.omniretail.backend.inventory.entity.InventoryTransferStatus;
+import com.omniretail.backend.inventory.entity.InventoryMovement;
 import com.omniretail.backend.inventory.repository.InventoryTransferItemRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferReceiptItemRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferReceiptRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferRequestRepository;
+import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
 import com.omniretail.backend.pos.service.DocumentCounterService;
 import com.omniretail.backend.logistics.service.PickingService;
+import com.omniretail.backend.logistics.entity.PickingItem;
+import com.omniretail.backend.logistics.entity.PickingOrder;
+import com.omniretail.backend.logistics.entity.PickingSourceType;
+import com.omniretail.backend.logistics.repository.PickingItemRepository;
+import com.omniretail.backend.logistics.repository.PickingOrderRepository;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
@@ -94,8 +105,14 @@ public class InventoryTransferService {
     private final InventoryReservationRepository reservationRepository;
     private final InventoryReservationLifecycleService reservationLifecycleService;
     private final InventoryStockService inventoryStockService;
+    private final InventoryTraceabilityMutationService traceabilityMutationService;
+    private final InventoryTraceabilityHistoryService traceabilityHistoryService;
+    private final InventoryPhysicalSelectionCodec physicalSelectionCodec;
+    private final InventoryMovementRepository movementRepository;
     private final DocumentCounterService documentCounterService;
     private final PickingService pickingService;
+    private final PickingOrderRepository pickingOrderRepository;
+    private final PickingItemRepository pickingItemRepository;
 
     @Transactional
     public InventoryTransferRequestResponse createRequest(CreateInventoryTransferRequest request) {
@@ -337,6 +354,7 @@ public class InventoryTransferService {
             }
             return transferResponse(transfer, items);
         }
+        releaseTransferPhysicalReservations(actor.tenantId(), transfer, items);
         for (InventoryReservation reservation : orderedReservations) {
             reservationLifecycleService.release(actor.tenantId(), reservation.getId());
         }
@@ -345,6 +363,45 @@ public class InventoryTransferService {
         transfer.setCancelledAt(Instant.now());
         transfer.setCancelReason(cancellation == null ? null : normalize(cancellation.reason()));
         return transferResponse(transferRepository.saveAndFlush(transfer), items);
+    }
+
+    private void releaseTransferPhysicalReservations(
+            UUID tenantId,
+            InventoryTransfer transfer,
+            List<InventoryTransferItem> transferItems) {
+        PickingOrder picking = pickingOrderRepository
+                .findByTenantIdAndSourceTypeAndSourceId(
+                        tenantId, PickingSourceType.transfer, transfer.getId())
+                .orElse(null);
+        if (picking == null) return;
+        Map<UUID, InventoryTransferItem> transferItemsById = transferItems.stream()
+                .collect(Collectors.toMap(InventoryTransferItem::getId, Function.identity()));
+        List<PickingItem> pickingItems = pickingItemRepository
+                .findByTenantIdAndPickingOrderId(tenantId, picking.getId());
+        for (PickingItem pickingItem : pickingItems.stream()
+                .sorted(Comparator.comparing(PickingItem::getProductId)
+                        .thenComparing(PickingItem::getId))
+                .toList()) {
+            InventoryTransferItem transferItem = transferItemsById.get(
+                    pickingItem.getSourceLineId());
+            if (transferItem == null
+                    || !transferItem.getProductId().equals(pickingItem.getProductId())) {
+                throw inconsistentReservation();
+            }
+            Product product = requireProduct(tenantId, pickingItem.getProductId());
+            if (!isTraceable(product) || pickingItem.getPickedTraces() == null) continue;
+            List<InventoryPhysicalSelection> physical =
+                    physicalSelectionCodec.decode(pickingItem.getPickedTraces());
+            List<InventoryTraceabilitySelection> selections =
+                    physicalSelectionCodec.withoutLocation(
+                            physical, pickingItem.getLocationId());
+            traceabilityMutationService.releasePhysicalReservation(
+                    tenantId,
+                    transfer.getSourceBranchId(),
+                    product,
+                    pickingItem.getLocationId(),
+                    selections);
+        }
     }
 
     @Transactional
@@ -375,8 +432,11 @@ public class InventoryTransferService {
                 .findByTenantIdAndTransferIdOrderByIdAsc(actor.tenantId(), transfer.getId());
         Map<UUID, InventoryTransferItem> itemsById = transferItems.stream()
                 .collect(Collectors.toMap(InventoryTransferItem::getId, Function.identity()));
+        TransferTraceHistory traceHistory = transferTraceHistory(
+                actor.tenantId(), transfer.getId());
         List<ResolvedReceiptItem> resolvedItems = payload.items().stream()
-                .map(item -> resolveReceiptItem(actor.tenantId(), transfer, itemsById, item))
+                .map(item -> resolveReceiptItem(
+                        actor.tenantId(), transfer, itemsById, item, traceHistory))
                 .toList();
 
         Instant now = Instant.now();
@@ -410,17 +470,28 @@ public class InventoryTransferService {
             receiptItem.setTenantId(actor.tenantId());
             receiptItems.add(receiptItemRepository.save(receiptItem));
 
-            inventoryStockService.incrementStockAtLocation(
+            var movement = inventoryStockService.incrementStockAtLocation(
                     new AddStockCommand(
                             actor.tenantId(),
                             transfer.getDestinationBranchId(),
                             item.getProductId(),
                             resolved.quantity(),
                             "Recepción de traslado " + transfer.getNumber(),
-                            "transfer",
-                            transfer.getId(),
+                            resolved.traceable() ? "receipt" : "transfer",
+                            resolved.traceable() ? receipt.getId() : transfer.getId(),
+                            resolved.traceable() ? item.getId() : null,
                             actor.userId()),
                     destinationLocation.getId());
+            if (resolved.traceable()) {
+                traceabilityMutationService.receiveTransferredPhysicalStock(
+                        actor.tenantId(),
+                        transfer.getDestinationBranchId(),
+                        resolved.product(),
+                        destinationLocation.getId(),
+                        resolved.quantity(),
+                        resolved.selections(),
+                        movement.getId());
+            }
         }
 
         if (!transferItems.isEmpty()
@@ -456,7 +527,9 @@ public class InventoryTransferService {
                             || item.itemId() == null
                             || item.receivedQuantity() == null
                             || item.receivedQuantity().signum() <= 0
-                            || !fitsDecimal(item.receivedQuantity(), 12, 3)) {
+                            || !fitsDecimal(item.receivedQuantity(), 12, 3)
+                            || item.receivedSelections() != null
+                                    && item.receivedSelections().stream().anyMatch(Objects::isNull)) {
                         throw invalidReceipt(
                                 "Cada línea debe identificar un ítem y una cantidad positiva de hasta tres decimales.");
                     }
@@ -511,7 +584,8 @@ public class InventoryTransferService {
             UUID tenantId,
             InventoryTransfer transfer,
             Map<UUID, InventoryTransferItem> itemsById,
-            ReceiveInventoryTransferItemRequest request) {
+            ReceiveInventoryTransferItemRequest request,
+            TransferTraceHistory traceHistory) {
         InventoryTransferItem item = itemsById.get(request.itemId());
         if (item == null || !Objects.equals(item.getTransferId(), transfer.getId())) {
             throw new BusinessException(
@@ -528,7 +602,177 @@ public class InventoryTransferService {
                     "INVENTORY_TRANSFER_OVER_RECEIPT",
                     "La cantidad recibida excede la cantidad despachada.");
         }
-        return new ResolvedReceiptItem(item, request.receivedQuantity());
+        boolean traceable = isTraceable(product);
+        List<InventoryTransferTrackingSelectionRequest> requestedSelections =
+                request.receivedSelections() == null ? List.of() : request.receivedSelections();
+        if (!traceable) {
+            if (!requestedSelections.isEmpty()) {
+                throw invalidReceipt("El producto no utiliza trazabilidad fisica.");
+            }
+            return new ResolvedReceiptItem(
+                    item, product, request.receivedQuantity(), List.of(), false);
+        }
+        if (requestedSelections.isEmpty()) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "TRACKING_SELECTIONS_REQUIRED",
+                    "La seleccion recibida es obligatoria para productos trazables.");
+        }
+        List<InventoryTraceabilitySelection> selections = requestedSelections.stream()
+                .map(selection -> new InventoryTraceabilitySelection(
+                        selection.lotId(), selection.quantity(), selection.serialNumbers()))
+                .toList();
+        validateReceivedTraceSelection(
+                item, product, request.receivedQuantity(), selections, traceHistory);
+        return new ResolvedReceiptItem(
+                item, product, request.receivedQuantity(), selections, true);
+    }
+
+    private TransferTraceHistory transferTraceHistory(UUID tenantId, UUID transferId) {
+        List<InventoryMovement> dispatched = movementRepository
+                .findByTenantIdAndReferenceTypeInAndReferenceIdOrderByCreatedAtAscIdAsc(
+                        tenantId, Set.of("transfer"), transferId);
+        Map<UUID, List<InventoryHistoricalTraceDetail>> dispatchedHistory =
+                traceabilityHistoryService.expand(tenantId, dispatched);
+        List<InventoryTransferReceipt> receipts = receiptRepository
+                .findByTenantIdAndTransferIdOrderByReceivedAtAsc(tenantId, transferId);
+        List<InventoryMovement> received = receipts.isEmpty()
+                ? List.of()
+                : movementRepository
+                        .findByTenantIdAndReferenceTypeInAndReferenceIdInOrderByCreatedAtAscIdAsc(
+                                tenantId,
+                                Set.of("receipt"),
+                                receipts.stream().map(InventoryTransferReceipt::getId).toList());
+        Map<UUID, List<InventoryHistoricalTraceDetail>> receivedHistory =
+                traceabilityHistoryService.expand(tenantId, received);
+        return new TransferTraceHistory(
+                traceDetailsByLine(dispatched, dispatchedHistory),
+                traceDetailsByLine(received, receivedHistory));
+    }
+
+    private static Map<UUID, List<InventoryHistoricalTraceDetail>> traceDetailsByLine(
+            List<InventoryMovement> movements,
+            Map<UUID, List<InventoryHistoricalTraceDetail>> history) {
+        return movements.stream()
+                .filter(movement -> movement.getReferenceLineId() != null)
+                .collect(Collectors.groupingBy(
+                        InventoryMovement::getReferenceLineId,
+                        Collectors.flatMapping(
+                                movement -> history.getOrDefault(
+                                                movement.getId(), List.of())
+                                        .stream(),
+                                Collectors.toList())));
+    }
+
+    private static void validateReceivedTraceSelection(
+            InventoryTransferItem item,
+            Product product,
+            BigDecimal receivedQuantity,
+            List<InventoryTraceabilitySelection> selections,
+            TransferTraceHistory history) {
+        if (selections.stream().anyMatch(selection ->
+                selection == null || selection.quantity() == null || selection.quantity().signum() <= 0)) {
+            throw invalidReceipt("La seleccion trazable recibida es invalida.");
+        }
+        BigDecimal selected = selections.stream()
+                .map(InventoryTraceabilitySelection::quantity)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (selected.compareTo(receivedQuantity) != 0) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "TRACKING_QUANTITY_MISMATCH",
+                    "La seleccion recibida no coincide con la cantidad confirmada.");
+        }
+        List<InventoryHistoricalTraceDetail> dispatched =
+                history.dispatchedByLine().getOrDefault(item.getId(), List.of());
+        List<InventoryHistoricalTraceDetail> previouslyReceived =
+                history.receivedByLine().getOrDefault(item.getId(), List.of());
+        if (dispatched.isEmpty()) {
+            throw BusinessException.conflict(
+                    "TRANSFER_TRACE_HISTORY_INCONSISTENT",
+                    "El despacho trazable de la transferencia es inconsistente.");
+        }
+        if (Boolean.TRUE.equals(product.getTrackingSerial())) {
+            Map<String, UUID> dispatchedSerials = serialLots(dispatched);
+            Set<String> receivedSerials = serialLots(previouslyReceived).keySet();
+            Set<String> requested = new java.util.HashSet<>();
+            for (InventoryTraceabilitySelection selection : selections) {
+                List<String> serials = selection.serialNumbers() == null
+                        ? List.of()
+                        : selection.serialNumbers().stream()
+                                .map(value -> value == null ? null : value.trim())
+                                .toList();
+                if (serials.isEmpty()
+                        || serials.stream().anyMatch(Objects::isNull)
+                        || selection.quantity().stripTrailingZeros().scale() > 0
+                        || selection.quantity().compareTo(BigDecimal.valueOf(serials.size())) != 0) {
+                    throw new BusinessException(
+                            HttpStatus.BAD_REQUEST,
+                            "SERIAL_COUNT_MISMATCH",
+                            "La cantidad recibida debe coincidir con los seriales indicados.");
+                }
+                for (String serial : serials) {
+                    UUID dispatchedLot = dispatchedSerials.get(serial);
+                    if (serial.isEmpty()
+                            || !requested.add(serial)
+                            || dispatchedLot == null && !dispatchedSerials.containsKey(serial)
+                            || receivedSerials.contains(serial)) {
+                        throw BusinessException.conflict(
+                                "TRANSFER_SERIAL_NOT_RECEIVABLE",
+                                "El serial no fue despachado o ya fue recibido.");
+                    }
+                    if (!Objects.equals(dispatchedLot, selection.lotId())) {
+                        throw invalidReceipt("El serial no coincide con su lote despachado.");
+                    }
+                    if (Boolean.TRUE.equals(product.getTrackingLot()) && selection.lotId() == null) {
+                        throw invalidReceipt("El lote despachado del serial es requerido.");
+                    }
+                    if (!Boolean.TRUE.equals(product.getTrackingLot()) && selection.lotId() != null) {
+                        throw invalidReceipt("El producto serializado no utiliza lote.");
+                    }
+                }
+            }
+            return;
+        }
+
+        Map<UUID, BigDecimal> dispatchedLots = quantitiesByLot(dispatched);
+        Map<UUID, BigDecimal> receivedLots = quantitiesByLot(previouslyReceived);
+        Map<UUID, BigDecimal> requestedLots = new HashMap<>();
+        for (InventoryTraceabilitySelection selection : selections) {
+            if (selection.lotId() == null
+                    || selection.serialNumbers() != null && !selection.serialNumbers().isEmpty()) {
+                throw invalidReceipt("La recepcion por lote requiere lote y no admite seriales.");
+            }
+            requestedLots.merge(selection.lotId(), selection.quantity(), BigDecimal::add);
+        }
+        requestedLots.forEach((lotId, quantity) -> {
+            BigDecimal remaining = dispatchedLots.getOrDefault(lotId, BigDecimal.ZERO)
+                    .subtract(receivedLots.getOrDefault(lotId, BigDecimal.ZERO));
+            if (quantity.compareTo(remaining) > 0) {
+                throw BusinessException.conflict(
+                        "INVENTORY_TRANSFER_OVER_RECEIPT",
+                        "La cantidad recibida del lote excede lo despachado pendiente.");
+            }
+        });
+    }
+
+    private static Map<String, UUID> serialLots(
+            List<InventoryHistoricalTraceDetail> details) {
+        Map<String, UUID> result = new HashMap<>();
+        details.forEach(detail -> detail.serialNumbers().forEach(serial ->
+                result.put(serial, detail.lotId())));
+        return result;
+    }
+
+    private static Map<UUID, BigDecimal> quantitiesByLot(
+            List<InventoryHistoricalTraceDetail> details) {
+        Map<UUID, BigDecimal> result = new HashMap<>();
+        details.forEach(detail -> {
+            if (detail.lotId() != null) {
+                result.merge(detail.lotId(), detail.quantity(), BigDecimal::add);
+            }
+        });
+        return result;
     }
 
     private static InventoryTransferReceiptResponse receiptResponse(
@@ -565,7 +809,9 @@ public class InventoryTransferService {
                                 + ":"
                                 + item.receivedQuantity()
                                         .stripTrailingZeros()
-                                        .toPlainString())
+                                        .toPlainString()
+                                + ":"
+                                + transferSelectionFingerprint(item.receivedSelections()))
                         .reduce("", String::concat);
         try {
             return HexFormat.of().formatHex(
@@ -574,6 +820,26 @@ public class InventoryTransferService {
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 no está disponible.", exception);
         }
+    }
+
+    private static String transferSelectionFingerprint(
+            List<InventoryTransferTrackingSelectionRequest> selections) {
+        if (selections == null || selections.isEmpty()) return "-";
+        return selections.stream()
+                .map(selection -> selection == null
+                        ? "<null>"
+                        : selection.lotId()
+                                + "/" + (selection.quantity() == null
+                                        ? "null"
+                                        : selection.quantity().stripTrailingZeros().toPlainString())
+                                + "/" + (selection.serialNumbers() == null
+                                        ? List.<String>of()
+                                        : selection.serialNumbers()).stream()
+                                                .map(value -> value == null ? "<null>" : value.trim())
+                                                .sorted()
+                                                .collect(Collectors.joining(";")))
+                .sorted()
+                .collect(Collectors.joining(","));
     }
 
     private AuthenticatedUser requireInventoryActor() {
@@ -627,14 +893,21 @@ public class InventoryTransferService {
                     "INVENTORY_TRANSFER_PRODUCT_UNSUPPORTED",
                     "Solo pueden transferirse productos físicos con control de inventario.");
         }
-        if (Boolean.TRUE.equals(product.getTrackingLot())
-                || Boolean.TRUE.equals(product.getTrackingSerial())
-                || Boolean.TRUE.equals(product.getTrackingExpiration())) {
+        if (!Boolean.TRUE.equals(product.getTrackingLot())
+                && !Boolean.TRUE.equals(product.getTrackingSerial())
+                && Boolean.TRUE.equals(product.getTrackingExpiration())) {
             throw new BusinessException(
                     HttpStatus.BAD_REQUEST,
                     "INVENTORY_TRANSFER_TRACEABILITY_UNSUPPORTED",
                     "Las transferencias con lote, serie o vencimiento aún no están soportadas.");
         }
+    }
+
+    private static boolean isTraceable(Product product) {
+        return product.getProductType() == ProductType.physical
+                && Boolean.TRUE.equals(product.getTrackingStock())
+                && (Boolean.TRUE.equals(product.getTrackingLot())
+                        || Boolean.TRUE.equals(product.getTrackingSerial()));
     }
 
     private static BigDecimal requireQuantity(BigDecimal quantity) {
@@ -941,5 +1214,13 @@ public class InventoryTransferService {
             String fingerprint) {}
 
     private record ResolvedReceiptItem(
-            InventoryTransferItem item, BigDecimal quantity) {}
+            InventoryTransferItem item,
+            Product product,
+            BigDecimal quantity,
+            List<InventoryTraceabilitySelection> selections,
+            boolean traceable) {}
+
+    private record TransferTraceHistory(
+            Map<UUID, List<InventoryHistoricalTraceDetail>> dispatchedByLine,
+            Map<UUID, List<InventoryHistoricalTraceDetail>> receivedByLine) {}
 }

@@ -324,6 +324,200 @@ public class InventoryTraceabilityMutationService {
         return movement;
     }
 
+    @Transactional
+    public List<InventoryTraceabilitySelection> replacePhysicalReservation(
+            UUID tenantId,
+            UUID branchId,
+            Product product,
+            UUID locationId,
+            BigDecimal targetQuantity,
+            List<InventoryTraceabilitySelection> oldSelections,
+            List<InventoryTraceabilitySelection> newSelections) {
+        Product traceableProduct = requireTraceableProduct(tenantId, product);
+        if (locationId == null) {
+            throw invalidTracking("La ubicacion del Picking trazable es requerida.");
+        }
+        if (targetQuantity != null && targetQuantity.signum() == 0
+                && (newSelections == null || newSelections.isEmpty())) {
+            requireHistoricalLocation(tenantId, branchId, locationId);
+        } else {
+            requireLocation(tenantId, branchId, locationId);
+        }
+        List<NormalizedSelection> oldNormalized = normalizeExistingSelections(
+                traceableProduct, oldSelections);
+        List<NormalizedSelection> newNormalized = targetQuantity == null
+                        || targetQuantity.signum() == 0
+                ? normalizeEmptyTarget(targetQuantity, newSelections)
+                : normalizeOperationalSelections(targetQuantity, traceableProduct, newSelections);
+
+        Map<UUID, BigDecimal> oldLots = quantitiesByLot(oldNormalized);
+        Map<UUID, BigDecimal> newLots = quantitiesByLot(newNormalized);
+        List<UUID> lotIds = java.util.stream.Stream.concat(
+                        oldLots.keySet().stream(), newLots.keySet().stream())
+                .filter(Objects::nonNull)
+                .distinct()
+                .sorted()
+                .toList();
+        for (UUID lotId : lotIds) {
+            InventoryLot lot = lotRepository.findByTenantIdAndId(tenantId, lotId)
+                    .filter(value -> value.getProductId().equals(traceableProduct.getId()))
+                    .orElseThrow(() -> new BusinessException(
+                            HttpStatus.NOT_FOUND, "LOT_NOT_FOUND", "Lote no encontrado."));
+            BigDecimal newQuantity = newLots.getOrDefault(lotId, BigDecimal.ZERO);
+            if (newQuantity.signum() > 0
+                    && Boolean.TRUE.equals(traceableProduct.getTrackingExpiration())
+                    && (lot.getExpirationDate() == null
+                            || lot.getExpirationDate().isBefore(businessDate(tenantId)))) {
+                throw BusinessException.conflict(
+                        "LOT_EXPIRED", "El lote seleccionado esta vencido.");
+            }
+            InventoryLotBalance balance = lotBalanceRepository.findForUpdateAtLocation(
+                            tenantId, branchId, traceableProduct.getId(), lotId, locationId)
+                    .orElseThrow(InventoryTraceabilityMutationService::insufficientTraceableStock);
+            BigDecimal oldQuantity = oldLots.getOrDefault(lotId, BigDecimal.ZERO);
+            BigDecimal delta = newQuantity.subtract(oldQuantity);
+            try {
+                if (delta.signum() > 0) balance.reserve(delta);
+                if (delta.signum() < 0) balance.releaseReservation(delta.negate());
+                if (delta.signum() == 0 && newQuantity.signum() > 0
+                        && balance.getReservedQuantity().compareTo(newQuantity) < 0) {
+                    throw new IllegalStateException("Reserva fisica inconsistente.");
+                }
+            } catch (IllegalStateException exception) {
+                throw insufficientTraceableStock();
+            }
+        }
+        replaceReservedSerials(
+                tenantId, branchId, locationId, traceableProduct, oldNormalized, newNormalized);
+        return newNormalized.stream()
+                .map(selection -> new InventoryTraceabilitySelection(
+                        selection.lotId(), selection.quantity(), selection.serialNumbers()))
+                .toList();
+    }
+
+    @Transactional
+    public void validatePhysicalReservation(
+            UUID tenantId,
+            UUID branchId,
+            Product product,
+            UUID locationId,
+            BigDecimal quantity,
+            List<InventoryTraceabilitySelection> selections) {
+        replacePhysicalReservation(
+                tenantId, branchId, product, locationId, quantity, selections, selections);
+    }
+
+    @Transactional
+    public void releasePhysicalReservation(
+            UUID tenantId,
+            UUID branchId,
+            Product product,
+            UUID locationId,
+            List<InventoryTraceabilitySelection> selections) {
+        replacePhysicalReservation(
+                tenantId, branchId, product, locationId, BigDecimal.ZERO, selections, List.of());
+    }
+
+    @Transactional
+    public InventoryMovement consumePhysicalReservation(
+            UUID tenantId,
+            UUID branchId,
+            Product product,
+            UUID locationId,
+            BigDecimal quantity,
+            List<InventoryTraceabilitySelection> selections,
+            InventorySerialStatus serialTargetStatus,
+            BigDecimal quantityBefore,
+            BigDecimal quantityAfter,
+            String reason,
+            String referenceType,
+            UUID referenceId,
+            UUID referenceLineId,
+            UUID actorUserId) {
+        Product traceableProduct = requireTraceableProduct(tenantId, product);
+        requireHistoricalLocation(tenantId, branchId, locationId);
+        List<NormalizedSelection> normalized = normalizeOperationalSelections(
+                quantity, traceableProduct, selections);
+        if (serialTargetStatus != InventorySerialStatus.CONSUMED
+                && serialTargetStatus != InventorySerialStatus.IN_TRANSIT) {
+            throw invalidTracking("El estado destino del serial no es valido para despacho.");
+        }
+        Map<UUID, BigDecimal> lots = quantitiesByLot(normalized);
+        for (UUID lotId : lots.keySet().stream().filter(Objects::nonNull).sorted().toList()) {
+            InventoryLot lot = lotRepository.findByTenantIdAndId(tenantId, lotId)
+                    .filter(value -> value.getProductId().equals(traceableProduct.getId()))
+                    .orElseThrow(() -> new BusinessException(
+                            HttpStatus.NOT_FOUND, "LOT_NOT_FOUND", "Lote no encontrado."));
+            InventoryLotBalance balance = lotBalanceRepository.findForUpdateAtLocation(
+                            tenantId, branchId, traceableProduct.getId(), lot.getId(), locationId)
+                    .orElseThrow(InventoryTraceabilityMutationService::insufficientTraceableStock);
+            try {
+                balance.consumeReservation(lots.get(lotId));
+            } catch (IllegalStateException exception) {
+                throw insufficientTraceableStock();
+            }
+        }
+        List<InventorySerial> serials = lockAndValidateSerials(
+                tenantId, branchId, locationId, traceableProduct,
+                normalized, InventorySerialStatus.RESERVED);
+        serials.forEach(serial -> serial.setStatus(serialTargetStatus));
+        InventoryMovement movement = movementRepository.saveAndFlush(InventoryMovement.builder()
+                .tenantId(tenantId)
+                .branchId(branchId)
+                .productId(traceableProduct.getId())
+                .type(InventoryMovementType.out)
+                .reason(reason)
+                .quantity(quantity)
+                .quantityBefore(quantityBefore)
+                .quantityAfter(quantityAfter)
+                .fromLocationId(locationId)
+                .referenceType(referenceType)
+                .referenceId(referenceId)
+                .referenceLineId(referenceLineId)
+                .performedByUserId(actorUserId)
+                .build());
+        saveOperationalTraces(tenantId, movement.getId(), normalized, serials);
+        return movement;
+    }
+
+    @Transactional
+    public void receiveTransferredPhysicalStock(
+            UUID tenantId,
+            UUID branchId,
+            Product product,
+            UUID locationId,
+            BigDecimal quantity,
+            List<InventoryTraceabilitySelection> selections,
+            UUID movementId) {
+        Product traceableProduct = requireTraceableProduct(tenantId, product);
+        requireLocation(tenantId, branchId, locationId);
+        List<NormalizedSelection> normalized = normalizeOperationalSelections(
+                quantity, traceableProduct, selections);
+        Map<UUID, BigDecimal> lots = quantitiesByLot(normalized);
+        for (UUID lotId : lots.keySet().stream().filter(Objects::nonNull).sorted().toList()) {
+            InventoryLot lot = lotRepository.findByTenantIdAndId(tenantId, lotId)
+                    .filter(value -> value.getProductId().equals(traceableProduct.getId()))
+                    .orElseThrow(() -> new BusinessException(
+                            HttpStatus.NOT_FOUND, "LOT_NOT_FOUND", "Lote no encontrado."));
+            lotBalanceRepository.ensureAtLocationExists(
+                    UUID.randomUUID(), tenantId, branchId, locationId, lot.getId());
+            InventoryLotBalance balance = lotBalanceRepository.findForUpdateAtLocation(
+                            tenantId, branchId, traceableProduct.getId(), lot.getId(), locationId)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "No se pudo inicializar el balance trazable del lote destino."));
+            balance.add(lots.get(lotId));
+        }
+
+        List<InventorySerial> serials = lockTransferredSerials(
+                tenantId, traceableProduct, normalized);
+        serials.forEach(serial -> {
+            serial.setBranchId(branchId);
+            serial.setLocationId(locationId);
+            serial.setStatus(InventorySerialStatus.AVAILABLE);
+        });
+        saveOperationalTraces(tenantId, movementId, normalized, serials);
+    }
+
     private Product requireTraceableProduct(UUID tenantId, Product product) {
         if (product == null
                 || !Objects.equals(product.getTenantId(), tenantId)
@@ -536,6 +730,137 @@ public class InventoryTraceabilityMutationService {
                 .filter(selection -> Objects.equals(selection.lotId(), lotId))
                 .map(NormalizedSelection::quantity)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    private List<NormalizedSelection> normalizeExistingSelections(
+            Product product, List<InventoryTraceabilitySelection> selections) {
+        if (selections == null || selections.isEmpty()) return List.of();
+        BigDecimal quantity = selections.stream()
+                .map(InventoryTraceabilitySelection::quantity)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        return normalizeOperationalSelections(quantity, product, selections);
+    }
+
+    private static List<NormalizedSelection> normalizeEmptyTarget(
+            BigDecimal targetQuantity, List<InventoryTraceabilitySelection> selections) {
+        if (targetQuantity == null || targetQuantity.signum() != 0
+                || (selections != null && !selections.isEmpty())) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "TRACKING_QUANTITY_MISMATCH",
+                    "La seleccion trazable debe coincidir con la cantidad requerida.");
+        }
+        return List.of();
+    }
+
+    private static Map<UUID, BigDecimal> quantitiesByLot(
+            List<NormalizedSelection> selections) {
+        Map<UUID, BigDecimal> result = new HashMap<>();
+        selections.forEach(selection -> {
+            if (selection.lotId() != null) {
+                result.merge(selection.lotId(), selection.quantity(), BigDecimal::add);
+            }
+        });
+        return result;
+    }
+
+    private void replaceReservedSerials(
+            UUID tenantId,
+            UUID branchId,
+            UUID locationId,
+            Product product,
+            List<NormalizedSelection> oldSelections,
+            List<NormalizedSelection> newSelections) {
+        if (!Boolean.TRUE.equals(product.getTrackingSerial())) return;
+        Map<String, UUID> oldSerials = serialLots(oldSelections);
+        Map<String, UUID> newSerials = serialLots(newSelections);
+        List<String> union = java.util.stream.Stream.concat(
+                        oldSerials.keySet().stream(), newSerials.keySet().stream())
+                .distinct()
+                .sorted()
+                .toList();
+        if (union.isEmpty()) return;
+        List<InventorySerial> serials = serialRepository
+                .findAllForUpdateByTenantProductAndSerialNumberIn(
+                        tenantId, product.getId(), union);
+        if (serials.size() != union.size()) {
+            throw new BusinessException(
+                    HttpStatus.NOT_FOUND, "SERIAL_NOT_FOUND", "Uno o mas numeros de serie no existen.");
+        }
+        for (InventorySerial serial : serials) {
+            String number = serial.getSerialNumber();
+            boolean wasSelected = oldSerials.containsKey(number);
+            boolean isSelected = newSerials.containsKey(number);
+            UUID expectedLot = isSelected ? newSerials.get(number) : oldSerials.get(number);
+            if (!serial.getBranchId().equals(branchId)
+                    || !Objects.equals(serial.getLocationId(), locationId)
+                    || !Objects.equals(serial.getLotId(), expectedLot)) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "SERIAL_LOCATION_MISMATCH",
+                        "Uno o mas seriales no coinciden con la ubicacion y lote seleccionados.");
+            }
+            if (wasSelected && isSelected) {
+                if (serial.getStatus() != InventorySerialStatus.RESERVED
+                        || !Objects.equals(oldSerials.get(number), newSerials.get(number))) {
+                    throw serialReservationConflict();
+                }
+            } else if (wasSelected) {
+                if (serial.getStatus() != InventorySerialStatus.RESERVED) {
+                    throw serialReservationConflict();
+                }
+                serial.setStatus(InventorySerialStatus.AVAILABLE);
+            } else {
+                if (serial.getStatus() != InventorySerialStatus.AVAILABLE) {
+                    throw serialReservationConflict();
+                }
+                serial.setStatus(InventorySerialStatus.RESERVED);
+            }
+        }
+    }
+
+    private List<InventorySerial> lockTransferredSerials(
+            UUID tenantId,
+            Product product,
+            List<NormalizedSelection> selections) {
+        if (!Boolean.TRUE.equals(product.getTrackingSerial())) return List.of();
+        Map<String, UUID> expectedLots = serialLots(selections);
+        List<String> numbers = expectedLots.keySet().stream().sorted().toList();
+        List<InventorySerial> serials = serialRepository
+                .findAllForUpdateByTenantProductAndSerialNumberIn(
+                        tenantId, product.getId(), numbers);
+        if (serials.size() != numbers.size()) {
+            throw new BusinessException(
+                    HttpStatus.NOT_FOUND, "SERIAL_NOT_FOUND", "Uno o mas numeros de serie no existen.");
+        }
+        for (InventorySerial serial : serials) {
+            if (serial.getStatus() != InventorySerialStatus.IN_TRANSIT) {
+                throw BusinessException.conflict(
+                        "SERIAL_STATUS_CONFLICT",
+                        "Uno o mas seriales no se encuentran en transito.");
+            }
+            if (!Objects.equals(serial.getLotId(), expectedLots.get(serial.getSerialNumber()))) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "SERIAL_LOT_MISMATCH",
+                        "Uno o mas seriales no pertenecen al lote despachado.");
+            }
+        }
+        return serials;
+    }
+
+    private static Map<String, UUID> serialLots(List<NormalizedSelection> selections) {
+        Map<String, UUID> result = new HashMap<>();
+        selections.forEach(selection -> selection.serialNumbers().forEach(number ->
+                result.put(number, selection.lotId())));
+        return result;
+    }
+
+    private static BusinessException serialReservationConflict() {
+        return BusinessException.conflict(
+                "SERIAL_RESERVATION_CONFLICT",
+                "Uno o mas seriales ya estan reservados o no pertenecen a esta seleccion.");
     }
 
     private InventoryLot resolveLot(

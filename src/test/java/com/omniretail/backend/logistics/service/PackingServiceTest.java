@@ -174,14 +174,15 @@ class PackingServiceTest {
     }
 
     @Test
-    void rejectsTraceablePreparedContentsInsteadOfInventingSerials() {
+    void exposesTraceablePreparedContentsWithoutInventingSerials() {
         Fixture fixture = fixture();
         actor(fixture);
         jdbc.update("UPDATE products SET tracking_serial = true WHERE id = ?", fixture.productId());
 
-        assertCode(
-                () -> service.getDetail(fixture.branchId(), fixture.packingId()),
-                "TRACEABILITY_NOT_SUPPORTED");
+        assertThat(service.getDetail(fixture.branchId(), fixture.packingId())
+                        .preparedContents())
+                .singleElement()
+                .satisfies(content -> assertThat(content.serialNumbers()).isEmpty());
     }
 
     private Fixture fixture() {

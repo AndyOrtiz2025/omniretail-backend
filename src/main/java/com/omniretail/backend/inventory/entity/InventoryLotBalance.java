@@ -58,4 +58,29 @@ public class InventoryLotBalance extends TenantScopedEntity {
         }
         quantity = resultingQuantity;
     }
+
+    public void reserve(BigDecimal amount) {
+        if (amount == null || amount.signum() <= 0
+                || quantity.subtract(reservedQuantity).compareTo(amount) < 0) {
+            throw new IllegalStateException("El balance del lote no tiene cantidad disponible suficiente.");
+        }
+        reservedQuantity = reservedQuantity.add(amount);
+    }
+
+    public void releaseReservation(BigDecimal amount) {
+        if (amount == null || amount.signum() <= 0 || reservedQuantity.compareTo(amount) < 0) {
+            throw new IllegalStateException("La reserva fisica del lote es inconsistente.");
+        }
+        reservedQuantity = reservedQuantity.subtract(amount);
+    }
+
+    public void consumeReservation(BigDecimal amount) {
+        if (amount == null || amount.signum() <= 0
+                || reservedQuantity.compareTo(amount) < 0
+                || quantity.compareTo(amount) < 0) {
+            throw new IllegalStateException("La reserva fisica del lote es inconsistente.");
+        }
+        reservedQuantity = reservedQuantity.subtract(amount);
+        quantity = quantity.subtract(amount);
+    }
 }

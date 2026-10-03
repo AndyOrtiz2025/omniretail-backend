@@ -40,8 +40,11 @@ import com.omniretail.backend.inventory.repository.InventoryTransferReceiptItemR
 import com.omniretail.backend.inventory.repository.InventoryTransferReceiptRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferRequestRepository;
+import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
 import com.omniretail.backend.pos.service.DocumentCounterService;
 import com.omniretail.backend.logistics.service.PickingService;
+import com.omniretail.backend.logistics.repository.PickingItemRepository;
+import com.omniretail.backend.logistics.repository.PickingOrderRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
@@ -96,8 +99,14 @@ class InventoryTransferServiceTest {
     @Mock private InventoryReservationRepository reservationRepository;
     @Mock private InventoryReservationLifecycleService reservationLifecycleService;
     @Mock private InventoryStockService inventoryStockService;
+    @Mock private InventoryTraceabilityMutationService traceabilityMutationService;
+    @Mock private InventoryTraceabilityHistoryService traceabilityHistoryService;
+    @Mock private InventoryPhysicalSelectionCodec physicalSelectionCodec;
+    @Mock private InventoryMovementRepository movementRepository;
     @Mock private DocumentCounterService documentCounterService;
     @Mock private PickingService pickingService;
+    @Mock private PickingOrderRepository pickingOrderRepository;
+    @Mock private PickingItemRepository pickingItemRepository;
 
     @InjectMocks private InventoryTransferService service;
 
@@ -162,13 +171,15 @@ class InventoryTransferServiceTest {
     }
 
     @Test
-    void rejectsKitsAndProductsWithUnsupportedTraceability() {
+    void rejectsKitsAndInvalidExpirationOnlyConfiguration() {
         given(productRepository.findByTenantIdAndId(TENANT_ID, PRODUCT_ID))
                 .willReturn(Optional.of(product(ProductType.kit, false, false)));
         assertCode(() -> service.createRequest(createRequest()), "INVENTORY_TRANSFER_PRODUCT_UNSUPPORTED");
 
+        Product invalid = product(ProductType.physical, true, false);
+        invalid.setTrackingExpiration(true);
         given(productRepository.findByTenantIdAndId(TENANT_ID, PRODUCT_ID))
-                .willReturn(Optional.of(product(ProductType.physical, true, true)));
+                .willReturn(Optional.of(invalid));
         assertCode(() -> service.createRequest(createRequest()), "INVENTORY_TRANSFER_TRACEABILITY_UNSUPPORTED");
     }
 
