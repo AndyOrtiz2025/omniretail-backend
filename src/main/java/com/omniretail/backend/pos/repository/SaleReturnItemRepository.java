@@ -2,6 +2,7 @@ package com.omniretail.backend.pos.repository;
 
 import com.omniretail.backend.pos.entity.SaleReturnItem;
 import java.math.BigDecimal;
+import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -15,4 +16,9 @@ public interface SaleReturnItemRepository extends JpaRepository<SaleReturnItem, 
     BigDecimal sumReturned(@Param("tenantId") UUID tenantId, @Param("saleItemId") UUID saleItemId);
 
     List<SaleReturnItem> findByTenantIdAndReturnId(UUID tenantId, UUID returnId);
+
+    List<SaleReturnItem> findByTenantIdAndReturnIdIn(UUID tenantId, Collection<UUID> returnIds);
+
+    List<SaleReturnItem> findByTenantIdAndSaleItemIdIn(
+            UUID tenantId, Collection<UUID> saleItemIds);
 }

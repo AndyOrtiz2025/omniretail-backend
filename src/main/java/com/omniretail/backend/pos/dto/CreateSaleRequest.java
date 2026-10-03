@@ -28,8 +28,16 @@ public record CreateSaleRequest(
             List<PaymentLine> payments) {
         this(branchId, cashShiftId, customerId, taxTotal, items, payments, UUID.randomUUID());
     }
-    public record Item(@NotNull UUID productId, @NotNull @DecimalMin(value = "0.001") BigDecimal quantity,
-                       @DecimalMin("0.00") BigDecimal discount) {}
+    public record Item(
+            @NotNull UUID productId,
+            @NotNull @DecimalMin(value = "0.001") BigDecimal quantity,
+            @DecimalMin("0.00") BigDecimal discount,
+            List<@Valid InventoryTrackingSelectionRequest> trackingSelections) {
+
+        public Item(UUID productId, BigDecimal quantity, BigDecimal discount) {
+            this(productId, quantity, discount, List.of());
+        }
+    }
     public record PaymentLine(
             @NotNull PaymentMethod method,
             @NotNull @DecimalMin("0.01") BigDecimal amount,

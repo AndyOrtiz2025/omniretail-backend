@@ -3,6 +3,7 @@ package com.omniretail.backend.inventory.repository;
 import com.omniretail.backend.inventory.entity.InventorySerial;
 import com.omniretail.backend.inventory.entity.InventorySerialStatus;
 import jakarta.persistence.LockModeType;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -20,6 +21,8 @@ public interface InventorySerialRepository extends JpaRepository<InventorySerial
 
     List<InventorySerial> findByTenantIdAndProductIdAndSerialNumberIn(
             UUID tenantId, UUID productId, List<String> serialNumbers);
+
+    List<InventorySerial> findByTenantIdAndIdIn(UUID tenantId, Collection<UUID> ids);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("""
