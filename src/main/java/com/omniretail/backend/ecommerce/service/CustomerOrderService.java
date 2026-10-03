@@ -1,15 +1,12 @@
 package com.omniretail.backend.ecommerce.service;
 
-import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.ecommerce.dto.CustomerOrderDetailResponse;
 import com.omniretail.backend.ecommerce.dto.CustomerOrderResponse;
 import com.omniretail.backend.ecommerce.entity.Customer;
-import com.omniretail.backend.ecommerce.entity.CustomerStatus;
 import com.omniretail.backend.ecommerce.entity.Order;
 import com.omniretail.backend.ecommerce.entity.OrderItem;
 import com.omniretail.backend.ecommerce.entity.OrderSource;
 import com.omniretail.backend.ecommerce.entity.OrderStatus;
-import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.ecommerce.repository.OrderItemRepository;
 import com.omniretail.backend.ecommerce.repository.OrderRepository;
 import com.omniretail.backend.pos.entity.Payment;
@@ -38,7 +35,7 @@ import tools.jackson.databind.json.JsonMapper;
 public class CustomerOrderService {
 
     private final CurrentUser currentUser;
-    private final CustomerRepository customerRepository;
+    private final CurrentCustomerResolver currentCustomerResolver;
     private final OrderRepository orderRepository;
     private final OrderItemRepository orderItemRepository;
     private final PaymentRepository paymentRepository;
@@ -46,7 +43,7 @@ public class CustomerOrderService {
 
     public PageResponse<CustomerOrderResponse> list(Pageable pageable) {
         AuthenticatedUser actor = currentUser.require();
-        Customer customer = currentCustomer(actor);
+        Customer customer = currentCustomerResolver.require(actor);
         Page<Order> orders = orderRepository.findByTenantIdAndCustomerIdAndSource(
                 actor.tenantId(), customer.getId(), OrderSource.ecommerce, pageable);
 
@@ -72,7 +69,7 @@ public class CustomerOrderService {
 
     public CustomerOrderDetailResponse getById(UUID id) {
         AuthenticatedUser actor = currentUser.require();
-        Customer customer = currentCustomer(actor);
+        Customer customer = currentCustomerResolver.require(actor);
         Order order = orderRepository.findByTenantIdAndId(actor.tenantId(), id)
                 .orElseThrow(() -> new BusinessException(HttpStatus.NOT_FOUND, "ORDER_NOT_FOUND", "Pedido no encontrado."));
 
@@ -134,17 +131,6 @@ public class CustomerOrderService {
 
     private static String stringValue(Object obj) {
         return obj != null ? obj.toString() : null;
-    }
-
-    private Customer currentCustomer(AuthenticatedUser actor) {
-        if (actor.userType() != UserType.customer) {
-            throw new BusinessException(HttpStatus.FORBIDDEN, "CUSTOMER_ACCOUNT_REQUIRED",
-                    "Esta consulta solo está disponible para clientes.");
-        }
-        return customerRepository.findByTenantIdAndUserIdAndStatus(
-                        actor.tenantId(), actor.userId(), CustomerStatus.active)
-                .orElseThrow(() -> new BusinessException(HttpStatus.FORBIDDEN, "CUSTOMER_ACCOUNT_REQUIRED",
-                        "No se encontró una cuenta de cliente activa para la sesión."));
     }
 
     private static String customerStatus(OrderStatus status) {

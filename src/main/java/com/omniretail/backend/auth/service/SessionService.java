@@ -56,6 +56,15 @@ public class SessionService implements SessionValidator, SessionRevoker {
         sessionRepository.findByUserIdAndRevokedAtIsNull(userId).forEach(session -> session.setRevokedAt(now));
     }
 
+    /** Revoca todas las sesiones activas de {@code userId} salvo {@code keptSessionId} (la de quien hace el cambio). */
+    @Transactional
+    public void revokeOtherSessions(UUID userId, UUID keptSessionId) {
+        Instant now = Instant.now();
+        sessionRepository.findByUserIdAndRevokedAtIsNull(userId).stream()
+                .filter(session -> !session.getId().equals(keptSessionId))
+                .forEach(session -> session.setRevokedAt(now));
+    }
+
     @Override
     @Transactional(readOnly = true)
     public boolean isActive(UUID sessionId, UUID userId) {

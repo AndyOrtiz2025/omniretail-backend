@@ -1,10 +1,12 @@
 package com.omniretail.backend.auth.controller;
 
+import com.omniretail.backend.auth.dto.ChangePasswordRequest;
 import com.omniretail.backend.auth.dto.CurrentSessionResponse;
 import com.omniretail.backend.auth.dto.LoginRequest;
 import com.omniretail.backend.auth.dto.LoginResponse;
 import com.omniretail.backend.auth.service.AuthService;
 import com.omniretail.backend.auth.service.CurrentSessionService;
+import com.omniretail.backend.auth.service.PasswordChangeService;
 import com.omniretail.backend.shared.exception.ApiError;
 import com.omniretail.backend.shared.security.CurrentUser;
 import io.swagger.v3.oas.annotations.Operation;
@@ -24,7 +26,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
-/** {@code /login} es publico; {@code /logout} y {@code /me} exigen token (ver SecurityConfig). */
+/** {@code /login} es publico; {@code /logout}, {@code /me} y {@code /password/change} exigen token (ver SecurityConfig). */
 @RestController
 @RequestMapping("/auth")
 @RequiredArgsConstructor
@@ -33,6 +35,7 @@ public class AuthController {
 
     private final AuthService authService;
     private final CurrentSessionService currentSessionService;
+    private final PasswordChangeService passwordChangeService;
     private final CurrentUser currentUser;
 
     @PostMapping("/login")
@@ -80,6 +83,32 @@ public class AuthController {
     })
     public void logout() {
         authService.logout(currentUser.require().sessionId());
+    }
+
+    @PostMapping("/password/change")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @Operation(
+            summary = "Cambiar contraseña",
+            description = """
+                    Cambia la contraseña de la cuenta de la sesión actual (cliente o empleado).
+
+                    - Exige la contraseña actual; la nueva debe ser distinta y cumplir la política del tipo de cuenta
+                      (clientes: 8 a 24 caracteres; empleados: 12 a 24; con mayúscula, minúscula, número y carácter especial).
+                    - Al cambiarla se revocan todas las demás sesiones del usuario; la sesión actual sigue activa.""")
+    @ApiResponses({
+        @ApiResponse(responseCode = "204", description = "Contraseña cambiada."),
+        @ApiResponse(
+                responseCode = "400",
+                description = "`VALIDATION_ERROR` con `fields.currentPassword` (la contraseña actual no es correcta) o "
+                        + "`fields.newPassword` (igual a la actual o no cumple la política); o cuerpo ilegible "
+                        + "(`REQUEST_ERROR`).",
+                content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
+        @ApiResponse(
+                responseCode = "401",
+                description = "Sin token, token inválido o vencido, o sesión revocada. Responde sin cuerpo.")
+    })
+    public void changePassword(@RequestBody ChangePasswordRequest request) {
+        passwordChangeService.change(currentUser.require(), request);
     }
 
     @GetMapping("/me")

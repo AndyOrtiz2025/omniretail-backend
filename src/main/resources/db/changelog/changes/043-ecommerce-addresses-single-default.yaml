@@ -1,0 +1,13 @@
+databaseChangeLog:
+  - changeSet:
+      id: 043-ecommerce-addresses-single-default
+      author: AndyOrtiz2025
+      changes:
+        # Red de seguridad para la invariante "a lo sumo una direccion predeterminada por cliente".
+        # El service ya la garantiza bloqueando al cliente (FOR UPDATE); el indice la hace imposible
+        # de romper aunque falle esa serializacion.
+        - sql:
+            sql: "CREATE UNIQUE INDEX uk_addresses_customer_default ON addresses (customer_id) WHERE is_default = true"
+      rollback:
+        - sql:
+            sql: "DROP INDEX uk_addresses_customer_default"
