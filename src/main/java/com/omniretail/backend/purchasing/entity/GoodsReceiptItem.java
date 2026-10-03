@@ -16,6 +16,8 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Entity
 @Table(name = "goods_receipt_items")
@@ -72,6 +74,10 @@ public class GoodsReceiptItem {
     @NotNull
     @Column(name = "unit_cost", nullable = false, precision = 12, scale = 2)
     private BigDecimal unitCost;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "tracking_details", columnDefinition = "jsonb")
+    private String trackingDetails;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)

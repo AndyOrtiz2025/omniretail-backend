@@ -1,6 +1,7 @@
 package com.omniretail.backend.purchasing.dto;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.UUID;
 
 public record GoodsReceiptItemResponse(
@@ -15,4 +16,5 @@ public record GoodsReceiptItemResponse(
         BigDecimal purchaseToBaseFactor,
         BigDecimal baseQuantity,
         UUID locationId,
-        BigDecimal unitCost) {}
+        BigDecimal unitCost,
+        List<TrackingDetailRequest> trackingDetails) {}

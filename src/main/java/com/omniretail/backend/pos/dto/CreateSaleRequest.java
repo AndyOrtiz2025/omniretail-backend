@@ -41,15 +41,23 @@ public record CreateSaleRequest(
             List<PaymentLine> payments) {
         this(branchId, cashShiftId, customerId, taxTotal, items, payments, UUID.randomUUID(), null);
     }
-
     public record Document(
             @NotNull SaleDocumentType type,
             @Size(max = 100) String taxId,
             @Size(max = 300) String legalName,
             @Size(max = 500) String fiscalAddress) {}
 
-    public record Item(@NotNull UUID productId, @NotNull @DecimalMin(value = "0.001") BigDecimal quantity,
-                       @DecimalMin("0.00") BigDecimal discount) {}
+    public record Item(
+            @NotNull UUID productId,
+            @NotNull @DecimalMin(value = "0.001") BigDecimal quantity,
+            @DecimalMin("0.00") BigDecimal discount,
+            List<@Valid InventoryTrackingSelectionRequest> trackingSelections) {
+
+        public Item(UUID productId, BigDecimal quantity, BigDecimal discount) {
+            this(productId, quantity, discount, List.of());
+        }
+    }
+
     public record PaymentLine(
             @NotNull PaymentMethod method,
             @NotNull @DecimalMin("0.01") BigDecimal amount,

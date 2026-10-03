@@ -14,6 +14,7 @@ import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
 import com.omniretail.backend.shared.security.SaasCapability;
 import com.omniretail.backend.shared.security.TenantCapabilityGuard;
+import java.time.LocalDate;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
@@ -38,6 +39,7 @@ public class InventoryStockQueryService {
     private final BranchAccessResolver branchAccessResolver;
     private final BranchRepository branchRepository;
     private final ProductInventorySettingsRepository settingsRepository;
+    private final TenantBusinessDateService businessDateService;
 
     public InventoryStockPageResponse list(
             UUID branchId,
@@ -55,11 +57,12 @@ public class InventoryStockQueryService {
                 Math.min(Math.max(requestedPageable.getPageSize(), 1), 100));
         String normalizedSearch = search == null || search.isBlank() ? null : search.trim();
         String statusValue = status == null ? null : status.name();
+        LocalDate businessDate = businessDateService.currentDate(actor.tenantId());
         Page<InventoryStockProjection> page = settingsRepository.findStock(
                 actor.tenantId(), branchId, normalizedSearch, categoryId, statusValue,
-                sort.field(), sort.direction(), pageable);
+                businessDate, sort.field(), sort.direction(), pageable);
         InventoryStockSummaryProjection summary = settingsRepository.summarizeStock(
-                actor.tenantId(), branchId, normalizedSearch, categoryId, statusValue);
+                actor.tenantId(), branchId, normalizedSearch, categoryId, statusValue, businessDate);
         return new InventoryStockPageResponse(
                 page.getContent().stream().map(InventoryStockQueryService::item).toList(),
                 page.getNumber() + 1,
@@ -67,7 +70,10 @@ public class InventoryStockQueryService {
                 page.getTotalElements(),
                 page.getTotalPages(),
                 new InventoryStockSummaryDto(
-                        summary.getActiveProducts(), summary.getLowStock(), summary.getOutOfStock()));
+                        summary.getActiveProducts(),
+                        summary.getLowStock(),
+                        summary.getExpiringSoonProducts(),
+                        summary.getOutOfStock()));
     }
 
     private void requireBranchAndAccess(AuthenticatedUser actor, UUID branchId) {
@@ -105,7 +111,8 @@ public class InventoryStockQueryService {
                 row.getCategoryId(), row.getCategoryName(), row.getBaseUnitId(), row.getQuantity(),
                 row.getReservedQuantity(), row.getAvailableQuantity(), row.getMinStock(),
                 row.getReorderPoint(), row.getDefaultLocationId(), row.getDefaultLocationName(),
-                InventoryAlertStatus.valueOf(row.getStockStatus()), row.getSuggestedReorder());
+                row.getNextExpirationDate(), InventoryAlertStatus.valueOf(row.getStockStatus()),
+                row.getSuggestedReorder());
     }
 
     private record SortSelection(String field, String direction) {}

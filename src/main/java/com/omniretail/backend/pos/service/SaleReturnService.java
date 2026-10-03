@@ -6,11 +6,18 @@ import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.service.KitFulfillmentSnapshot;
 import com.omniretail.backend.inventory.dto.AddStockCommand;
+import com.omniretail.backend.inventory.dto.InventoryHistoricalTraceDetail;
+import com.omniretail.backend.inventory.dto.InventoryRestoreCommand;
+import com.omniretail.backend.inventory.dto.InventoryTraceabilitySelection;
 import com.omniretail.backend.inventory.entity.InventoryMovement;
 import com.omniretail.backend.inventory.entity.InventoryMovementType;
 import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
 import com.omniretail.backend.inventory.service.InventoryStockService;
+import com.omniretail.backend.inventory.service.InventoryTraceabilityHistoryService;
+import com.omniretail.backend.inventory.service.InventoryTraceabilityMutationService;
 import com.omniretail.backend.pos.dto.CreateSaleReturnRequest;
+import com.omniretail.backend.pos.dto.InventoryTrackingDetailResponse;
+import com.omniretail.backend.pos.dto.InventoryTrackingSelectionRequest;
 import com.omniretail.backend.pos.dto.SaleReturnResponse;
 import com.omniretail.backend.pos.entity.CashMovement;
 import com.omniretail.backend.pos.entity.CashMovementType;
@@ -38,10 +45,12 @@ import com.omniretail.backend.shared.security.TenantCapabilityGuard;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -67,6 +76,8 @@ public class SaleReturnService {
     private final SaleReturnItemRepository returnItems;
     private final ProductRepository products;
     private final InventoryStockService inventory;
+    private final InventoryTraceabilityMutationService traceabilityMutation;
+    private final InventoryTraceabilityHistoryService traceabilityHistory;
     private final InventoryMovementRepository inventoryMovements;
     private final CashShiftRepository shifts;
     private final CashMovementRepository movements;
@@ -91,17 +102,34 @@ public class SaleReturnService {
                 .stream().collect(Collectors.toMap(SaleItem::getId, item -> item));
         List<InventoryMovement> originalMovements = inventoryMovements
                 .findByTenantIdAndReferenceTypeInAndReferenceIdOrderByCreatedAtAscIdAsc(
-                        actor.tenantId(), List.of("POS_SALE"), saleId);
+                        actor.tenantId(), Set.of("POS_SALE", "POS_KIT_SALE"), saleId);
+        Map<UUID, List<InventoryHistoricalTraceDetail>> originalHistory =
+                traceabilityHistory.expand(actor.tenantId(), originalMovements);
+        List<SaleReturnItem> previousReturnItems = available.isEmpty()
+                ? List.of()
+                : returnItems.findByTenantIdAndSaleItemIdIn(actor.tenantId(), available.keySet());
+        List<InventoryMovement> previousReturnMovements = previousReturnItems.isEmpty()
+                ? List.of()
+                : inventoryMovements
+                        .findByTenantIdAndReferenceTypeInAndReferenceLineIdInOrderByCreatedAtAscIdAsc(
+                                actor.tenantId(),
+                                Set.of("POS_SALE_RETURN", "POS_KIT_SALE_RETURN"),
+                                previousReturnItems.stream().map(SaleReturnItem::getId).toList());
+        Map<UUID, List<InventoryHistoricalTraceDetail>> previousReturnHistory =
+                traceabilityHistory.expand(actor.tenantId(), previousReturnMovements);
+        Map<UUID, SaleReturnItem> previousReturnItemsById = previousReturnItems.stream()
+                .collect(Collectors.toMap(SaleReturnItem::getId, item -> item));
         Set<UUID> seen = new HashSet<>();
         List<SaleReturnItem> created = new ArrayList<>();
+        List<ReturnInventoryPlan> inventoryPlans = new ArrayList<>();
         Map<UUID, BigDecimal> returnedQuantities = new HashMap<>();
         BigDecimal total = BigDecimal.ZERO;
 
-        SaleReturn saleReturn = SaleReturn.builder()
+        SaleReturn newReturn = SaleReturn.builder()
                 .branchId(sale.getBranchId()).saleId(saleId).reason(request.reason())
                 .createdByUserId(actor.userId()).refundAmount(BigDecimal.ZERO).build();
-        saleReturn.setTenantId(actor.tenantId());
-        saleReturn = returns.save(saleReturn);
+        newReturn.setTenantId(actor.tenantId());
+        SaleReturn saleReturn = returns.save(newReturn);
 
         for (CreateSaleReturnRequest.Line line : request.lines()) {
             if (!seen.add(line.saleItemId())) {
@@ -128,28 +156,29 @@ public class SaleReturnService {
                     .returnId(saleReturn.getId()).saleItemId(item.getId()).productId(item.getProductId())
                     .quantity(line.quantity()).refundAmount(refund).build();
             returnItem.setTenantId(actor.tenantId());
-            created.add(returnItems.save(returnItem));
-
-            List<KitFulfillmentSnapshot.Component> fulfillment = KitFulfillmentSnapshot.decode(item.getFulfillmentComponents());
-            if (!fulfillment.isEmpty()) {
-                for (KitFulfillmentSnapshot.Component component : fulfillment) {
-                    inventory.incrementStock(new AddStockCommand(actor.tenantId(), sale.getBranchId(),
-                            component.productId(), line.quantity().multiply(component.quantityPerKit()),
-                            "Devolucion venta kit POS #" + sale.getNumber(), "POS_KIT_SALE_RETURN",
-                            saleReturn.getId(), actor.userId()));
-                }
-            } else {
-                Product product = products.findByTenantIdAndId(actor.tenantId(), item.getProductId()).orElse(null);
-                if (product != null && Boolean.TRUE.equals(product.getTrackingStock())
-                        && product.getProductType() == ProductType.physical) {
-                    BigDecimal physicalQuantity = physicalReturnQuantity(
-                            sale, item, previous, line.quantity(), originalMovements);
-                    inventory.incrementStock(new AddStockCommand(actor.tenantId(), sale.getBranchId(),
-                            product.getId(), physicalQuantity, "Devolución venta POS #" + sale.getNumber(),
-                            "POS_SALE_RETURN", saleReturn.getId(), actor.userId()));
-                }
-            }
+            SaleReturnItem savedReturnItem = returnItems.saveAndFlush(returnItem);
+            created.add(savedReturnItem);
+            inventoryPlans.addAll(returnInventoryPlans(
+                    actor.tenantId(),
+                    sale,
+                    item,
+                    savedReturnItem,
+                    previous,
+                    line.quantity(),
+                    line.trackingSelections(),
+                    originalMovements,
+                    originalHistory,
+                    previousReturnMovements,
+                    previousReturnHistory,
+                    previousReturnItemsById));
         }
+
+        inventoryPlans.stream()
+                .sorted(Comparator.comparing((ReturnInventoryPlan plan) -> plan.product().getId())
+                        .thenComparing(ReturnInventoryPlan::locationId,
+                                Comparator.nullsFirst(Comparator.naturalOrder()))
+                        .thenComparing(plan -> plan.returnItem().getId()))
+                .forEach(plan -> restoreReturnedInventory(actor, sale, saleReturn, plan));
 
         saleReturn.setRefundAmount(total.setScale(2, RoundingMode.HALF_UP));
         returns.save(saleReturn);
@@ -161,23 +190,400 @@ public class SaleReturnService {
                                 .orElse(BigDecimal.ZERO)) <= 0);
         sale.setStatus(allReturned ? SaleStatus.returned : SaleStatus.partially_returned);
         sales.save(sale);
-        return SaleReturnResponse.from(saleReturn, created);
+        List<InventoryMovement> createdMovements = inventoryMovements
+                .findByTenantIdAndReferenceTypeInAndReferenceIdOrderByCreatedAtAscIdAsc(
+                        actor.tenantId(),
+                        Set.of("POS_SALE_RETURN", "POS_KIT_SALE_RETURN"),
+                        saleReturn.getId());
+        return SaleReturnResponse.from(
+                saleReturn,
+                created,
+                trackingByReturnItem(
+                        createdMovements,
+                        traceabilityHistory.expand(actor.tenantId(), createdMovements)));
+    }
+
+    private List<ReturnInventoryPlan> returnInventoryPlans(
+            UUID tenantId,
+            Sale sale,
+            SaleItem saleItem,
+            SaleReturnItem returnItem,
+            BigDecimal previouslyReturnedCommercial,
+            BigDecimal returnQuantity,
+            List<InventoryTrackingSelectionRequest> requestedSelections,
+            List<InventoryMovement> originalMovements,
+            Map<UUID, List<InventoryHistoricalTraceDetail>> originalHistory,
+            List<InventoryMovement> previousReturnMovements,
+            Map<UUID, List<InventoryHistoricalTraceDetail>> previousReturnHistory,
+            Map<UUID, SaleReturnItem> previousReturnItemsById) {
+        List<InventoryTrackingSelectionRequest> selections = requestedSelections == null
+                ? List.of()
+                : requestedSelections;
+        Map<UUID, ExpectedReturnInventory> expected = expectedReturnInventory(
+                tenantId,
+                sale,
+                saleItem,
+                previouslyReturnedCommercial,
+                returnQuantity,
+                originalMovements);
+        for (InventoryTrackingSelectionRequest selection : selections) {
+            if (selection == null || !expected.containsKey(selection.productId())) {
+                throw invalidTrackingSelection(
+                        "La seleccion no corresponde a inventario de la linea vendida.");
+            }
+        }
+
+        List<ReturnInventoryPlan> plans = new ArrayList<>();
+        for (ExpectedReturnInventory value : expected.values()) {
+            List<InventoryTrackingSelectionRequest> productSelections = selections.stream()
+                    .filter(selection -> value.product().getId().equals(selection.productId()))
+                    .toList();
+            boolean historicalTraceable = !historicalDetails(
+                            saleItem.getId(),
+                            value.product().getId(),
+                            originalMovements,
+                            originalHistory)
+                    .isEmpty();
+            if (historicalTraceable != isTraceable(value.product())) {
+                throw inconsistentSaleHistory();
+            }
+            if (!isTraceable(value.product())) {
+                if (!productSelections.isEmpty()) {
+                    throw invalidTrackingSelection(
+                            "El producto no utiliza trazabilidad por lote o serie.");
+                }
+                plans.add(new ReturnInventoryPlan(
+                        returnItem,
+                        value.product(),
+                        null,
+                        value.quantity(),
+                        List.of(),
+                        value.kitComponent(),
+                        false));
+                continue;
+            }
+            validateTrackedReturnSelection(
+                    saleItem,
+                    value,
+                    productSelections,
+                    originalMovements,
+                    originalHistory,
+                    previousReturnMovements,
+                    previousReturnHistory,
+                    previousReturnItemsById);
+            Map<UUID, List<InventoryTrackingSelectionRequest>> byLocation = productSelections.stream()
+                    .collect(Collectors.groupingBy(InventoryTrackingSelectionRequest::locationId));
+            byLocation.forEach((locationId, locationSelections) -> plans.add(new ReturnInventoryPlan(
+                    returnItem,
+                    value.product(),
+                    locationId,
+                    locationSelections.stream()
+                            .map(InventoryTrackingSelectionRequest::quantity)
+                            .reduce(BigDecimal.ZERO, BigDecimal::add),
+                    locationSelections.stream()
+                            .map(selection -> new InventoryTraceabilitySelection(
+                                    selection.lotId(),
+                                    selection.quantity(),
+                                    safeSerials(selection.serialNumbers())))
+                            .toList(),
+                    value.kitComponent(),
+                    true)));
+        }
+        return plans;
+    }
+
+    private Map<UUID, ExpectedReturnInventory> expectedReturnInventory(
+            UUID tenantId,
+            Sale sale,
+            SaleItem saleItem,
+            BigDecimal previouslyReturnedCommercial,
+            BigDecimal returnQuantity,
+            List<InventoryMovement> originalMovements) {
+        List<KitFulfillmentSnapshot.Component> fulfillment =
+                KitFulfillmentSnapshot.decode(saleItem.getFulfillmentComponents());
+        Map<UUID, ExpectedReturnInventory> expected = new HashMap<>();
+        if (fulfillment.isEmpty()) {
+            Product product = products.findByTenantIdAndId(tenantId, saleItem.getProductId())
+                    .orElseThrow(SaleReturnService::inconsistentSaleHistory);
+            if (product.getProductType() == ProductType.physical
+                    && Boolean.TRUE.equals(product.getTrackingStock())) {
+                expected.put(product.getId(), new ExpectedReturnInventory(
+                        product,
+                        physicalReturnQuantity(
+                                sale,
+                                saleItem,
+                                product.getId(),
+                                false,
+                                previouslyReturnedCommercial,
+                                returnQuantity,
+                                originalMovements,
+                                saleItem.getQuantity()),
+                        false));
+            }
+            return expected;
+        }
+        for (KitFulfillmentSnapshot.Component component : fulfillment) {
+            Product product = products.findByTenantIdAndId(tenantId, component.productId())
+                    .orElseThrow(SaleReturnService::inconsistentSaleHistory);
+            expected.put(product.getId(), new ExpectedReturnInventory(
+                    product,
+                    physicalReturnQuantity(
+                            sale,
+                            saleItem,
+                            product.getId(),
+                            true,
+                            previouslyReturnedCommercial,
+                            returnQuantity,
+                            originalMovements,
+                            saleItem.getQuantity().multiply(component.quantityPerKit())),
+                    true));
+        }
+        return expected;
+    }
+
+    private void validateTrackedReturnSelection(
+            SaleItem saleItem,
+            ExpectedReturnInventory expected,
+            List<InventoryTrackingSelectionRequest> selections,
+            List<InventoryMovement> originalMovements,
+            Map<UUID, List<InventoryHistoricalTraceDetail>> originalHistory,
+            List<InventoryMovement> previousReturnMovements,
+            Map<UUID, List<InventoryHistoricalTraceDetail>> previousReturnHistory,
+            Map<UUID, SaleReturnItem> previousReturnItemsById) {
+        if (selections.isEmpty()) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "TRACKING_SELECTIONS_REQUIRED",
+                    "La devolucion trazable requiere seleccionar el inventario vendido.");
+        }
+        if (selections.stream().anyMatch(selection -> selection.locationId() == null)) {
+            throw invalidTrackingSelection("La ubicacion original es requerida.");
+        }
+        BigDecimal selectedQuantity = selections.stream()
+                .map(InventoryTrackingSelectionRequest::quantity)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (selectedQuantity.compareTo(expected.quantity()) != 0) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "TRACKING_QUANTITY_MISMATCH",
+                    "La seleccion devuelta no coincide con la cantidad fisica requerida.");
+        }
+
+        List<InventoryHistoricalTraceDetail> original = historicalDetails(
+                saleItem.getId(), expected.product().getId(), originalMovements, originalHistory);
+        List<InventoryHistoricalTraceDetail> returned = previousReturnMovements.stream()
+                .filter(movement -> {
+                    SaleReturnItem previous = previousReturnItemsById.get(movement.getReferenceLineId());
+                    return previous != null
+                            && previous.getSaleItemId().equals(saleItem.getId())
+                            && movement.getProductId().equals(expected.product().getId());
+                })
+                .flatMap(movement -> previousReturnHistory
+                        .getOrDefault(movement.getId(), List.of()).stream())
+                .toList();
+        if (original.isEmpty()) throw inconsistentSaleHistory();
+
+        if (Boolean.TRUE.equals(expected.product().getTrackingSerial())) {
+            validateSerialReturnSelections(expected.product(), selections, original, returned);
+        } else {
+            validateLotReturnSelections(selections, original, returned);
+        }
+    }
+
+    private static void validateSerialReturnSelections(
+            Product product,
+            List<InventoryTrackingSelectionRequest> selections,
+            List<InventoryHistoricalTraceDetail> original,
+            List<InventoryHistoricalTraceDetail> returned) {
+        Map<String, TraceIdentity> sold = serialIdentities(original);
+        Set<String> alreadyReturned = serialIdentities(returned).keySet();
+        Set<String> requested = new HashSet<>();
+        for (InventoryTrackingSelectionRequest selection : selections) {
+            List<String> numbers = safeSerials(selection.serialNumbers()).stream()
+                    .map(number -> number == null ? null : number.trim())
+                    .toList();
+            if (numbers.isEmpty()
+                    || numbers.stream().anyMatch(Objects::isNull)
+                    || selection.quantity() == null
+                    || selection.quantity().stripTrailingZeros().scale() > 0
+                    || selection.quantity().compareTo(BigDecimal.valueOf(numbers.size())) != 0) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "SERIAL_COUNT_MISMATCH",
+                        "La cantidad devuelta debe coincidir con los seriales seleccionados.");
+            }
+            for (String number : numbers) {
+                if (number.isEmpty() || !requested.add(number)) {
+                    throw BusinessException.conflict(
+                            "DUPLICATE_SERIAL", "Un serial no puede devolverse dos veces.");
+                }
+                TraceIdentity identity = sold.get(number);
+                if (identity == null || alreadyReturned.contains(number)) {
+                    throw BusinessException.conflict(
+                            "SERIAL_NOT_RETURNABLE",
+                            "El serial no pertenece a la venta o ya fue devuelto.");
+                }
+                if (!identity.locationId().equals(selection.locationId())
+                        || !Objects.equals(identity.lotId(), selection.lotId())) {
+                    throw invalidTrackingSelection(
+                            "El serial no coincide con su ubicacion y lote originales.");
+                }
+                if (Boolean.TRUE.equals(product.getTrackingLot()) && selection.lotId() == null) {
+                    throw invalidTrackingSelection("El lote original del serial es requerido.");
+                }
+                if (!Boolean.TRUE.equals(product.getTrackingLot()) && selection.lotId() != null) {
+                    throw invalidTrackingSelection("El producto no utiliza lote.");
+                }
+            }
+        }
+    }
+
+    private static void validateLotReturnSelections(
+            List<InventoryTrackingSelectionRequest> selections,
+            List<InventoryHistoricalTraceDetail> original,
+            List<InventoryHistoricalTraceDetail> returned) {
+        Map<TraceKey, BigDecimal> sold = quantitiesByTrace(original);
+        Map<TraceKey, BigDecimal> alreadyReturned = quantitiesByTrace(returned);
+        Map<TraceKey, BigDecimal> requested = new HashMap<>();
+        for (InventoryTrackingSelectionRequest selection : selections) {
+            if (selection.lotId() == null || !safeSerials(selection.serialNumbers()).isEmpty()) {
+                throw invalidTrackingSelection(
+                        "La devolucion por lote requiere lote y no admite seriales.");
+            }
+            TraceKey key = new TraceKey(selection.locationId(), selection.lotId());
+            requested.merge(key, selection.quantity(), BigDecimal::add);
+        }
+        requested.forEach((key, quantity) -> {
+            BigDecimal remaining = sold.getOrDefault(key, BigDecimal.ZERO)
+                    .subtract(alreadyReturned.getOrDefault(key, BigDecimal.ZERO));
+            if (quantity.compareTo(remaining) > 0) {
+                throw BusinessException.conflict(
+                        "RETURN_TRACE_QUANTITY_EXCEEDED",
+                        "La cantidad del lote supera lo vendido pendiente de devolucion.");
+            }
+        });
+    }
+
+    private static List<InventoryHistoricalTraceDetail> historicalDetails(
+            UUID saleItemId,
+            UUID productId,
+            List<InventoryMovement> movements,
+            Map<UUID, List<InventoryHistoricalTraceDetail>> history) {
+        return movements.stream()
+                .filter(movement -> saleItemId.equals(movement.getReferenceLineId())
+                        && productId.equals(movement.getProductId()))
+                .flatMap(movement -> history.getOrDefault(movement.getId(), List.of()).stream())
+                .toList();
+    }
+
+    private static Map<String, TraceIdentity> serialIdentities(
+            List<InventoryHistoricalTraceDetail> details) {
+        Map<String, TraceIdentity> result = new HashMap<>();
+        for (InventoryHistoricalTraceDetail detail : details) {
+            detail.serialNumbers().forEach(number -> result.put(
+                    number, new TraceIdentity(detail.locationId(), detail.lotId())));
+        }
+        return result;
+    }
+
+    private static Map<TraceKey, BigDecimal> quantitiesByTrace(
+            List<InventoryHistoricalTraceDetail> details) {
+        Map<TraceKey, BigDecimal> result = new HashMap<>();
+        details.forEach(detail -> result.merge(
+                new TraceKey(detail.locationId(), detail.lotId()),
+                detail.quantity(),
+                BigDecimal::add));
+        return result;
+    }
+
+    private void restoreReturnedInventory(
+            AuthenticatedUser actor,
+            Sale sale,
+            SaleReturn saleReturn,
+            ReturnInventoryPlan plan) {
+        String referenceType = plan.kitComponent()
+                ? "POS_KIT_SALE_RETURN"
+                : "POS_SALE_RETURN";
+        String reason = (plan.kitComponent() ? "Devolucion venta kit POS #" : "Devolución venta POS #")
+                + sale.getNumber();
+        if (!plan.traceable()) {
+            inventory.incrementStock(new AddStockCommand(
+                    actor.tenantId(),
+                    sale.getBranchId(),
+                    plan.product().getId(),
+                    plan.quantity(),
+                    reason,
+                    referenceType,
+                    saleReturn.getId(),
+                    plan.returnItem().getId(),
+                    actor.userId()));
+            return;
+        }
+        traceabilityMutation.restore(new InventoryRestoreCommand(
+                actor.tenantId(),
+                sale.getBranchId(),
+                plan.product(),
+                plan.locationId(),
+                plan.quantity(),
+                plan.selections(),
+                reason,
+                referenceType,
+                saleReturn.getId(),
+                plan.returnItem().getId(),
+                actor.userId()));
+    }
+
+    private static Map<UUID, List<InventoryTrackingDetailResponse>> trackingByReturnItem(
+            List<InventoryMovement> movements,
+            Map<UUID, List<InventoryHistoricalTraceDetail>> history) {
+        Map<UUID, List<InventoryTrackingDetailResponse>> result = new HashMap<>();
+        for (InventoryMovement movement : movements) {
+            if (movement.getReferenceLineId() == null) continue;
+            List<InventoryTrackingDetailResponse> values = result.computeIfAbsent(
+                    movement.getReferenceLineId(), ignored -> new ArrayList<>());
+            history.getOrDefault(movement.getId(), List.of()).stream()
+                    .map(detail -> new InventoryTrackingDetailResponse(
+                            detail.productId(),
+                            detail.locationId(),
+                            detail.lotId(),
+                            detail.lotNumber(),
+                            detail.quantity(),
+                            detail.serialNumbers()))
+                    .forEach(values::add);
+        }
+        return result;
     }
 
     private static BigDecimal physicalReturnQuantity(
             Sale sale,
             SaleItem item,
+            UUID productId,
+            boolean kitComponent,
             BigDecimal previouslyReturnedCommercial,
             BigDecimal returnedCommercial,
-            List<InventoryMovement> originalMovements) {
-        BigDecimal originalPhysicalOut = originalMovements.stream()
+            List<InventoryMovement> originalMovements,
+            BigDecimal legacyOriginalPhysical) {
+        List<InventoryMovement> lineMovements = originalMovements.stream()
                 .filter(movement -> movement.getType() == InventoryMovementType.out)
                 .filter(movement -> sale.getBranchId().equals(movement.getBranchId()))
-                .filter(movement -> item.getProductId().equals(movement.getProductId()))
+                .filter(movement -> productId.equals(movement.getProductId()))
+                .filter(movement -> item.getId().equals(movement.getReferenceLineId()))
+                .toList();
+        if (lineMovements.isEmpty() && !kitComponent) {
+            lineMovements = originalMovements.stream()
+                    .filter(movement -> movement.getType() == InventoryMovementType.out)
+                    .filter(movement -> sale.getBranchId().equals(movement.getBranchId()))
+                    .filter(movement -> productId.equals(movement.getProductId()))
+                    .filter(movement -> movement.getReferenceLineId() == null)
+                    .filter(movement -> "POS_SALE".equals(movement.getReferenceType()))
+                    .toList();
+        }
+        BigDecimal originalPhysicalOut = lineMovements.stream()
                 .map(InventoryMovement::getQuantity)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         if (originalPhysicalOut.signum() == 0) {
-            return inventoryQuantity(returnedCommercial);
+            originalPhysicalOut = inventoryQuantity(legacyOriginalPhysical);
         }
 
         BigDecimal cumulativeCommercial = previouslyReturnedCommercial.add(returnedCommercial);
@@ -251,12 +657,69 @@ public class SaleReturnService {
         if (!branches.resolve(actor).allows(branchId)) {
             throw notFound("BRANCH_NOT_FOUND", "Sucursal no encontrada.");
         }
-        return returns.findByTenantIdAndBranchId(actor.tenantId(), branchId, pageable)
-                .map(value -> SaleReturnResponse.from(value,
-                        returnItems.findByTenantIdAndReturnId(actor.tenantId(), value.getId())));
+        Page<SaleReturn> page = returns.findByTenantIdAndBranchId(
+                actor.tenantId(), branchId, pageable);
+        List<UUID> returnIds = page.getContent().stream().map(SaleReturn::getId).toList();
+        List<SaleReturnItem> pageItems = returnIds.isEmpty()
+                ? List.of()
+                : returnItems.findByTenantIdAndReturnIdIn(actor.tenantId(), returnIds);
+        Map<UUID, List<SaleReturnItem>> itemsByReturn = pageItems.stream()
+                .collect(Collectors.groupingBy(SaleReturnItem::getReturnId));
+        List<InventoryMovement> pageMovements = returnIds.isEmpty()
+                ? List.of()
+                : inventoryMovements
+                        .findByTenantIdAndReferenceTypeInAndReferenceIdInOrderByCreatedAtAscIdAsc(
+                                actor.tenantId(),
+                                Set.of("POS_SALE_RETURN", "POS_KIT_SALE_RETURN"),
+                                returnIds);
+        Map<UUID, List<InventoryTrackingDetailResponse>> tracking = trackingByReturnItem(
+                pageMovements,
+                traceabilityHistory.expand(actor.tenantId(), pageMovements));
+        return page.map(value -> SaleReturnResponse.from(
+                value,
+                itemsByReturn.getOrDefault(value.getId(), List.of()),
+                tracking));
     }
 
     private static BusinessException notFound(String code, String message) {
         return new BusinessException(HttpStatus.NOT_FOUND, code, message);
     }
+
+    private static boolean isTraceable(Product product) {
+        return product.getProductType() == ProductType.physical
+                && Boolean.TRUE.equals(product.getTrackingStock())
+                && (Boolean.TRUE.equals(product.getTrackingLot())
+                        || Boolean.TRUE.equals(product.getTrackingSerial()));
+    }
+
+    private static List<String> safeSerials(List<String> serialNumbers) {
+        return serialNumbers == null ? List.of() : serialNumbers;
+    }
+
+    private static BusinessException invalidTrackingSelection(String message) {
+        return new BusinessException(
+                HttpStatus.BAD_REQUEST, "INVALID_TRACKING_SELECTION", message);
+    }
+
+    private static BusinessException inconsistentSaleHistory() {
+        return BusinessException.conflict(
+                "SALE_INVENTORY_HISTORY_INCONSISTENT",
+                "El historial trazable de la venta es inconsistente.");
+    }
+
+    private record ExpectedReturnInventory(
+            Product product, BigDecimal quantity, boolean kitComponent) {}
+
+    private record ReturnInventoryPlan(
+            SaleReturnItem returnItem,
+            Product product,
+            UUID locationId,
+            BigDecimal quantity,
+            List<InventoryTraceabilitySelection> selections,
+            boolean kitComponent,
+            boolean traceable) {}
+
+    private record TraceKey(UUID locationId, UUID lotId) {}
+
+    private record TraceIdentity(UUID locationId, UUID lotId) {}
 }

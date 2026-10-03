@@ -26,6 +26,7 @@ public record InventoryMovementListDto(
         String toLocationName,
         String referenceType,
         UUID referenceId,
+        UUID referenceLineId,
         String referenceLabel,
         UUID performedByUserId,
         String userLabel,

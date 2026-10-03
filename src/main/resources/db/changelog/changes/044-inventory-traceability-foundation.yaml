@@ -1,0 +1,115 @@
+databaseChangeLog:
+  - changeSet:
+      id: 044-inventory-traceability-foundation
+      author: omniretail
+      changes:
+        - createTable:
+            tableName: inventory_lots
+            columns:
+              - column: {name: id, type: UUID, defaultValueComputed: gen_random_uuid(), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: tenant_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: product_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: lot_number, type: VARCHAR(100), constraints: {nullable: false}}
+              - column: {name: expiration_date, type: DATE}
+              - column: {name: created_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+              - column: {name: updated_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+        - addForeignKeyConstraint: {baseTableName: inventory_lots, baseColumnNames: tenant_id, referencedTableName: tenants, referencedColumnNames: id, constraintName: fk_inventory_lots_tenant, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_lots, baseColumnNames: product_id, referencedTableName: products, referencedColumnNames: id, constraintName: fk_inventory_lots_product, onDelete: RESTRICT}
+        - addUniqueConstraint: {tableName: inventory_lots, columnNames: 'tenant_id, product_id, lot_number', constraintName: uk_inventory_lots_tenant_product_number}
+        - addUniqueConstraint: {tableName: inventory_lots, columnNames: 'tenant_id, product_id, id', constraintName: uk_inventory_lots_tenant_product_id}
+        - createIndex:
+            tableName: inventory_lots
+            indexName: idx_inventory_lots_tenant_product_expiration
+            columns:
+              - column: {name: tenant_id}
+              - column: {name: product_id}
+              - column: {name: expiration_date}
+
+        - createTable:
+            tableName: inventory_lot_balances
+            columns:
+              - column: {name: id, type: UUID, defaultValueComputed: gen_random_uuid(), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: tenant_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: branch_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: location_id, type: UUID}
+              - column: {name: lot_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: quantity, type: 'NUMERIC(12,3)', defaultValueNumeric: 0, constraints: {nullable: false}}
+              - column: {name: reserved_quantity, type: 'NUMERIC(12,3)', defaultValueNumeric: 0, constraints: {nullable: false}}
+              - column: {name: created_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+              - column: {name: updated_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+        - addForeignKeyConstraint: {baseTableName: inventory_lot_balances, baseColumnNames: tenant_id, referencedTableName: tenants, referencedColumnNames: id, constraintName: fk_inventory_lot_balances_tenant, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_lot_balances, baseColumnNames: branch_id, referencedTableName: branches, referencedColumnNames: id, constraintName: fk_inventory_lot_balances_branch, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_lot_balances, baseColumnNames: location_id, referencedTableName: locations, referencedColumnNames: id, constraintName: fk_inventory_lot_balances_location, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_lot_balances, baseColumnNames: lot_id, referencedTableName: inventory_lots, referencedColumnNames: id, constraintName: fk_inventory_lot_balances_lot, onDelete: RESTRICT}
+        - sql: {sql: "ALTER TABLE inventory_lot_balances ADD CONSTRAINT ck_inventory_lot_balances_quantity CHECK (quantity >= 0 AND reserved_quantity >= 0 AND reserved_quantity <= quantity)"}
+        - sql: {sql: "ALTER TABLE inventory_lot_balances ADD CONSTRAINT uk_inventory_lot_balances_logical UNIQUE NULLS NOT DISTINCT (tenant_id, branch_id, lot_id, location_id)"}
+        - createIndex:
+            tableName: inventory_lot_balances
+            indexName: idx_inventory_lot_balances_tenant_branch_location_lot
+            columns:
+              - column: {name: tenant_id}
+              - column: {name: branch_id}
+              - column: {name: location_id}
+              - column: {name: lot_id}
+
+        - createTable:
+            tableName: inventory_serials
+            columns:
+              - column: {name: id, type: UUID, defaultValueComputed: gen_random_uuid(), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: tenant_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: branch_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: location_id, type: UUID}
+              - column: {name: product_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: serial_number, type: VARCHAR(100), constraints: {nullable: false}}
+              - column: {name: lot_id, type: UUID}
+              - column: {name: status, type: VARCHAR(20), defaultValue: AVAILABLE, constraints: {nullable: false}}
+              - column: {name: version, type: BIGINT, defaultValueNumeric: 0, constraints: {nullable: false}}
+              - column: {name: created_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+              - column: {name: updated_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+        - addForeignKeyConstraint: {baseTableName: inventory_serials, baseColumnNames: tenant_id, referencedTableName: tenants, referencedColumnNames: id, constraintName: fk_inventory_serials_tenant, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_serials, baseColumnNames: branch_id, referencedTableName: branches, referencedColumnNames: id, constraintName: fk_inventory_serials_branch, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_serials, baseColumnNames: location_id, referencedTableName: locations, referencedColumnNames: id, constraintName: fk_inventory_serials_location, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_serials, baseColumnNames: product_id, referencedTableName: products, referencedColumnNames: id, constraintName: fk_inventory_serials_product, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_serials, baseColumnNames: 'tenant_id, product_id, lot_id', referencedTableName: inventory_lots, referencedColumnNames: 'tenant_id, product_id, id', constraintName: fk_inventory_serials_tenant_product_lot, onDelete: RESTRICT}
+        - addUniqueConstraint: {tableName: inventory_serials, columnNames: 'tenant_id, product_id, serial_number', constraintName: uk_inventory_serials_tenant_product_number}
+        - sql: {sql: "ALTER TABLE inventory_serials ADD CONSTRAINT ck_inventory_serials_status CHECK (status IN ('AVAILABLE', 'RESERVED', 'CONSUMED', 'WRITTEN_OFF'))"}
+        - sql: {sql: "ALTER TABLE inventory_serials ADD CONSTRAINT ck_inventory_serials_version CHECK (version >= 0)"}
+        - createIndex:
+            tableName: inventory_serials
+            indexName: idx_inventory_serials_tenant_branch_product_status
+            columns:
+              - column: {name: tenant_id}
+              - column: {name: branch_id}
+              - column: {name: product_id}
+              - column: {name: status}
+        - createIndex:
+            tableName: inventory_serials
+            indexName: idx_inventory_serials_tenant_branch_location_status
+            columns:
+              - column: {name: tenant_id}
+              - column: {name: branch_id}
+              - column: {name: location_id}
+              - column: {name: status}
+
+        - createTable:
+            tableName: inventory_movement_traces
+            columns:
+              - column: {name: id, type: UUID, defaultValueComputed: gen_random_uuid(), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: tenant_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: movement_id, type: UUID, constraints: {nullable: false}}
+              - column: {name: lot_id, type: UUID}
+              - column: {name: serial_id, type: UUID}
+              - column: {name: quantity, type: 'NUMERIC(12,3)', constraints: {nullable: false}}
+              - column: {name: created_at, type: TIMESTAMPTZ, defaultValueComputed: now(), constraints: {nullable: false}}
+        - addForeignKeyConstraint: {baseTableName: inventory_movement_traces, baseColumnNames: tenant_id, referencedTableName: tenants, referencedColumnNames: id, constraintName: fk_inventory_movement_traces_tenant, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_movement_traces, baseColumnNames: movement_id, referencedTableName: inventory_movements, referencedColumnNames: id, constraintName: fk_inventory_movement_traces_movement, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_movement_traces, baseColumnNames: lot_id, referencedTableName: inventory_lots, referencedColumnNames: id, constraintName: fk_inventory_movement_traces_lot, onDelete: RESTRICT}
+        - addForeignKeyConstraint: {baseTableName: inventory_movement_traces, baseColumnNames: serial_id, referencedTableName: inventory_serials, referencedColumnNames: id, constraintName: fk_inventory_movement_traces_serial, onDelete: RESTRICT}
+        - sql: {sql: "ALTER TABLE inventory_movement_traces ADD CONSTRAINT ck_inventory_movement_traces_reference CHECK ((lot_id IS NOT NULL AND serial_id IS NULL) OR (lot_id IS NULL AND serial_id IS NOT NULL))"}
+        - sql: {sql: "ALTER TABLE inventory_movement_traces ADD CONSTRAINT ck_inventory_movement_traces_quantity CHECK (quantity > 0 AND (serial_id IS NULL OR quantity = 1))"}
+        - createIndex:
+            tableName: inventory_movement_traces
+            indexName: idx_inventory_movement_traces_tenant_movement
+            columns:
+              - column: {name: tenant_id}
+              - column: {name: movement_id}

@@ -16,7 +16,22 @@ public record SaleReturnResponse(
         Instant createdAt,
         List<Item> lines) {
 
-    public record Item(UUID saleItemId, UUID productId, BigDecimal quantity, BigDecimal refundAmount) {}
+    public record Item(
+            UUID id,
+            UUID saleItemId,
+            UUID productId,
+            BigDecimal quantity,
+            BigDecimal refundAmount,
+            List<InventoryTrackingDetailResponse> trackingDetails) {
+
+        public Item(
+                UUID saleItemId,
+                UUID productId,
+                BigDecimal quantity,
+                BigDecimal refundAmount) {
+            this(null, saleItemId, productId, quantity, refundAmount, List.of());
+        }
+    }
 
     public static SaleReturnResponse from(SaleReturn saleReturn, List<SaleReturnItem> items) {
         return new SaleReturnResponse(
@@ -27,7 +42,27 @@ public record SaleReturnResponse(
                 saleReturn.getRefundAmount(),
                 saleReturn.getCreatedAt(),
                 items.stream()
-                        .map(item -> new Item(item.getSaleItemId(), item.getProductId(), item.getQuantity(), item.getRefundAmount()))
+                        .map(item -> new Item(
+                                item.getId(), item.getSaleItemId(), item.getProductId(), item.getQuantity(),
+                                item.getRefundAmount(), List.of()))
+                        .toList());
+    }
+
+    public static SaleReturnResponse from(
+            SaleReturn saleReturn,
+            List<SaleReturnItem> items,
+            java.util.Map<UUID, List<InventoryTrackingDetailResponse>> trackingByReturnItem) {
+        return new SaleReturnResponse(
+                saleReturn.getId(),
+                saleReturn.getSaleId(),
+                saleReturn.getBranchId(),
+                saleReturn.getReason(),
+                saleReturn.getRefundAmount(),
+                saleReturn.getCreatedAt(),
+                items.stream()
+                        .map(item -> new Item(
+                                item.getId(), item.getSaleItemId(), item.getProductId(), item.getQuantity(),
+                                item.getRefundAmount(), trackingByReturnItem.getOrDefault(item.getId(), List.of())))
                         .toList());
     }
 }

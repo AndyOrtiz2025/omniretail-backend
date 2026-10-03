@@ -60,4 +60,10 @@ public interface InventoryMovementRepository extends JpaRepository<InventoryMove
 
     List<InventoryMovement> findByTenantIdAndReferenceTypeInAndReferenceIdOrderByCreatedAtAscIdAsc(
             UUID tenantId, Collection<String> referenceTypes, UUID referenceId);
+
+    List<InventoryMovement> findByTenantIdAndReferenceTypeInAndReferenceIdInOrderByCreatedAtAscIdAsc(
+            UUID tenantId, Collection<String> referenceTypes, Collection<UUID> referenceIds);
+
+    List<InventoryMovement> findByTenantIdAndReferenceTypeInAndReferenceLineIdInOrderByCreatedAtAscIdAsc(
+            UUID tenantId, Collection<String> referenceTypes, Collection<UUID> referenceLineIds);
 }

@@ -17,6 +17,7 @@ import com.omniretail.backend.inventory.dto.CancelInventoryTransferRequest;
 import com.omniretail.backend.inventory.dto.CreateInventoryTransferRequest;
 import com.omniretail.backend.inventory.dto.InventoryTransferRequestEffectiveStatus;
 import com.omniretail.backend.inventory.dto.InventoryTransferResponse;
+import com.omniretail.backend.inventory.dto.InventoryTransferTrackingSelectionRequest;
 import com.omniretail.backend.inventory.dto.ReceiveInventoryTransferItemRequest;
 import com.omniretail.backend.inventory.dto.ReceiveInventoryTransferRequest;
 import com.omniretail.backend.inventory.entity.InventoryTransferReason;
@@ -32,6 +33,7 @@ import com.omniretail.backend.logistics.entity.PackingSourceType;
 import com.omniretail.backend.logistics.dto.ConfirmTransferDispatchRequest;
 import com.omniretail.backend.logistics.dto.PackingChecklistRequest;
 import com.omniretail.backend.logistics.dto.PackingVersionedRequest;
+import com.omniretail.backend.logistics.dto.PickingTrackingSelectionRequest;
 import com.omniretail.backend.logistics.dto.RegisterPackingLabelPrintRequest;
 import com.omniretail.backend.logistics.dto.SavePackingPreparationRequest;
 import com.omniretail.backend.logistics.dto.UpdatePickingItemRequest;
@@ -432,6 +434,154 @@ class InventoryTransferServiceIntegrationTest {
     }
 
     @Test
+    void traceableTransferDispatchAndPartialReceivePreserveExactLotAndSerials() {
+        TraceableTransfer traceable = readyTraceableTransfer("trace-partial");
+        InventoryTransferResponse transfer = traceable.transfer();
+
+        var dispatch = dispatchService.confirmTransfer(
+                fixture.sourceBranchId(),
+                transfer.id(),
+                new ConfirmTransferDispatchRequest("dispatch-trace-partial"));
+        var dispatchReplay = dispatchService.confirmTransfer(
+                fixture.sourceBranchId(),
+                transfer.id(),
+                new ConfirmTransferDispatchRequest("dispatch-trace-partial"));
+
+        assertThat(dispatch.transferStatus()).isEqualTo(InventoryTransferStatus.inTransit);
+        assertThat(dispatchReplay.idempotent()).isTrue();
+        assertThat(dispatchReplay.dispatchId()).isEqualTo(dispatch.dispatchId());
+        assertBalance("8.000", "0.000");
+        assertLotBalance(
+                fixture.sourceBranchId(), traceable.sourceLocationId(), traceable.lotId(),
+                "0.000", "0.000");
+        assertSerial("TRACE-A", "IN_TRANSIT", fixture.sourceBranchId(), traceable.sourceLocationId());
+        assertSerial("TRACE-B", "IN_TRANSIT", fixture.sourceBranchId(), traceable.sourceLocationId());
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*) FROM inventory_movement_traces trace
+                        JOIN inventory_movements movement ON movement.id = trace.movement_id
+                        WHERE movement.reference_type = 'transfer'
+                          AND movement.reference_id = ?
+                          AND movement.reference_line_id = ?
+                          AND trace.serial_id IS NOT NULL
+                          AND trace.lot_id IS NULL
+                        """,
+                        Long.class,
+                        transfer.id(),
+                        transfer.items().getFirst().id()))
+                .isEqualTo(2L);
+
+        ReceiveInventoryTransferRequest firstRequest = traceReceiptRequest(
+                transfer, "trace-receipt-a", traceable.lotId(), "TRACE-A");
+        var first = service.receiveTransfer(transfer.id(), firstRequest);
+        var replay = service.receiveTransfer(transfer.id(), firstRequest);
+
+        assertThat(first.transferStatus()).isEqualTo(InventoryTransferStatus.inTransit);
+        assertThat(replay.idempotent()).isTrue();
+        assertThat(replay.id()).isEqualTo(first.id());
+        assertDestinationBalance("1.000", "0.000");
+        assertLotBalance(
+                fixture.destinationBranchId(), fixture.destinationLocationId(), traceable.lotId(),
+                "1.000", "0.000");
+        assertSerial(
+                "TRACE-A", "AVAILABLE", fixture.destinationBranchId(), fixture.destinationLocationId());
+        assertSerial("TRACE-B", "IN_TRANSIT", fixture.sourceBranchId(), traceable.sourceLocationId());
+
+        assertCode(
+                () -> service.receiveTransfer(
+                        transfer.id(),
+                        traceReceiptRequest(
+                                transfer, "trace-receipt-a", traceable.lotId(), "TRACE-B")),
+                "INVENTORY_TRANSFER_RECEIPT_CONFIRMATION_CONFLICT");
+        assertCode(
+                () -> service.receiveTransfer(
+                        transfer.id(),
+                        traceReceiptRequest(
+                                transfer, "trace-receipt-duplicate", traceable.lotId(), "TRACE-A")),
+                "TRANSFER_SERIAL_NOT_RECEIVABLE");
+
+        jdbc.update(
+                """
+                INSERT INTO inventory_serials
+                    (id, tenant_id, branch_id, location_id, product_id, serial_number,
+                     lot_id, status, version)
+                VALUES (?, ?, ?, ?, ?, 'TRACE-INJECTED', ?, 'IN_TRANSIT', 0)
+                """,
+                UUID.randomUUID(),
+                fixture.tenantId(),
+                fixture.sourceBranchId(),
+                traceable.sourceLocationId(),
+                fixture.productId(),
+                traceable.lotId());
+        assertCode(
+                () -> service.receiveTransfer(
+                        transfer.id(),
+                        traceReceiptRequest(
+                                transfer,
+                                "trace-receipt-injected",
+                                traceable.lotId(),
+                                "TRACE-INJECTED")),
+                "TRANSFER_SERIAL_NOT_RECEIVABLE");
+
+        var second = service.receiveTransfer(
+                transfer.id(),
+                traceReceiptRequest(
+                        transfer, "trace-receipt-b", traceable.lotId(), "TRACE-B"));
+
+        assertThat(second.transferStatus()).isEqualTo(InventoryTransferStatus.received);
+        assertDestinationBalance("2.000", "0.000");
+        assertLotBalance(
+                fixture.destinationBranchId(), fixture.destinationLocationId(), traceable.lotId(),
+                "2.000", "0.000");
+        assertSerial(
+                "TRACE-B", "AVAILABLE", fixture.destinationBranchId(), fixture.destinationLocationId());
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*) FROM inventory_movement_traces trace
+                        JOIN inventory_movements movement ON movement.id = trace.movement_id
+                        JOIN inventory_transfer_receipts receipt
+                          ON receipt.id = movement.reference_id
+                        WHERE receipt.transfer_id = ?
+                          AND movement.reference_type = 'receipt'
+                          AND movement.reference_line_id = ?
+                          AND trace.serial_id IS NOT NULL
+                          AND trace.lot_id IS NULL
+                        """,
+                        Long.class,
+                        transfer.id(),
+                        transfer.items().getFirst().id()))
+                .isEqualTo(2L);
+    }
+
+    @Test
+    void cancellingPreparingTraceableTransferReleasesPhysicalAndAggregateReservations() {
+        TraceableTransfer traceable = readyTraceableTransfer("trace-cancel");
+
+        assertBalance("10.000", "2.000");
+        assertLotBalance(
+                fixture.sourceBranchId(), traceable.sourceLocationId(), traceable.lotId(),
+                "2.000", "2.000");
+        assertSerial("TRACE-A", "RESERVED", fixture.sourceBranchId(), traceable.sourceLocationId());
+        assertSerial("TRACE-B", "RESERVED", fixture.sourceBranchId(), traceable.sourceLocationId());
+
+        InventoryTransferResponse cancelled = service.cancelTransfer(
+                traceable.transfer().id(), new CancelInventoryTransferRequest("cancel traceable"));
+
+        assertThat(cancelled.status()).isEqualTo(InventoryTransferStatus.cancelled);
+        assertBalance("10.000", "0.000");
+        assertLotBalance(
+                fixture.sourceBranchId(), traceable.sourceLocationId(), traceable.lotId(),
+                "2.000", "0.000");
+        assertSerial("TRACE-A", "AVAILABLE", fixture.sourceBranchId(), traceable.sourceLocationId());
+        assertSerial("TRACE-B", "AVAILABLE", fixture.sourceBranchId(), traceable.sourceLocationId());
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM inventory_movements WHERE reference_id = ?",
+                        Long.class,
+                        traceable.transfer().id()))
+                .isZero();
+    }
+
+    @Test
     void totalReceiptIncreasesDestinationStockAndCompletesTransfer() {
         InventoryTransferResponse transfer = dispatchedTransfer("receipt-total", "2.000");
 
@@ -625,7 +775,7 @@ class InventoryTransferServiceIntegrationTest {
         assertCode(
                 () -> service.receiveTransfer(
                         transfer.id(), receiptRequest(transfer, "traceability", "1.000")),
-                "INVENTORY_TRANSFER_TRACEABILITY_UNSUPPORTED");
+                "TRACKING_SELECTIONS_REQUIRED");
         jdbc.update(
                 """
                 UPDATE products
@@ -847,6 +997,168 @@ class InventoryTransferServiceIntegrationTest {
 
     private ReadyTransfer readyTransfer(String suffix) {
         return readyTransfer(suffix, "2.000");
+    }
+
+    private TraceableTransfer readyTraceableTransfer(String suffix) {
+        UUID sourceLocation = insertLocation(
+                fixture.tenantId(), fixture.sourceBranchId(), "TRACE-SOURCE", "active");
+        UUID lotId = UUID.randomUUID();
+        jdbc.update(
+                """
+                UPDATE products
+                SET tracking_lot = true, tracking_serial = true
+                WHERE id = ?
+                """,
+                fixture.productId());
+        jdbc.update(
+                """
+                INSERT INTO inventory_lots (id, tenant_id, product_id, lot_number)
+                VALUES (?, ?, ?, ?)
+                """,
+                lotId,
+                fixture.tenantId(),
+                fixture.productId(),
+                "TRACE-LOT-" + suffix);
+        jdbc.update(
+                """
+                INSERT INTO inventory_lot_balances
+                    (id, tenant_id, branch_id, location_id, lot_id, quantity, reserved_quantity)
+                VALUES (?, ?, ?, ?, ?, 2.000, 0.000)
+                """,
+                UUID.randomUUID(),
+                fixture.tenantId(),
+                fixture.sourceBranchId(),
+                sourceLocation,
+                lotId);
+        jdbc.update(
+                """
+                INSERT INTO inventory_serials
+                    (id, tenant_id, branch_id, location_id, product_id, serial_number,
+                     lot_id, status, version)
+                VALUES (?, ?, ?, ?, ?, 'TRACE-A', ?, 'AVAILABLE', 0),
+                       (?, ?, ?, ?, ?, 'TRACE-B', ?, 'AVAILABLE', 0)
+                """,
+                UUID.randomUUID(), fixture.tenantId(), fixture.sourceBranchId(), sourceLocation,
+                fixture.productId(), lotId,
+                UUID.randomUUID(), fixture.tenantId(), fixture.sourceBranchId(), sourceLocation,
+                fixture.productId(), lotId);
+
+        UUID requestId = createRequest("2.000");
+        InventoryTransferResponse transfer = service.approve(
+                requestId,
+                new ApproveInventoryTransferRequest("approve-" + suffix, null));
+        var picking = pickingOrders
+                .findByTenantIdAndSourceTypeAndSourceId(
+                        fixture.tenantId(), PickingSourceType.transfer, transfer.id())
+                .orElseThrow();
+        var pickingItem = pickingItems
+                .findByTenantIdAndPickingOrderId(fixture.tenantId(), picking.getId())
+                .getFirst();
+        pickingService.assign(fixture.sourceBranchId(), picking.getId());
+        pickingService.updateItem(
+                fixture.sourceBranchId(),
+                picking.getId(),
+                pickingItem.getId(),
+                new UpdatePickingItemRequest(
+                        new BigDecimal("2.000"),
+                        sourceLocation,
+                        "pick-" + suffix,
+                        List.of(new PickingTrackingSelectionRequest(
+                                sourceLocation,
+                                lotId,
+                                new BigDecimal("2.000"),
+                                List.of("TRACE-B", "TRACE-A")))));
+        pickingService.complete(fixture.sourceBranchId(), picking.getId());
+        finalizeTransferPacking(transfer, suffix);
+        return new TraceableTransfer(transfer, sourceLocation, lotId);
+    }
+
+    private void finalizeTransferPacking(InventoryTransferResponse transfer, String suffix) {
+        var packing = packings
+                .findByTenantIdAndBranchIdAndSourceTypeAndSourceId(
+                        fixture.tenantId(),
+                        fixture.sourceBranchId(),
+                        PackingSourceType.transfer,
+                        transfer.id())
+                .orElseThrow();
+        var prepared = packingService.savePreparation(
+                fixture.sourceBranchId(),
+                packing.getId(),
+                new SavePackingPreparationRequest(
+                        packing.getVersion(),
+                        "prepare-" + suffix,
+                        new PackingChecklistRequest(true, true, true),
+                        new BigDecimal("1.500"),
+                        1));
+        var labelled = packingService.generateLabel(
+                fixture.sourceBranchId(),
+                packing.getId(),
+                new PackingVersionedRequest(
+                        prepared.packing().version(), "label-" + suffix));
+        var printed = packingService.registerLabelPrint(
+                fixture.sourceBranchId(),
+                packing.getId(),
+                new RegisterPackingLabelPrintRequest(
+                        labelled.packing().version(),
+                        "print-" + suffix,
+                        labelled.packing().labelGenerationId()));
+        packingService.finalizePacking(
+                fixture.sourceBranchId(),
+                packing.getId(),
+                new PackingVersionedRequest(
+                        printed.packing().version(), "finalize-" + suffix));
+    }
+
+    private ReceiveInventoryTransferRequest traceReceiptRequest(
+            InventoryTransferResponse transfer,
+            String confirmationId,
+            UUID lotId,
+            String serialNumber) {
+        return new ReceiveInventoryTransferRequest(
+                confirmationId,
+                fixture.destinationLocationId(),
+                List.of(new ReceiveInventoryTransferItemRequest(
+                        transfer.items().getFirst().id(),
+                        BigDecimal.ONE,
+                        List.of(new InventoryTransferTrackingSelectionRequest(
+                                lotId, BigDecimal.ONE, List.of(serialNumber))))));
+    }
+
+    private void assertLotBalance(
+            UUID branchId,
+            UUID locationId,
+            UUID lotId,
+            String quantity,
+            String reservedQuantity) {
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT quantity FROM inventory_lot_balances
+                        WHERE tenant_id = ? AND branch_id = ? AND location_id = ? AND lot_id = ?
+                        """,
+                        BigDecimal.class,
+                        fixture.tenantId(), branchId, locationId, lotId))
+                .isEqualByComparingTo(quantity);
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT reserved_quantity FROM inventory_lot_balances
+                        WHERE tenant_id = ? AND branch_id = ? AND location_id = ? AND lot_id = ?
+                        """,
+                        BigDecimal.class,
+                        fixture.tenantId(), branchId, locationId, lotId))
+                .isEqualByComparingTo(reservedQuantity);
+    }
+
+    private void assertSerial(
+            String serialNumber, String status, UUID branchId, UUID locationId) {
+        assertThat(jdbc.queryForMap(
+                        """
+                        SELECT status, branch_id, location_id FROM inventory_serials
+                        WHERE tenant_id = ? AND product_id = ? AND serial_number = ?
+                        """,
+                        fixture.tenantId(), fixture.productId(), serialNumber))
+                .containsEntry("status", status)
+                .containsEntry("branch_id", branchId)
+                .containsEntry("location_id", locationId);
     }
 
     private ReadyTransfer readyTransfer(String suffix, String quantity) {
@@ -1145,4 +1457,7 @@ class InventoryTransferServiceIntegrationTest {
             UUID actorId) {}
 
     private record ReadyTransfer(InventoryTransferResponse transfer) {}
+
+    private record TraceableTransfer(
+            InventoryTransferResponse transfer, UUID sourceLocationId, UUID lotId) {}
 }

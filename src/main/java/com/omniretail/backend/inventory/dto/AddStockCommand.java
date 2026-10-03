@@ -11,4 +11,19 @@ public record AddStockCommand(
         String reason,
         String referenceType,
         UUID referenceId,
-        UUID performedByUserId) {}
+        UUID referenceLineId,
+        UUID performedByUserId) {
+
+    public AddStockCommand(
+            UUID tenantId,
+            UUID branchId,
+            UUID productId,
+            BigDecimal qty,
+            String reason,
+            String referenceType,
+            UUID referenceId,
+            UUID performedByUserId) {
+        this(tenantId, branchId, productId, qty, reason, referenceType, referenceId, null,
+                performedByUserId);
+    }
+}

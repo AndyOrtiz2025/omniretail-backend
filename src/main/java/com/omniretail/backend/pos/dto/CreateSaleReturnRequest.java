@@ -16,5 +16,11 @@ public record CreateSaleReturnRequest(
 
     public record Line(
             @NotNull UUID saleItemId,
-            @NotNull @DecimalMin(value = "0.001") BigDecimal quantity) {}
+            @NotNull @DecimalMin(value = "0.001") BigDecimal quantity,
+            List<@Valid InventoryTrackingSelectionRequest> trackingSelections) {
+
+        public Line(UUID saleItemId, BigDecimal quantity) {
+            this(saleItemId, quantity, List.of());
+        }
+    }
 }

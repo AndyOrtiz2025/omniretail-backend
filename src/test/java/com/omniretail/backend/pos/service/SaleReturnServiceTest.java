@@ -9,10 +9,12 @@ import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.administration.service.BranchAccessResolver;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.repository.ProductRepository;
-import com.omniretail.backend.inventory.service.InventoryStockService;
 import com.omniretail.backend.inventory.entity.InventoryMovement;
 import com.omniretail.backend.inventory.entity.InventoryMovementType;
 import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
+import com.omniretail.backend.inventory.service.InventoryStockService;
+import com.omniretail.backend.inventory.service.InventoryTraceabilityHistoryService;
+import com.omniretail.backend.inventory.service.InventoryTraceabilityMutationService;
 import com.omniretail.backend.pos.dto.CreateSaleReturnRequest;
 import com.omniretail.backend.pos.entity.*;
 import com.omniretail.backend.pos.repository.*;
@@ -37,6 +39,8 @@ class SaleReturnServiceTest {
     @Mock SaleReturnItemRepository returnItems;
     @Mock ProductRepository products;
     @Mock InventoryStockService inventory;
+    @Mock InventoryTraceabilityMutationService traceabilityMutation;
+    @Mock InventoryTraceabilityHistoryService traceabilityHistory;
     @Mock InventoryMovementRepository inventoryMovements;
     @Mock CashShiftRepository shifts;
     @Mock CashMovementRepository movements;
@@ -57,8 +61,14 @@ class SaleReturnServiceTest {
             if (value.getId() == null) ReflectionTestUtils.setField(value, "id", UUID.randomUUID());
             return value;
         });
-        lenient().when(returnItems.save(any())).thenAnswer(call -> call.getArgument(0));
+        lenient().when(returnItems.saveAndFlush(any())).thenAnswer(call -> {
+            SaleReturnItem value = call.getArgument(0);
+            if (value.getId() == null) ReflectionTestUtils.setField(value, "id", UUID.randomUUID());
+            return value;
+        });
         lenient().when(returnItems.sumReturned(any(), any())).thenReturn(BigDecimal.ZERO);
+        lenient().when(returnItems.findByTenantIdAndSaleItemIdIn(any(), any())).thenReturn(List.of());
+        lenient().when(traceabilityHistory.expand(any(), any())).thenReturn(Map.of());
         lenient().when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
         lenient().when(sales.save(any())).thenAnswer(call -> call.getArgument(0));
     }
@@ -88,7 +98,7 @@ class SaleReturnServiceTest {
         when(saleItems.findByTenantIdAndSaleId(tenant, sale.getId()))
                 .thenReturn(List.of(item(new BigDecimal("2.000"))));
         when(inventoryMovements.findByTenantIdAndReferenceTypeInAndReferenceIdOrderByCreatedAtAscIdAsc(
-                tenant, List.of("POS_SALE"), sale.getId()))
+                tenant, Set.of("POS_SALE", "POS_KIT_SALE"), sale.getId()))
                 .thenReturn(List.of(originalOut(sale, new BigDecimal("24.000"))));
         when(payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(tenant, sale.getId()))
                 .thenReturn(List.of());
@@ -107,7 +117,7 @@ class SaleReturnServiceTest {
                 .thenReturn(List.of(item(new BigDecimal("2.000"))));
         when(returnItems.sumReturned(tenant, itemId)).thenReturn(BigDecimal.ONE);
         when(inventoryMovements.findByTenantIdAndReferenceTypeInAndReferenceIdOrderByCreatedAtAscIdAsc(
-                tenant, List.of("POS_SALE"), sale.getId()))
+                tenant, Set.of("POS_SALE", "POS_KIT_SALE"), sale.getId()))
                 .thenReturn(List.of(originalOut(sale, new BigDecimal("24.000"))));
         when(payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(tenant, sale.getId()))
                 .thenReturn(List.of());
@@ -126,7 +136,7 @@ class SaleReturnServiceTest {
         when(saleItems.findByTenantIdAndSaleId(tenant, sale.getId()))
                 .thenReturn(List.of(item(new BigDecimal("2.000"))));
         when(inventoryMovements.findByTenantIdAndReferenceTypeInAndReferenceIdOrderByCreatedAtAscIdAsc(
-                tenant, List.of("POS_SALE"), sale.getId()))
+                tenant, Set.of("POS_SALE", "POS_KIT_SALE"), sale.getId()))
                 .thenReturn(List.of(originalOut(sale, new BigDecimal("24.000"))));
         when(payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(tenant, sale.getId()))
                 .thenReturn(List.of());
@@ -176,6 +186,9 @@ class SaleReturnServiceTest {
         when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
         when(saleItems.findByTenantIdAndSaleId(tenant, sale.getId())).thenReturn(List.of(kitItem));
         when(payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(tenant, sale.getId())).thenReturn(List.of());
+        Product component = product();
+        ReflectionTestUtils.setField(component, "id", componentId);
+        when(products.findByTenantIdAndId(tenant, componentId)).thenReturn(Optional.of(component));
 
         service.create(sale.getId(), request(BigDecimal.ONE));
 

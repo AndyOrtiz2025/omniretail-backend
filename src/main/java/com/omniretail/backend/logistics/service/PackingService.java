@@ -397,7 +397,9 @@ public class PackingService {
                 .filter(item -> item.getPickedQuantity().signum() > 0)
                 .map(item -> {
                     Product product = products.get(item.getProductId());
-                    requireTraceabilitySupported(product);
+                    if (product == null) {
+                        throw conflict("PACKING_PRODUCT_NOT_FOUND", "Producto de Packing no encontrado.");
+                    }
                     return new PackingPreparedContentResponse(
                             item.getProductId(), product.getSku(), product.getName(),
                             item.getPickedQuantity(), List.of());

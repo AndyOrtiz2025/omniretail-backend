@@ -22,12 +22,16 @@ import com.omniretail.backend.ecommerce.repository.InventoryReservationRepositor
 import com.omniretail.backend.ecommerce.repository.OrderItemRepository;
 import com.omniretail.backend.ecommerce.repository.OrderRepository;
 import com.omniretail.backend.inventory.entity.InventoryBalance;
+import com.omniretail.backend.inventory.dto.InventoryPhysicalSelection;
+import com.omniretail.backend.inventory.dto.InventoryTraceabilitySelection;
 import com.omniretail.backend.inventory.entity.InventoryTransfer;
 import com.omniretail.backend.inventory.entity.InventoryTransferItem;
 import com.omniretail.backend.inventory.entity.InventoryTransferStatus;
 import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferItemRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferRepository;
+import com.omniretail.backend.inventory.service.InventoryPhysicalSelectionCodec;
+import com.omniretail.backend.inventory.service.InventoryTraceabilityMutationService;
 import com.omniretail.backend.logistics.dto.CreatePickingIncidentRequest;
 import com.omniretail.backend.logistics.dto.PickingActionResponse;
 import com.omniretail.backend.logistics.dto.PickingDetailResponse;
@@ -36,6 +40,7 @@ import com.omniretail.backend.logistics.dto.PickingLineResponse;
 import com.omniretail.backend.logistics.dto.PickingProgressResponse;
 import com.omniretail.backend.logistics.dto.PickingQueueResponse;
 import com.omniretail.backend.logistics.dto.PickingReleaseResponse;
+import com.omniretail.backend.logistics.dto.PickingTrackingSelectionRequest;
 import com.omniretail.backend.logistics.dto.UpdatePickingItemRequest;
 import com.omniretail.backend.logistics.entity.Packing;
 import com.omniretail.backend.logistics.entity.PackingSourceType;
@@ -107,6 +112,8 @@ public class PickingService {
     private final InventoryTransferRepository transferRepository;
     private final InventoryTransferItemRepository transferItemRepository;
     private final LocationRepository locationRepository;
+    private final InventoryTraceabilityMutationService traceabilityMutationService;
+    private final InventoryPhysicalSelectionCodec physicalSelectionCodec;
     private final BranchAccessResolver branchAccessResolver;
     private final CurrentUser currentUser;
     private final TenantCapabilityGuard tenantCapabilityGuard;
@@ -289,7 +296,6 @@ public class PickingService {
         PickingOrder picking = lockScoped(actor.tenantId(), branchId, pickingOrderId);
         SourceContext source = lockSource(picking);
         requireMutablePicking(picking, source);
-        requireTraceabilitySupported(actor.tenantId(), picking.getId());
 
         if (actor.userId().equals(picking.getAssignedUserId())) {
             return action(picking, source, true);
@@ -371,7 +377,6 @@ public class PickingService {
         requireAssignedActor(picking, actor);
         SourceContext source = lockSource(picking);
         Product product = requireProduct(actor.tenantId(), item.getProductId());
-        requireTraceabilitySupported(product);
 
         BigDecimal target = request.pickedQuantity();
         if (target.signum() < 0) {
@@ -383,11 +388,61 @@ public class PickingService {
         if (target.compareTo(item.getPickedQuantity()) < 0) {
             throw conflict("PICKING_QUANTITY_DECREASE", "La cantidad tomada no puede disminuir.");
         }
-        if (target.compareTo(item.getPickedQuantity()) == 0) {
+        boolean traceable = isTraceable(product);
+        List<PickingTrackingSelectionRequest> requestedSelections =
+                request.trackingSelections() == null ? List.of() : request.trackingSelections();
+        String previousTraces = item.getPickedTraces();
+        String targetTraces = null;
+        if (traceable) {
+            if (request.locationId() == null) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "PICKING_LOCATION_REQUIRED",
+                        "La ubicacion es requerida para Picking trazable.");
+            }
+            if (target.signum() > 0 && requestedSelections.isEmpty()) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "TRACKING_SELECTIONS_REQUIRED",
+                        "La seleccion fisica es requerida para Picking trazable.");
+            }
+            if (requestedSelections.stream().anyMatch(selection -> selection == null
+                    || !request.locationId().equals(selection.locationId()))) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "PICKING_LOCATION_MISMATCH",
+                        "Todas las selecciones deben usar la ubicacion de la linea de Picking.");
+            }
+            applyLocation(actor.tenantId(), branchId, item, request.locationId());
+            List<InventoryPhysicalSelection> oldPhysical =
+                    physicalSelectionCodec.decode(previousTraces);
+            List<InventoryTraceabilitySelection> oldSelections =
+                    physicalSelectionCodec.withoutLocation(oldPhysical, item.getLocationId());
+            List<InventoryTraceabilitySelection> desiredSelections = requestedSelections.stream()
+                    .map(selection -> new InventoryTraceabilitySelection(
+                            selection.lotId(), selection.quantity(), selection.serialNumbers()))
+                    .toList();
+            List<InventoryTraceabilitySelection> normalized =
+                    traceabilityMutationService.replacePhysicalReservation(
+                            actor.tenantId(), branchId, product, item.getLocationId(), target,
+                            oldSelections, desiredSelections);
+            targetTraces = physicalSelectionCodec.encode(
+                    physicalSelectionCodec.canonical(item.getLocationId(), normalized));
+        } else {
+            if (!requestedSelections.isEmpty()) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "INVALID_TRACKING_PAYLOAD",
+                        "El producto no utiliza trazabilidad fisica.");
+            }
+            applyLocation(actor.tenantId(), branchId, item, request.locationId());
+        }
+        if (target.compareTo(item.getPickedQuantity()) == 0
+                && java.util.Objects.equals(previousTraces, targetTraces)) {
             throw conflict("PICKING_ITEM_UNCHANGED", "La linea de Picking no contiene cambios.");
         }
-        applyLocation(actor.tenantId(), branchId, item, request.locationId());
         item.setPickedQuantity(target);
+        item.setPickedTraces(targetTraces);
         item.setStatus(itemStatus(target, item.getRequestedQuantity()));
         pickingItemRepository.saveAndFlush(item);
 
@@ -476,7 +531,6 @@ public class PickingService {
         AuthenticatedUser actor = actorForBranch(branchId);
         PickingOrder picking = lockScoped(actor.tenantId(), branchId, pickingOrderId);
         SourceContext source = lockSource(picking);
-        requireTraceabilitySupported(actor.tenantId(), picking.getId());
         if (picking.getStatus() == PickingStatus.completed) {
             ensurePacking(picking, source, actor.userId());
             return action(picking, source, true);
@@ -492,6 +546,31 @@ public class PickingService {
                 item.getStatus() != PickingItemStatus.completed
                         || item.getPickedQuantity().compareTo(item.getRequestedQuantity()) != 0)) {
             throw conflict("PICKING_ITEMS_INCOMPLETE", "Todas las lineas deben estar completas.");
+        }
+        Map<UUID, Product> pickingProducts = productRepository
+                .findByTenantIdAndIdIn(
+                        actor.tenantId(), items.stream().map(PickingItem::getProductId).toList())
+                .stream()
+                .collect(Collectors.toMap(Product::getId, Function.identity()));
+        for (PickingItem item : items) {
+            Product product = pickingProducts.get(item.getProductId());
+            if (product == null) {
+                throw conflict("PICKING_PRODUCT_NOT_FOUND", "Producto de Picking no encontrado.");
+            }
+            if (isTraceable(product)) {
+                List<InventoryTraceabilitySelection> selections =
+                        physicalSelectionCodec.withoutLocation(
+                                physicalSelectionCodec.decode(item.getPickedTraces()),
+                                item.getLocationId());
+                if (item.getLocationId() == null || selections.isEmpty()) {
+                    throw conflict(
+                            "PICKING_TRACE_HISTORY_INCONSISTENT",
+                            "La seleccion fisica del Picking esta incompleta.");
+                }
+                traceabilityMutationService.validatePhysicalReservation(
+                        actor.tenantId(), branchId, product, item.getLocationId(),
+                        item.getPickedQuantity(), selections);
+            }
         }
         if (pickingIncidentRepository.existsByTenantIdAndBranchIdAndPickingOrderIdAndStatus(
                 actor.tenantId(), branchId, pickingOrderId, PickingIncidentStatus.open)) {
@@ -666,7 +745,6 @@ public class PickingService {
                     "PICKING_TRANSFER_PRODUCT_UNSUPPORTED",
                     "Solo productos fisicos con control de inventario admiten Picking.");
         }
-        requireTraceabilitySupported(product);
     }
 
     private static void requireMatchingTransferReservation(
@@ -1110,7 +1188,8 @@ public class PickingService {
         String payload = itemId
                 + "|" + request.pickedQuantity().stripTrailingZeros().toPlainString()
                 + "|" + String.valueOf(request.locationId())
-                + "|" + actorUserId;
+                + "|" + actorUserId
+                + "|" + pickingSelectionFingerprint(request.trackingSelections());
         try {
             return HexFormat.of().formatHex(
                     MessageDigest.getInstance("SHA-256")
@@ -1118,6 +1197,34 @@ public class PickingService {
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 no está disponible.", exception);
         }
+    }
+
+    private static String pickingSelectionFingerprint(
+            List<PickingTrackingSelectionRequest> selections) {
+        if (selections == null || selections.isEmpty()) return "-";
+        return selections.stream()
+                .map(selection -> selection == null
+                        ? "<null>"
+                        : selection.locationId()
+                                + "/" + selection.lotId()
+                                + "/" + (selection.quantity() == null
+                                        ? "null"
+                                        : selection.quantity().stripTrailingZeros().toPlainString())
+                                + "/" + (selection.serialNumbers() == null
+                                        ? List.<String>of()
+                                        : selection.serialNumbers()).stream()
+                                                .map(value -> value == null ? "<null>" : value.trim())
+                                                .sorted()
+                                                .collect(Collectors.joining(";")))
+                .sorted()
+                .collect(Collectors.joining(","));
+    }
+
+    private static boolean isTraceable(Product product) {
+        return product.getProductType() == ProductType.physical
+                && Boolean.TRUE.equals(product.getTrackingStock())
+                && (Boolean.TRUE.equals(product.getTrackingLot())
+                        || Boolean.TRUE.equals(product.getTrackingSerial()));
     }
 
     private static BusinessException notFound(String code, String message) {

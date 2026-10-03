@@ -15,6 +15,9 @@ import com.omniretail.backend.ecommerce.repository.InventoryReservationRepositor
 import com.omniretail.backend.ecommerce.repository.OrderRepository;
 import com.omniretail.backend.inventory.entity.InventoryMovement;
 import com.omniretail.backend.inventory.entity.InventoryMovementType;
+import com.omniretail.backend.inventory.dto.InventoryPhysicalSelection;
+import com.omniretail.backend.inventory.dto.InventoryTraceabilitySelection;
+import com.omniretail.backend.inventory.entity.InventorySerialStatus;
 import com.omniretail.backend.inventory.entity.InventoryTransfer;
 import com.omniretail.backend.inventory.entity.InventoryTransferItem;
 import com.omniretail.backend.inventory.entity.InventoryTransferStatus;
@@ -23,6 +26,8 @@ import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferItemRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferRepository;
 import com.omniretail.backend.inventory.service.InventoryReservationLifecycleService;
+import com.omniretail.backend.inventory.service.InventoryPhysicalSelectionCodec;
+import com.omniretail.backend.inventory.service.InventoryTraceabilityMutationService;
 import com.omniretail.backend.logistics.dto.ConfirmDispatchRequest;
 import com.omniretail.backend.logistics.dto.ConfirmTransferDispatchRequest;
 import com.omniretail.backend.logistics.dto.DispatchPackageResponse;
@@ -35,10 +40,16 @@ import com.omniretail.backend.logistics.entity.DispatchSourceType;
 import com.omniretail.backend.logistics.entity.Packing;
 import com.omniretail.backend.logistics.entity.PackingSourceType;
 import com.omniretail.backend.logistics.entity.PackingStatus;
+import com.omniretail.backend.logistics.entity.PickingItem;
+import com.omniretail.backend.logistics.entity.PickingOrder;
+import com.omniretail.backend.logistics.entity.PickingSourceType;
+import com.omniretail.backend.logistics.entity.PickingStatus;
 import com.omniretail.backend.logistics.repository.DispatchOperationRepository;
 import com.omniretail.backend.logistics.repository.DispatchPackageRepository;
 import com.omniretail.backend.logistics.repository.DispatchRepository;
 import com.omniretail.backend.logistics.repository.PackingRepository;
+import com.omniretail.backend.logistics.repository.PickingItemRepository;
+import com.omniretail.backend.logistics.repository.PickingOrderRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
@@ -81,11 +92,15 @@ public class DispatchService {
     private final OrderRepository orders;
     private final InventoryReservationRepository reservations;
     private final InventoryReservationLifecycleService reservationLifecycle;
+    private final InventoryTraceabilityMutationService traceabilityMutation;
+    private final InventoryPhysicalSelectionCodec physicalSelectionCodec;
     private final InventoryMovementRepository movements;
     private final ProductRepository products;
     private final InventoryBalanceRepository balances;
     private final InventoryTransferRepository transfers;
     private final InventoryTransferItemRepository transferItems;
+    private final PickingOrderRepository pickingOrders;
+    private final PickingItemRepository pickingItems;
     private final BranchAccessResolver branchAccessResolver;
     private final CurrentUser currentUser;
     private final TenantCapabilityGuard tenantCapabilityGuard;
@@ -226,12 +241,18 @@ public class DispatchService {
                     "INVENTORY_RESERVATION_NOT_ACTIVE",
                     "El pedido no tiene reservas activas.");
         }
+        Map<UUID, Product> activeProducts = new java.util.HashMap<>();
         for (InventoryReservation reservation : active) {
             Product product = products
                     .findByTenantIdAndId(actor.tenantId(), reservation.getProductId())
                     .orElseThrow(() -> notFound(
                             "PRODUCT_NOT_FOUND", "Producto no encontrado."));
-            requireTraceabilitySupported(product);
+            activeProducts.put(product.getId(), product);
+            if (isTraceable(product)) {
+                requirePickingSelection(
+                        actor.tenantId(), branchId, PickingSourceType.order, orderId,
+                        reservation.getSourceLineId(), product, reservation.getQuantity());
+            }
         }
 
         Instant now = Instant.now();
@@ -250,8 +271,34 @@ public class DispatchService {
         newDispatch.setTenantId(actor.tenantId());
         Dispatch dispatch = dispatches.saveAndFlush(newDispatch);
         for (InventoryReservation reservation : active) {
+            Product product = activeProducts.get(reservation.getProductId());
+            List<Allocation> reservationAllocations = allocations(reservation);
+            BigDecimal aggregateBefore = isTraceable(product)
+                    ? aggregateQuantity(actor.tenantId(), reservationAllocations)
+                    : null;
             reservationLifecycle.consume(actor.tenantId(), reservation.getId());
-            for (Allocation allocation : allocations(reservation)) {
+            if (isTraceable(product)) {
+                PickingSelection selection = requirePickingSelection(
+                        actor.tenantId(), branchId, PickingSourceType.order, orderId,
+                        reservation.getSourceLineId(), product, reservation.getQuantity());
+                traceabilityMutation.consumePhysicalReservation(
+                        actor.tenantId(),
+                        branchId,
+                        product,
+                        selection.item().getLocationId(),
+                        reservation.getQuantity(),
+                        selection.selections(),
+                        InventorySerialStatus.CONSUMED,
+                        aggregateBefore,
+                        aggregateBefore.subtract(reservation.getQuantity()),
+                        "Despacho ecommerce confirmado",
+                        "dispatch",
+                        dispatch.getId(),
+                        reservation.getSourceLineId(),
+                        actor.userId());
+                continue;
+            }
+            for (Allocation allocation : reservationAllocations) {
                 var balance = balances.findByTenantIdAndId(
                                 actor.tenantId(), allocation.balanceId())
                         .orElseThrow(() -> conflict(
@@ -270,6 +317,7 @@ public class DispatchService {
                         .toLocationId(null)
                         .referenceType("dispatch")
                         .referenceId(dispatch.getId())
+                        .referenceLineId(reservation.getSourceLineId())
                         .performedByUserId(actor.userId())
                         .build());
             }
@@ -360,12 +408,14 @@ public class DispatchService {
                                 transfer, item, reservationsByLine.get(item.getId()))))
                 .sorted(Comparator.comparing(line -> line.reservation().getId()))
                 .toList();
+        Map<UUID, Product> transferProducts = new java.util.HashMap<>();
         for (TransferLine line : lines) {
             Product product = products
                     .findByTenantIdAndId(actor.tenantId(), line.item().getProductId())
                     .orElseThrow(() -> notFound(
                             "PRODUCT_NOT_FOUND", "Producto no encontrado."));
             requireTransferProduct(product);
+            transferProducts.put(product.getId(), product);
         }
 
         Instant now = Instant.now();
@@ -387,26 +437,52 @@ public class DispatchService {
         for (TransferLine line : lines) {
             InventoryReservation reservation = line.reservation();
             List<Allocation> reservationAllocations = transferAllocations(reservation);
+            Product product = transferProducts.get(line.item().getProductId());
+            BigDecimal aggregateBefore = isTraceable(product)
+                    ? aggregateQuantity(actor.tenantId(), reservationAllocations)
+                    : null;
             reservationLifecycle.consume(actor.tenantId(), reservation.getId());
-            for (Allocation allocation : reservationAllocations) {
-                var balance = balances.findByTenantIdAndId(
-                                actor.tenantId(), allocation.balanceId())
-                        .orElseThrow(DispatchService::inconsistentTransferReservation);
-                movements.save(InventoryMovement.builder()
-                        .tenantId(actor.tenantId())
-                        .branchId(branchId)
-                        .productId(line.item().getProductId())
-                        .type(InventoryMovementType.out)
-                        .reason("Salida por traslado " + transfer.getNumber())
-                        .quantity(allocation.quantity())
-                        .quantityBefore(balance.getQuantity().add(allocation.quantity()))
-                        .quantityAfter(balance.getQuantity())
-                        .fromLocationId(balance.getLocationId())
-                        .toLocationId(null)
-                        .referenceType("transfer")
-                        .referenceId(transfer.getId())
-                        .performedByUserId(actor.userId())
-                        .build());
+            if (isTraceable(product)) {
+                PickingSelection selection = requirePickingSelection(
+                        actor.tenantId(), branchId, PickingSourceType.transfer, transferId,
+                        line.item().getId(), product, reservation.getQuantity());
+                traceabilityMutation.consumePhysicalReservation(
+                        actor.tenantId(),
+                        branchId,
+                        product,
+                        selection.item().getLocationId(),
+                        reservation.getQuantity(),
+                        selection.selections(),
+                        InventorySerialStatus.IN_TRANSIT,
+                        aggregateBefore,
+                        aggregateBefore.subtract(reservation.getQuantity()),
+                        "Salida por traslado " + transfer.getNumber(),
+                        "transfer",
+                        transfer.getId(),
+                        line.item().getId(),
+                        actor.userId());
+            } else {
+                for (Allocation allocation : reservationAllocations) {
+                    var balance = balances.findByTenantIdAndId(
+                                    actor.tenantId(), allocation.balanceId())
+                            .orElseThrow(DispatchService::inconsistentTransferReservation);
+                    movements.save(InventoryMovement.builder()
+                            .tenantId(actor.tenantId())
+                            .branchId(branchId)
+                            .productId(line.item().getProductId())
+                            .type(InventoryMovementType.out)
+                            .reason("Salida por traslado " + transfer.getNumber())
+                            .quantity(allocation.quantity())
+                            .quantityBefore(balance.getQuantity().add(allocation.quantity()))
+                            .quantityAfter(balance.getQuantity())
+                            .fromLocationId(balance.getLocationId())
+                            .toLocationId(null)
+                            .referenceType("transfer")
+                            .referenceId(transfer.getId())
+                            .referenceLineId(line.item().getId())
+                            .performedByUserId(actor.userId())
+                            .build());
+                }
             }
             line.item().setDispatchedQuantity(reservation.getQuantity());
             transferItems.save(line.item());
@@ -595,7 +671,6 @@ public class DispatchService {
                     "INVENTORY_TRANSFER_PRODUCT_UNSUPPORTED",
                     "Solo productos fisicos con control de inventario pueden despacharse.");
         }
-        requireTraceabilitySupportedStatic(product);
     }
 
     private static void requireTraceabilitySupportedStatic(Product product) {
@@ -606,6 +681,58 @@ public class DispatchService {
                     "TRACEABILITY_NOT_SUPPORTED",
                     "El producto requiere trazabilidad aun no soportada.");
         }
+    }
+
+    private PickingSelection requirePickingSelection(
+            UUID tenantId,
+            UUID branchId,
+            PickingSourceType sourceType,
+            UUID sourceId,
+            UUID sourceLineId,
+            Product product,
+            BigDecimal quantity) {
+        PickingOrder picking = pickingOrders
+                .findByTenantIdAndBranchIdAndSourceTypeAndSourceId(
+                        tenantId, branchId, sourceType, sourceId)
+                .filter(value -> value.getStatus() == PickingStatus.completed)
+                .orElseThrow(() -> conflict(
+                        "PICKING_TRACE_HISTORY_INCONSISTENT",
+                        "El Picking trazable no esta completado."));
+        PickingItem item = pickingItems.findByScopeAndSourceLine(
+                        tenantId, branchId, picking.getId(), sourceLineId, product.getId())
+                .orElseThrow(() -> conflict(
+                        "PICKING_TRACE_HISTORY_INCONSISTENT",
+                        "La linea trazable no pertenece al Picking completado."));
+        List<InventoryPhysicalSelection> physical =
+                physicalSelectionCodec.decode(item.getPickedTraces());
+        List<InventoryTraceabilitySelection> selections =
+                physicalSelectionCodec.withoutLocation(physical, item.getLocationId());
+        BigDecimal selected = selections.stream()
+                .map(InventoryTraceabilitySelection::quantity)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (item.getLocationId() == null
+                || item.getPickedQuantity().compareTo(quantity) != 0
+                || selected.compareTo(quantity) != 0) {
+            throw conflict(
+                    "PICKING_TRACE_HISTORY_INCONSISTENT",
+                    "La seleccion fisica no coincide con la reserva despachada.");
+        }
+        return new PickingSelection(item, selections);
+    }
+
+    private BigDecimal aggregateQuantity(UUID tenantId, List<Allocation> allocations) {
+        return allocations.stream()
+                .map(allocation -> balances.findByTenantIdAndId(tenantId, allocation.balanceId())
+                        .orElseThrow(DispatchService::inconsistentTransferReservation)
+                        .getQuantity())
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    private static boolean isTraceable(Product product) {
+        return product.getProductType() == ProductType.physical
+                && Boolean.TRUE.equals(product.getTrackingStock())
+                && (Boolean.TRUE.equals(product.getTrackingLot())
+                        || Boolean.TRUE.equals(product.getTrackingSerial()));
     }
 
     private static InventoryReservation requireTransferReservation(
@@ -766,4 +893,7 @@ public class DispatchService {
 
     private record TransferLine(
             InventoryTransferItem item, InventoryReservation reservation) {}
+
+    private record PickingSelection(
+            PickingItem item, List<InventoryTraceabilitySelection> selections) {}
 }
