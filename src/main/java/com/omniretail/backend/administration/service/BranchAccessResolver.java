@@ -48,7 +48,8 @@ public class BranchAccessResolver {
                 .orElse(BranchAccess.NONE);
     }
 
-    private static List<UUID> allowedBranchIds(User user) {
+    /** Sucursales asignadas al usuario, sin el bypass de {@code branchScope == all} (resolveUserAllowedBranchIds). */
+    public static List<UUID> allowedBranchIds(User user) {
         if (user.getAllowedBranchIds() != null) {
             return user.getAllowedBranchIds();
         }

@@ -1,9 +1,11 @@
 package com.omniretail.backend.auth.controller;
 
+import com.omniretail.backend.auth.dto.ChangeActiveBranchRequest;
 import com.omniretail.backend.auth.dto.ChangePasswordRequest;
 import com.omniretail.backend.auth.dto.CurrentSessionResponse;
 import com.omniretail.backend.auth.dto.LoginRequest;
 import com.omniretail.backend.auth.dto.LoginResponse;
+import com.omniretail.backend.auth.service.ActiveBranchService;
 import com.omniretail.backend.auth.service.AuthService;
 import com.omniretail.backend.auth.service.CurrentSessionService;
 import com.omniretail.backend.auth.service.PasswordChangeService;
@@ -20,13 +22,14 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
-/** {@code /login} es publico; {@code /logout}, {@code /me} y {@code /password/change} exigen token (ver SecurityConfig). */
+/** {@code /login} es publico; {@code /logout}, {@code /me}, {@code /password/change} y {@code /session/branch} exigen token (ver SecurityConfig). */
 @RestController
 @RequestMapping("/auth")
 @RequiredArgsConstructor
@@ -36,6 +39,7 @@ public class AuthController {
     private final AuthService authService;
     private final CurrentSessionService currentSessionService;
     private final PasswordChangeService passwordChangeService;
+    private final ActiveBranchService activeBranchService;
     private final CurrentUser currentUser;
 
     @PostMapping("/login")
@@ -130,5 +134,39 @@ public class AuthController {
     })
     public CurrentSessionResponse me() {
         return currentSessionService.resolve(currentUser.require());
+    }
+
+    @PatchMapping("/session/branch")
+    @Operation(
+            summary = "Cambiar la sucursal activa de la sesión",
+            description = """
+                    Guarda la sucursal elegida en el selector del encabezado, solo para la sesión del token.
+
+                    - Solo empleados.
+                    - La sucursal debe estar activa, ser de la tienda de la sesión y estar entre las sucursales
+                      asignadas al usuario (`allowedBranchIds`, o `branchId` si nunca se asignaron). Un rol con
+                      `branchScope = all` no amplía esta lista.
+                    - Responde lo mismo que `GET /auth/me`, ya con la sucursal nueva en `session.activeBranchId`.""")
+    @ApiResponses({
+        @ApiResponse(
+                responseCode = "200",
+                description = "Sucursal activa actualizada; sesión actual.",
+                content = @Content(
+                        mediaType = "application/json", schema = @Schema(implementation = CurrentSessionResponse.class))),
+        @ApiResponse(
+                responseCode = "400",
+                description = "Campos no permitidos (`VALIDATION_ERROR`, con `fields`) o cuerpo ilegible (`REQUEST_ERROR`).",
+                content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
+        @ApiResponse(
+                responseCode = "401",
+                description = "Sin token, token inválido o vencido, o sesión revocada. Responde sin cuerpo."),
+        @ApiResponse(
+                responseCode = "403",
+                description = "`BRANCH_NOT_ALLOWED`: la sesión no es de un empleado, o la sucursal no existe, no está "
+                        + "activa o no está permitida. Mismo mensaje en todos los casos.",
+                content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
+    })
+    public CurrentSessionResponse changeActiveBranch(@RequestBody ChangeActiveBranchRequest request) {
+        return activeBranchService.change(currentUser.require(), request);
     }
 }
