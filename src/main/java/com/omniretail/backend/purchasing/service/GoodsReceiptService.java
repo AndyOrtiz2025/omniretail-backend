@@ -2,21 +2,23 @@ package com.omniretail.backend.purchasing.service;
 
 import com.omniretail.backend.administration.service.BranchAccessResolver;
 import com.omniretail.backend.administration.service.BranchAccessResolver.BranchAccess;
-import com.omniretail.backend.catalog.entity.Product;
-import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.entity.Location;
 import com.omniretail.backend.catalog.entity.LocationStatus;
+import com.omniretail.backend.catalog.entity.Product;
+import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.entity.Unit;
 import com.omniretail.backend.catalog.repository.LocationRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
-import com.omniretail.backend.inventory.dto.AddStockCommand;
-import com.omniretail.backend.inventory.service.InventoryStockService;
+import com.omniretail.backend.inventory.dto.InventoryInboundCommand;
+import com.omniretail.backend.inventory.dto.InventoryInboundTraceDetail;
+import com.omniretail.backend.inventory.service.InventoryTraceabilityMutationService;
 import com.omniretail.backend.pos.service.DocumentCounterService;
 import com.omniretail.backend.purchasing.dto.CreateGoodsReceiptRequest;
 import com.omniretail.backend.purchasing.dto.GoodsReceiptItemRequest;
 import com.omniretail.backend.purchasing.dto.GoodsReceiptItemResponse;
 import com.omniretail.backend.purchasing.dto.GoodsReceiptResponse;
+import com.omniretail.backend.purchasing.dto.TrackingDetailRequest;
 import com.omniretail.backend.purchasing.dto.UpdateGoodsReceiptRequest;
 import com.omniretail.backend.purchasing.entity.GoodsReceipt;
 import com.omniretail.backend.purchasing.entity.GoodsReceiptItem;
@@ -43,6 +45,7 @@ import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -59,11 +62,16 @@ import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.json.JsonMapper;
 
 @Service
 @Transactional
 @RequiredArgsConstructor
 public class GoodsReceiptService {
+
+    private static final TypeReference<List<TrackingDetailRequest>> TRACKING_DETAILS_TYPE =
+            new TypeReference<>() {};
 
     private static final String RECEIPT_REASON = "Recepción de orden de compra";
     private static final String RECEIPT_REFERENCE_TYPE = "goods_receipt";
@@ -86,12 +94,13 @@ public class GoodsReceiptService {
     private final ProductRepository productRepository;
     private final UnitRepository unitRepository;
     private final LocationRepository locationRepository;
-    private final InventoryStockService inventoryStockService;
+    private final InventoryTraceabilityMutationService traceabilityMutationService;
     private final DocumentCounterService documentCounterService;
     private final BranchAccessResolver branchAccessResolver;
     private final TenantCapabilityGuard tenantCapabilityGuard;
     private final PermissionResolver permissionResolver;
     private final CurrentUser currentUser;
+    private final JsonMapper jsonMapper;
 
     @Transactional(readOnly = true)
     public PageResponse<GoodsReceiptResponse> list(
@@ -210,27 +219,42 @@ public class GoodsReceiptService {
         }
         List<GoodsReceiptItemRequest> requests = storedItems.stream()
                 .map(item -> new GoodsReceiptItemRequest(
-                        item.getPurchaseOrderItemId(), item.getReceivedQuantity(), item.getLocationId()))
+                        item.getPurchaseOrderItemId(),
+                        item.getReceivedQuantity(),
+                        item.getLocationId(),
+                        deserializeTrackingDetails(item.getTrackingDetails())))
                 .toList();
         List<ResolvedItem> resolvedItems = resolveItems(tenantId, order, requests);
+        validateDraftLocations(tenantId, order.getBranchId(), resolvedItems);
         refreshStoredItems(storedItems, resolvedItems);
 
         Map<UUID, BigDecimal> confirmedBefore = confirmedQuantities(tenantId, order.getId());
         validateNoOverReceiving(resolvedItems, confirmedBefore);
 
-        for (ResolvedItem resolved : resolvedItems) {
+        Map<UUID, GoodsReceiptItem> storedByOrderItem = storedItems.stream().collect(
+                Collectors.toMap(GoodsReceiptItem::getPurchaseOrderItemId, Function.identity()));
+        List<ResolvedItem> inventoryOrder = resolvedItems.stream()
+                .sorted(Comparator.comparing(
+                                (ResolvedItem item) -> item.purchaseOrderItem().getProductId())
+                        .thenComparing(ResolvedItem::locationId, Comparator.nullsFirst(Comparator.naturalOrder()))
+                        .thenComparing(item -> item.purchaseOrderItem().getId()))
+                .toList();
+        for (ResolvedItem resolved : inventoryOrder) {
             if (Boolean.TRUE.equals(resolved.product().getTrackingStock())) {
-                inventoryStockService.incrementStockAtLocation(
-                        new AddStockCommand(
-                                tenantId,
-                                order.getBranchId(),
-                                resolved.purchaseOrderItem().getProductId(),
-                                resolved.baseQuantity(),
-                                RECEIPT_REASON,
-                                RECEIPT_REFERENCE_TYPE,
-                                receipt.getId(),
-                                actor.userId()),
-                        resolved.locationId());
+                GoodsReceiptItem stored = storedByOrderItem.get(
+                        resolved.purchaseOrderItem().getId());
+                traceabilityMutationService.receive(new InventoryInboundCommand(
+                        tenantId,
+                        order.getBranchId(),
+                        resolved.product(),
+                        resolved.locationId(),
+                        resolved.baseQuantity(),
+                        resolved.trackingDetails(),
+                        RECEIPT_REASON,
+                        RECEIPT_REFERENCE_TYPE,
+                        receipt.getId(),
+                        stored.getId(),
+                        actor.userId()));
             }
         }
 
@@ -291,8 +315,21 @@ public class GoodsReceiptService {
                 }
                 locationId = request.locationId();
             }
-            resolved.add(new ResolvedItem(orderItem, product, request.receivedQuantity(), baseQuantity, locationId));
+            List<InventoryInboundTraceDetail> trackingDetails = traceabilityMutationService
+                    .validateAndNormalize(
+                            tenantId,
+                            product,
+                            baseQuantity,
+                            inboundTrackingDetails(request.trackingDetails()));
+            resolved.add(new ResolvedItem(
+                    orderItem,
+                    product,
+                    request.receivedQuantity(),
+                    baseQuantity,
+                    locationId,
+                    trackingDetails));
         }
+        validateSerialUniquenessAcrossItems(resolved);
         return resolved;
     }
 
@@ -311,6 +348,7 @@ public class GoodsReceiptService {
                         .purchaseToBaseFactor(resolved.purchaseOrderItem().getPurchaseToBaseFactor())
                         .baseQuantity(resolved.baseQuantity())
                         .unitCost(resolved.purchaseOrderItem().getUnitCost())
+                        .trackingDetails(serializeTrackingDetails(resolved.trackingDetails()))
                         .build())
                 .toList();
         return goodsReceiptItemRepository.saveAllAndFlush(items);
@@ -356,6 +394,7 @@ public class GoodsReceiptService {
             stored.setPurchaseToBaseFactor(orderItem.getPurchaseToBaseFactor());
             stored.setBaseQuantity(resolved.baseQuantity());
             stored.setUnitCost(orderItem.getUnitCost());
+            stored.setTrackingDetails(serializeTrackingDetails(resolved.trackingDetails()));
         }
         goodsReceiptItemRepository.saveAll(storedItems);
     }
@@ -420,7 +459,7 @@ public class GoodsReceiptService {
         return new ResponseContext(itemsByReceipt, ordersById, orderItemsById);
     }
 
-    private static GoodsReceiptResponse response(GoodsReceipt receipt, ResponseContext context) {
+    private GoodsReceiptResponse response(GoodsReceipt receipt, ResponseContext context) {
         PurchaseOrder order = context.ordersById().get(receipt.getPurchaseOrderId());
         return response(
                 receipt,
@@ -429,7 +468,7 @@ public class GoodsReceiptService {
                 context.orderItemsById());
     }
 
-    private static GoodsReceiptResponse response(
+    private GoodsReceiptResponse response(
             GoodsReceipt receipt,
             PurchaseOrder order,
             List<GoodsReceiptItem> items,
@@ -449,7 +488,8 @@ public class GoodsReceiptService {
                             item.getPurchaseToBaseFactor(),
                             item.getBaseQuantity(),
                             item.getLocationId(),
-                            item.getUnitCost());
+                            item.getUnitCost(),
+                            deserializeTrackingDetails(item.getTrackingDetails()));
                 })
                 .toList();
         return new GoodsReceiptResponse(
@@ -470,6 +510,62 @@ public class GoodsReceiptService {
     private static Map<UUID, PurchaseOrderItem> purchaseOrderItemsById(List<ResolvedItem> items) {
         return items.stream().map(ResolvedItem::purchaseOrderItem).collect(
                 Collectors.toMap(PurchaseOrderItem::getId, Function.identity()));
+    }
+
+    private static List<InventoryInboundTraceDetail> inboundTrackingDetails(
+            List<TrackingDetailRequest> details) {
+        if (details == null) return List.of();
+        return details.stream()
+                .map(detail -> detail == null
+                        ? null
+                        : new InventoryInboundTraceDetail(
+                                detail.baseQuantity(),
+                                detail.lotNumber(),
+                                detail.expirationDate(),
+                                detail.serialNumbers()))
+                .toList();
+    }
+
+    private static List<TrackingDetailRequest> outboundTrackingDetails(
+            List<InventoryInboundTraceDetail> details) {
+        return details.stream()
+                .map(detail -> new TrackingDetailRequest(
+                        detail.baseQuantity(),
+                        detail.lotNumber(),
+                        detail.expirationDate(),
+                        detail.serialNumbers()))
+                .toList();
+    }
+
+    private String serializeTrackingDetails(List<InventoryInboundTraceDetail> details) {
+        return jsonMapper.writeValueAsString(outboundTrackingDetails(details));
+    }
+
+    private List<TrackingDetailRequest> deserializeTrackingDetails(String value) {
+        if (value == null || value.isBlank()) return List.of();
+        try {
+            List<TrackingDetailRequest> details = jsonMapper.readValue(value, TRACKING_DETAILS_TYPE);
+            return details == null ? List.of() : details;
+        } catch (RuntimeException exception) {
+            throw badRequest(
+                    "GOODS_RECEIPT_TRACKING_DETAILS_INVALID",
+                    "La metadata trazable persistida no es valida.");
+        }
+    }
+
+    private static void validateSerialUniquenessAcrossItems(List<ResolvedItem> items) {
+        Set<String> serials = new HashSet<>();
+        for (ResolvedItem item : items) {
+            for (InventoryInboundTraceDetail detail : item.trackingDetails()) {
+                for (String serial : detail.serialNumbers()) {
+                    if (!serials.add(serial)) {
+                        throw BusinessException.conflict(
+                                "DUPLICATE_SERIAL",
+                                "Un numero de serie no puede repetirse entre lineas de la recepcion.");
+                    }
+                }
+            }
+        }
     }
 
     private AuthenticatedUser requireReadActor() {
@@ -644,7 +740,8 @@ public class GoodsReceiptService {
             Product product,
             BigDecimal receivedQuantity,
             BigDecimal baseQuantity,
-            UUID locationId) {}
+            UUID locationId,
+            List<InventoryInboundTraceDetail> trackingDetails) {}
 
     private record ResponseContext(
             Map<UUID, List<GoodsReceiptItem>> itemsByReceipt,

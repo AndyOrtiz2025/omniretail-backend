@@ -177,6 +177,36 @@ class InventoryTraceabilityRepositoryTest {
     }
 
     @Test
+    void operationalMigrationAddsStatusColumnsAndTenantExpirationIndex() {
+        Fixture fixture = createFixture();
+        jdbc.update(
+                """
+                INSERT INTO inventory_serials
+                    (id, tenant_id, branch_id, location_id, product_id,
+                     serial_number, status, version)
+                VALUES (?, ?, ?, ?, ?, 'SERIAL-IN-TRANSIT', 'IN_TRANSIT', 0)
+                """,
+                UUID.randomUUID(),
+                fixture.tenantId(),
+                fixture.branchId(),
+                fixture.locationId(),
+                fixture.productId());
+
+        assertThat(columnType("goods_receipt_items", "tracking_details")).isEqualTo("jsonb");
+        assertThat(columnType("picking_items", "picked_traces")).isEqualTo("jsonb");
+        assertThat(columnType("inventory_movements", "reference_line_id")).isEqualTo("uuid");
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT indexdef
+                        FROM pg_indexes
+                        WHERE schemaname = current_schema()
+                          AND indexname = 'idx_inventory_lots_tenant_expiration'
+                        """,
+                        String.class))
+                .contains("tenant_id", "expiration_date", "expiration_date IS NOT NULL");
+    }
+
+    @Test
     void movementTraceLookupReturnsLotAndSerialBreakdownOnlyForItsTenant() {
         Fixture fixture = createFixture();
         InventoryLot lot = saveLot(fixture, "LOT-TRACE", null);
@@ -239,6 +269,20 @@ class InventoryTraceabilityRepositoryTest {
                 .build();
         lot.setTenantId(fixture.tenantId());
         return lots.saveAndFlush(lot);
+    }
+
+    private String columnType(String table, String column) {
+        return jdbc.queryForObject(
+                """
+                SELECT data_type
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = ?
+                  AND column_name = ?
+                """,
+                String.class,
+                table,
+                column);
     }
 
     private InventoryLotBalance saveLotBalance(

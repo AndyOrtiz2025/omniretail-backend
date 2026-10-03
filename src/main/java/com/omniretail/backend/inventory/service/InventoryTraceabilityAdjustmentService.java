@@ -12,6 +12,8 @@ import com.omniretail.backend.catalog.repository.LocationRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.inventory.dto.InventoryAdjustmentRequest;
 import com.omniretail.backend.inventory.dto.InventoryAdjustmentType;
+import com.omniretail.backend.inventory.dto.InventoryInboundCommand;
+import com.omniretail.backend.inventory.dto.InventoryInboundTraceDetail;
 import com.omniretail.backend.inventory.dto.InventoryMovementResponse;
 import com.omniretail.backend.inventory.entity.InventoryBalance;
 import com.omniretail.backend.inventory.entity.InventoryLot;
@@ -66,6 +68,7 @@ public class InventoryTraceabilityAdjustmentService {
     private final InventorySerialRepository serialRepository;
     private final InventoryMovementRepository movementRepository;
     private final InventoryMovementTraceRepository movementTraceRepository;
+    private final InventoryTraceabilityMutationService mutationService;
 
     @Transactional
     public InventoryMovementResponse adjust(InventoryAdjustmentRequest request) {
@@ -75,6 +78,24 @@ public class InventoryTraceabilityAdjustmentService {
         requireBranchAccess(actor, request.branchId());
         Product product = requireProduct(tenantId, request.productId());
         requireAdjustableProduct(product);
+        if (request.type() == InventoryAdjustmentType.in) {
+            if (request.lotId() != null) {
+                throw invalidTracking("La entrada por lote debe identificar el lote por su numero.");
+            }
+            InventoryMovement movement = mutationService.receive(new InventoryInboundCommand(
+                    tenantId,
+                    request.branchId(),
+                    product,
+                    request.locationId(),
+                    request.quantity(),
+                    inboundDetails(product, request),
+                    request.reason().trim(),
+                    request.referenceType(),
+                    request.referenceId(),
+                    null,
+                    actor.userId()));
+            return InventoryMovementResponse.from(movement);
+        }
         Location location = requireLocation(tenantId, request.branchId(), request.locationId());
         TraceInput trace = validateTraceInput(tenantId, product, request);
 
@@ -120,6 +141,21 @@ public class InventoryTraceabilityAdjustmentService {
                 .build());
         saveTraces(tenantId, movement.getId(), lot, serials, trace, request.quantity());
         return InventoryMovementResponse.from(movement);
+    }
+
+    private static List<InventoryInboundTraceDetail> inboundDetails(
+            Product product, InventoryAdjustmentRequest request) {
+        boolean requiresDetails = Boolean.TRUE.equals(product.getTrackingLot())
+                || Boolean.TRUE.equals(product.getTrackingSerial());
+        boolean containsDetails = request.lotNumber() != null
+                || request.expirationDate() != null
+                || (request.serialNumbers() != null && !request.serialNumbers().isEmpty());
+        if (!requiresDetails && !containsDetails) return List.of();
+        return List.of(new InventoryInboundTraceDetail(
+                request.quantity(),
+                request.lotNumber(),
+                request.expirationDate(),
+                request.serialNumbers()));
     }
 
     private void requireBranchAccess(AuthenticatedUser actor, UUID branchId) {

@@ -5,5 +5,6 @@ public enum InventorySerialStatus {
     AVAILABLE,
     RESERVED,
     CONSUMED,
-    WRITTEN_OFF
+    WRITTEN_OFF,
+    IN_TRANSIT
 }

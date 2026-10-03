@@ -1,0 +1,33 @@
+databaseChangeLog:
+  - changeSet:
+      id: 044-inventory-traceability-operational
+      author: omniretail
+      changes:
+        - sql:
+            sql: |
+              ALTER TABLE inventory_serials
+              DROP CONSTRAINT ck_inventory_serials_status;
+
+              ALTER TABLE inventory_serials
+              ADD CONSTRAINT ck_inventory_serials_status
+              CHECK (status IN ('AVAILABLE', 'RESERVED', 'CONSUMED', 'WRITTEN_OFF', 'IN_TRANSIT'));
+        - addColumn:
+            tableName: inventory_movements
+            columns:
+              - column:
+                  name: reference_line_id
+                  type: UUID
+        - addColumn:
+            tableName: picking_items
+            columns:
+              - column:
+                  name: picked_traces
+                  type: JSONB
+        - addColumn:
+            tableName: goods_receipt_items
+            columns:
+              - column:
+                  name: tracking_details
+                  type: JSONB
+        - sql:
+            sql: "CREATE INDEX idx_inventory_lots_tenant_expiration ON inventory_lots (tenant_id, expiration_date) WHERE expiration_date IS NOT NULL"
