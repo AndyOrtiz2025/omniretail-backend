@@ -57,4 +57,7 @@ public interface InventoryMovementRepository extends JpaRepository<InventoryMove
             Pageable pageable);
 
     List<InventoryMovement> findByTenantIdOrderByCreatedAtDesc(UUID tenantId);
+
+    List<InventoryMovement> findByTenantIdAndReferenceTypeInAndReferenceIdOrderByCreatedAtAscIdAsc(
+            UUID tenantId, Collection<String> referenceTypes, UUID referenceId);
 }

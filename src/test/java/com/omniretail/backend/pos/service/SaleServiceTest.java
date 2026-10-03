@@ -16,15 +16,22 @@ import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.service.ProductPriceResolver;
 import com.omniretail.backend.catalog.service.ProductKitService;
+import com.omniretail.backend.catalog.service.ProductUnitConversionResolver;
 import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.inventory.service.InventoryStockService;
+import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
+import com.omniretail.backend.inventory.entity.InventoryMovement;
+import com.omniretail.backend.inventory.entity.InventoryMovementType;
 import com.omniretail.backend.pos.dto.CreateSaleRequest;
+import com.omniretail.backend.pos.entity.CashMovement;
+import com.omniretail.backend.pos.entity.CashMovementType;
 import com.omniretail.backend.pos.entity.CashShift;
 import com.omniretail.backend.pos.entity.CashShiftStatus;
 import com.omniretail.backend.pos.entity.PaymentMethod;
 import com.omniretail.backend.pos.entity.Payment;
 import com.omniretail.backend.pos.entity.Sale;
+import com.omniretail.backend.pos.entity.SaleDocumentType;
 import com.omniretail.backend.pos.entity.SaleItem;
 import com.omniretail.backend.pos.entity.SaleStatus;
 import com.omniretail.backend.pos.repository.CashMovementRepository;
@@ -71,9 +78,11 @@ class SaleServiceTest {
     @Mock PaymentRepository payments;
     @Mock CashMovementRepository cashMovements;
     @Mock InventoryStockService inventory;
+    @Mock InventoryMovementRepository inventoryMovements;
     @Mock DocumentCounterService counter;
     @Mock ProductPriceResolver productPriceResolver;
     @Mock ProductKitService productKitService;
+    @Mock ProductUnitConversionResolver unitConversionResolver;
     @InjectMocks SaleService service;
 
     private final UUID tenant = UUID.randomUUID();
@@ -95,12 +104,15 @@ class SaleServiceTest {
                 .timezone("America/Guatemala").build()));
         lenient().when(businessConfig.findByTenantId(tenant)).thenReturn(Optional.empty());
         lenient().when(productPriceResolver.resolveEffectivePrice(
-                        eq(tenant), any(Product.class), any(Instant.class), eq("pos"), eq(branch)))
+                        eq(tenant), any(Product.class), any(Instant.class), eq("pos"), eq(branch), any(BigDecimal.class)))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("20.00"),
                         new BigDecimal("20.00"),
                         BigDecimal.ZERO.setScale(2),
                         null));
+        lenient().when(unitConversionResolver.toBaseQuantity(
+                        eq(tenant), any(Product.class), any(BigDecimal.class)))
+                .thenAnswer(invocation -> invocation.getArgument(2));
     }
 
     @Test
@@ -120,6 +132,101 @@ class SaleServiceTest {
         verify(items).save(any());
         verify(payments).save(any());
         verify(cashMovements).save(any());
+    }
+
+    @Test
+    void defaultsToTicketAndPersistsNoFiscalData() {
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+        stubSalePersistence();
+
+        var result = service.create(request(new BigDecimal("20.00"), BigDecimal.ONE));
+
+        assertThat(result.document().type()).isEqualTo(SaleDocumentType.ticket);
+        verify(sales).saveAndFlush(argThat(sale -> sale.getDocumentType() == SaleDocumentType.ticket
+                && sale.getDocumentTaxId() == null
+                && sale.getDocumentLegalName() == null
+                && sale.getDocumentFiscalAddress() == null));
+    }
+
+    @Test
+    void normalizesAndPersistsInvoiceSnapshot() {
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+        stubSalePersistence();
+        CreateSaleRequest base = request(new BigDecimal("20.00"), BigDecimal.ONE);
+        CreateSaleRequest request = new CreateSaleRequest(
+                base.branchId(), base.cashShiftId(), base.customerId(), base.taxTotal(),
+                base.items(), base.payments(), base.confirmationId(),
+                new CreateSaleRequest.Document(
+                        SaleDocumentType.invoice, " 1234567-8 ", " Empresa, S.A. ", " Zona 1 "));
+
+        var result = service.create(request);
+
+        assertThat(result.document().taxId()).isEqualTo("1234567-8");
+        assertThat(result.document().legalName()).isEqualTo("Empresa, S.A.");
+        assertThat(result.document().fiscalAddress()).isEqualTo("Zona 1");
+    }
+
+    @Test
+    void rejectsIncompleteInvoiceBeforeCreatingEffects() {
+        reset(branchAccess);
+        CreateSaleRequest base = request(new BigDecimal("20.00"), BigDecimal.ONE);
+        CreateSaleRequest request = new CreateSaleRequest(
+                base.branchId(), base.cashShiftId(), base.customerId(), base.taxTotal(),
+                base.items(), base.payments(), base.confirmationId(),
+                new CreateSaleRequest.Document(SaleDocumentType.invoice, "123", "Empresa", " "));
+
+        assertThatThrownBy(() -> service.create(request))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getCode()).isEqualTo("INVOICE_FISCAL_DATA_REQUIRED"));
+        verifyNoInteractions(sales, inventory, payments, cashMovements);
+        verifyNoInteractions(branchAccess);
+    }
+
+    @Test
+    void rejectsTicketWithFiscalData() {
+        reset(branchAccess);
+        CreateSaleRequest base = request(new BigDecimal("20.00"), BigDecimal.ONE);
+        CreateSaleRequest request = new CreateSaleRequest(
+                base.branchId(), base.cashShiftId(), base.customerId(), base.taxTotal(),
+                base.items(), base.payments(), base.confirmationId(),
+                new CreateSaleRequest.Document(SaleDocumentType.ticket, "123", null, null));
+
+        assertThatThrownBy(() -> service.create(request))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getCode()).isEqualTo("TICKET_FISCAL_DATA_NOT_ALLOWED"));
+        verifyNoInteractions(branchAccess, sales, inventory, payments, cashMovements);
+    }
+
+    @Test
+    void deductsServerDerivedPhysicalQuantityAndKeepsCommercialSaleQuantity() {
+        Product product = product();
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product));
+        when(unitConversionResolver.toBaseQuantity(tenant, product, new BigDecimal("2")))
+                .thenReturn(new BigDecimal("24.000"));
+        stubSalePersistence();
+
+        service.create(request(new BigDecimal("40.00"), new BigDecimal("2")));
+
+        verify(inventory).deductStock(argThat(command ->
+                command.qty().compareTo(new BigDecimal("24.000")) == 0));
+        verify(items).save(argThat(item -> item.getQuantity().compareTo(new BigDecimal("2")) == 0));
+    }
+
+    @Test
+    void rejectsMissingConversionBeforePersistingAnySaleEffect() {
+        Product product = product();
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product));
+        when(unitConversionResolver.toBaseQuantity(tenant, product, BigDecimal.ONE))
+                .thenThrow(new BusinessException(
+                        org.springframework.http.HttpStatus.BAD_REQUEST,
+                        "UNIT_CONVERSION_REQUIRED",
+                        "Conversión requerida."));
+
+        assertThatThrownBy(() -> service.create(request(new BigDecimal("20.00"), BigDecimal.ONE)))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getCode()).isEqualTo("UNIT_CONVERSION_REQUIRED"));
+        verify(sales, never()).saveAndFlush(any());
+        verifyNoInteractions(inventory, payments, cashMovements, counter);
     }
 
     @Test
@@ -171,7 +278,7 @@ class SaleServiceTest {
     void promotionWinsAgainstZeroManualDiscountAndIsSnapshotted() {
         UUID promotionId = UUID.randomUUID();
         when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
-        when(productPriceResolver.resolveEffectivePrice(eq(tenant), any(Product.class), any(Instant.class), eq("pos"), eq(branch)))
+        when(productPriceResolver.resolveEffectivePrice(eq(tenant), any(Product.class), any(Instant.class), eq("pos"), eq(branch), any(BigDecimal.class)))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("20.00"), new BigDecimal("15.00"),
                         new BigDecimal("5.00"), promotionId));
@@ -191,7 +298,7 @@ class SaleServiceTest {
     void greaterManualDiscountWinsAndClearsPromotionSnapshot() {
         UUID promotionId = UUID.randomUUID();
         when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
-        when(productPriceResolver.resolveEffectivePrice(eq(tenant), any(Product.class), any(Instant.class), eq("pos"), eq(branch)))
+        when(productPriceResolver.resolveEffectivePrice(eq(tenant), any(Product.class), any(Instant.class), eq("pos"), eq(branch), any(BigDecimal.class)))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("20.00"), new BigDecimal("15.00"),
                         new BigDecimal("5.00"), promotionId));
@@ -209,7 +316,7 @@ class SaleServiceTest {
     void equalDiscountDeterministicallyPrefersPromotion() {
         UUID promotionId = UUID.randomUUID();
         when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
-        when(productPriceResolver.resolveEffectivePrice(eq(tenant), any(Product.class), any(Instant.class), eq("pos"), eq(branch)))
+        when(productPriceResolver.resolveEffectivePrice(eq(tenant), any(Product.class), any(Instant.class), eq("pos"), eq(branch), any(BigDecimal.class)))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("20.00"), new BigDecimal("15.00"),
                         new BigDecimal("5.00"), promotionId));
@@ -224,7 +331,7 @@ class SaleServiceTest {
     void comparesPromotionAndManualDiscountAtLineQuantity() {
         UUID promotionId = UUID.randomUUID();
         when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
-        when(productPriceResolver.resolveEffectivePrice(eq(tenant), any(Product.class), any(Instant.class), eq("pos"), eq(branch)))
+        when(productPriceResolver.resolveEffectivePrice(eq(tenant), any(Product.class), any(Instant.class), eq("pos"), eq(branch), any(BigDecimal.class)))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("20.00"), new BigDecimal("15.00"),
                         new BigDecimal("5.00"), promotionId));
@@ -252,11 +359,11 @@ class SaleServiceTest {
         ReflectionTestUtils.setField(additionalProduct, "id", additionalProductId);
         when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(discountedProduct));
         when(products.findByTenantIdAndId(tenant, additionalProductId)).thenReturn(Optional.of(additionalProduct));
-        when(productPriceResolver.resolveEffectivePrice(eq(tenant), eq(discountedProduct), any(Instant.class), eq("pos"), eq(branch)))
+        when(productPriceResolver.resolveEffectivePrice(eq(tenant), eq(discountedProduct), any(Instant.class), eq("pos"), eq(branch), any(BigDecimal.class)))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("20.00"), BigDecimal.ZERO.setScale(2),
                         new BigDecimal("20.00"), promotionId));
-        when(productPriceResolver.resolveEffectivePrice(eq(tenant), eq(additionalProduct), any(Instant.class), eq("pos"), eq(branch)))
+        when(productPriceResolver.resolveEffectivePrice(eq(tenant), eq(additionalProduct), any(Instant.class), eq("pos"), eq(branch), any(BigDecimal.class)))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("1.00"), new BigDecimal("1.00"),
                         BigDecimal.ZERO.setScale(2), null));
@@ -424,6 +531,28 @@ class SaleServiceTest {
     }
 
     @Test
+    void persistsMixedTenderAsConcretePaymentsAndOnlyCashAffectsDrawer() {
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+        stubSalePersistence();
+        CreateSaleRequest request = new CreateSaleRequest(
+                branch,
+                shiftId,
+                null,
+                BigDecimal.ZERO,
+                List.of(new CreateSaleRequest.Item(productId, BigDecimal.ONE, BigDecimal.ZERO)),
+                List.of(
+                        new CreateSaleRequest.PaymentLine(PaymentMethod.cash, new BigDecimal("5.00"), null),
+                        new CreateSaleRequest.PaymentLine(PaymentMethod.card, new BigDecimal("15.00"), "CARD-1")),
+                UUID.randomUUID());
+
+        service.create(request);
+
+        verify(payments, times(2)).save(any());
+        verify(cashMovements).save(argThat(movement ->
+                movement.getAmount().compareTo(new BigDecimal("5.00")) == 0));
+    }
+
+    @Test
     void returnsExistingSaleForRepeatedConfirmation() {
         UUID confirmationId = UUID.randomUUID();
         Sale existing = sale(SaleStatus.completed);
@@ -438,12 +567,61 @@ class SaleServiceTest {
         ReflectionTestUtils.setField(existing, "confirmationFingerprint",
                 ReflectionTestUtils.invokeMethod(service, "fingerprint", request));
         when(sales.findByTenantIdAndConfirmationId(tenant, confirmationId)).thenReturn(Optional.of(existing));
+        when(items.findByTenantIdAndSaleId(tenant, existing.getId())).thenReturn(List.of(saleItem()));
+        when(payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(tenant, existing.getId()))
+                .thenReturn(List.of(Payment.builder()
+                        .method(PaymentMethod.cash).amount(new BigDecimal("20.00")).build()));
+        when(inventoryMovements.findByTenantIdAndReferenceTypeInAndReferenceIdOrderByCreatedAtAscIdAsc(
+                tenant, List.of("POS_SALE", "POS_KIT_SALE"), existing.getId()))
+                .thenReturn(List.of(InventoryMovement.builder()
+                        .tenantId(tenant).branchId(branch).productId(productId)
+                        .type(InventoryMovementType.out).reason("Venta")
+                        .quantity(BigDecimal.ONE).referenceType("POS_SALE")
+                        .referenceId(existing.getId()).build()));
+        when(cashMovements.findFirstByTenantIdAndReferenceTypeAndReferenceIdOrderByCreatedAtAscIdAsc(
+                tenant, "sale", existing.getId()))
+                .thenReturn(Optional.of(CashMovement.builder()
+                        .tenantId(tenant).cashShiftId(shiftId).type(CashMovementType.in)
+                        .amount(new BigDecimal("20.00")).reason("Venta")
+                        .referenceType("sale").referenceId(existing.getId())
+                        .createdByUserId(user).build()));
 
         var result = service.create(request);
 
         assertThat(result.id()).isEqualTo(existing.getId());
-        verifyNoInteractions(inventory, items, payments, cashMovements);
+        assertThat(result.idempotent()).isTrue();
+        assertThat(result.items()).hasSize(1);
+        assertThat(result.payments()).hasSize(1);
+        assertThat(result.inventoryEffects()).hasSize(1);
+        assertThat(result.cashMovement()).isNotNull();
+        verify(inventory, never()).deductStock(any());
+        verify(items, never()).save(any());
+        verify(payments, never()).save(any());
+        verify(cashMovements, never()).save(any());
+        verifyNoInteractions(counter);
         verifyNoInteractions(productPriceResolver);
+    }
+
+    @Test
+    void rejectsReusedConfirmationWhenNormalizedDocumentDiffers() {
+        UUID confirmationId = UUID.randomUUID();
+        CreateSaleRequest original = new CreateSaleRequest(
+                branch, shiftId, null, BigDecimal.ZERO,
+                List.of(new CreateSaleRequest.Item(productId, BigDecimal.ONE, BigDecimal.ZERO)),
+                List.of(new CreateSaleRequest.PaymentLine(PaymentMethod.cash, new BigDecimal("20.00"), null)),
+                confirmationId,
+                new CreateSaleRequest.Document(SaleDocumentType.invoice, "123", "Empresa", "Zona 1"));
+        Sale existing = sale(SaleStatus.completed);
+        ReflectionTestUtils.setField(existing, "confirmationFingerprint",
+                ReflectionTestUtils.invokeMethod(service, "fingerprint", original));
+        when(sales.findByTenantIdAndConfirmationId(tenant, confirmationId)).thenReturn(Optional.of(existing));
+        CreateSaleRequest changed = new CreateSaleRequest(
+                branch, shiftId, null, BigDecimal.ZERO, original.items(), original.payments(), confirmationId,
+                new CreateSaleRequest.Document(SaleDocumentType.invoice, "456", "Empresa", "Zona 1"));
+
+        assertThatThrownBy(() -> service.create(changed))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getCode()).isEqualTo("IDEMPOTENCY_KEY_REUSED"));
     }
 
     @Test
@@ -536,6 +714,31 @@ class SaleServiceTest {
         verify(inventory).incrementStock(any());
         verify(cashMovements).save(argThat(movement -> movement.getType().name().equals("out")));
         assertThat(sale.getStatus()).isEqualTo(SaleStatus.cancelled);
+    }
+
+    @Test
+    void voidSaleRestoresOriginalPhysicalQuantityForConvertedUnit() {
+        Sale sale = sale(SaleStatus.completed);
+        SaleItem item = saleItem();
+        ReflectionTestUtils.setField(item, "quantity", new BigDecimal("2.000"));
+        when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
+        when(items.findByTenantIdAndSaleId(tenant, sale.getId())).thenReturn(List.of(item));
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+        when(inventoryMovements.findByTenantIdAndReferenceTypeInAndReferenceIdOrderByCreatedAtAscIdAsc(
+                tenant, List.of("POS_SALE", "POS_KIT_SALE"), sale.getId()))
+                .thenReturn(List.of(InventoryMovement.builder()
+                        .tenantId(tenant).branchId(branch).productId(productId)
+                        .type(InventoryMovementType.out).reason("Venta")
+                        .quantity(new BigDecimal("24.000")).referenceType("POS_SALE")
+                        .referenceId(sale.getId()).build()));
+        when(shifts.findByTenantIdAndId(tenant, shiftId)).thenReturn(Optional.empty());
+        when(sales.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.voidSale(sale.getId());
+
+        verify(inventory).incrementStock(argThat(command ->
+                command.qty().compareTo(new BigDecimal("24.000")) == 0
+                        && command.qty().compareTo(new BigDecimal("2.000")) != 0));
     }
 
     @Test

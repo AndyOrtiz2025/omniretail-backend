@@ -6,6 +6,7 @@ import com.omniretail.backend.catalog.entity.Promotion;
 import com.omniretail.backend.catalog.entity.PromotionDiscountType;
 import com.omniretail.backend.catalog.entity.PromotionStatus;
 import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.catalog.repository.ProductSalesPriceTierRepository;
 import com.omniretail.backend.catalog.repository.PromotionRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
 import java.math.BigDecimal;
@@ -26,6 +27,7 @@ public class ProductPriceResolver {
 
     private final ProductRepository productRepository;
     private final PromotionRepository promotionRepository;
+    private final ProductSalesPriceTierRepository priceTierRepository;
 
     public ResolvedProductPrice resolveEffectivePrice(UUID tenantId, UUID productId, Instant at) {
         Product product = productRepository.findByTenantIdAndId(tenantId, productId)
@@ -40,13 +42,32 @@ public class ProductPriceResolver {
 
     public ResolvedProductPrice resolveEffectivePrice(
             UUID tenantId, Product product, Instant at, String channel, UUID branchId) {
+        return resolveEffectivePrice(tenantId, product, at, channel, branchId, null);
+    }
+
+    public ResolvedProductPrice resolveEffectivePrice(
+            UUID tenantId,
+            Product product,
+            Instant at,
+            String channel,
+            UUID branchId,
+            BigDecimal commercialQuantity) {
         if (product == null
                 || product.getTenantId() == null
                 || !product.getTenantId().equals(tenantId)) {
             throw new BusinessException(
                     HttpStatus.NOT_FOUND, "PRODUCT_NOT_FOUND", "Producto no encontrado.");
         }
-        BigDecimal basePrice = money(product.getSalePrice());
+        BigDecimal basePrice = commercialQuantity == null
+                ? money(product.getSalePrice())
+                : priceTierRepository.findByTenantIdAndProductIdOrderByMinQuantityAsc(
+                                tenantId, product.getId()).stream()
+                        .filter(tier -> Boolean.TRUE.equals(tier.getActive()))
+                        .filter(tier -> commercialQuantity.compareTo(
+                                BigDecimal.valueOf(tier.getMinQuantity())) >= 0)
+                        .reduce((first, second) -> second)
+                        .map(tier -> money(tier.getUnitPrice()))
+                        .orElseGet(() -> money(product.getSalePrice()));
         ResolvedProductPrice best = new ResolvedProductPrice(
                 basePrice, basePrice, BigDecimal.ZERO.setScale(2), null);
 

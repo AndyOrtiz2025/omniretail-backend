@@ -14,11 +14,17 @@ import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
 import com.omniretail.backend.catalog.service.ProductPriceResolver;
 import com.omniretail.backend.catalog.service.ProductKitService;
 import com.omniretail.backend.catalog.service.KitFulfillmentSnapshot;
+import com.omniretail.backend.catalog.service.ProductUnitConversionResolver;
 import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.inventory.dto.DeductStockCommand;
 import com.omniretail.backend.inventory.dto.AddStockCommand;
 import com.omniretail.backend.inventory.service.InventoryStockService;
+import com.omniretail.backend.inventory.entity.InventoryMovement;
+import com.omniretail.backend.inventory.dto.InventoryMovementResponse;
+import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
 import com.omniretail.backend.pos.dto.CreateSaleRequest;
+import com.omniretail.backend.pos.dto.CashMovementResponse;
+import com.omniretail.backend.pos.dto.SaleConfirmationResponse;
 import com.omniretail.backend.pos.dto.SaleResponse;
 import com.omniretail.backend.pos.dto.SaleDetailResponse;
 import com.omniretail.backend.pos.dto.SaleItemResponse;
@@ -30,6 +36,7 @@ import com.omniretail.backend.pos.entity.Payment;
 import com.omniretail.backend.pos.entity.PaymentMethod;
 import com.omniretail.backend.pos.entity.PaymentStatus;
 import com.omniretail.backend.pos.entity.Sale;
+import com.omniretail.backend.pos.entity.SaleDocumentType;
 import com.omniretail.backend.pos.entity.SaleItem;
 import com.omniretail.backend.pos.entity.SaleStatus;
 import com.omniretail.backend.pos.repository.CashMovementRepository;
@@ -76,11 +83,13 @@ public class SaleService {
     private final PaymentRepository payments;
     private final CashMovementRepository cashMovements;
     private final InventoryStockService inventory;
+    private final InventoryMovementRepository inventoryMovements;
     private final DocumentCounterService counter;
     private final ProductPriceResolver productPriceResolver;
     private final ProductKitService productKitService;
+    private final ProductUnitConversionResolver unitConversionResolver;
 
-    public SaleResponse create(CreateSaleRequest request) {
+    public SaleConfirmationResponse create(CreateSaleRequest request) {
         AuthenticatedUser actor = currentUser.require();
         capability.ensureTenantCapability(actor.tenantId(), SaasCapability.pos);
         if (request.confirmationId() == null) {
@@ -89,6 +98,7 @@ public class SaleService {
                     "CONFIRMATION_ID_REQUIRED",
                     "La confirmación de la venta es obligatoria.");
         }
+        NormalizedDocument document = normalizeDocument(request.document());
         if (!branchAccess.resolve(actor).allows(request.branchId())) {
             throw notFound("BRANCH_NOT_FOUND", "Sucursal no encontrada.");
         }
@@ -103,15 +113,16 @@ public class SaleService {
                 .orElseThrow(() -> notFound("CASH_SHIFT_NOT_FOUND", "Turno de caja no encontrado."));
         var existing = sales.findByTenantIdAndConfirmationId(actor.tenantId(), request.confirmationId());
         if (existing.isPresent()) {
-            String currentFingerprint = fingerprint(request);
+            String currentFingerprint = fingerprint(request, document);
             if (existing.get().getConfirmationFingerprint() != null
-                    && !existing.get().getConfirmationFingerprint().equals(currentFingerprint)) {
+                    && !existing.get().getConfirmationFingerprint().equals(currentFingerprint)
+                    && !matchesLegacyConfirmation(existing.get(), request, document)) {
                 throw new BusinessException(
                         HttpStatus.CONFLICT,
                         "IDEMPOTENCY_KEY_REUSED",
                         "La confirmación ya fue usada con una venta distinta.");
             }
-            return SaleResponse.from(existing.get());
+            return confirmationResponse(actor.tenantId(), existing.get(), true);
         }
         Tenant tenant = tenants.findById(actor.tenantId())
                 .orElseThrow(() -> notFound("TENANT_NOT_FOUND", "Negocio no encontrado."));
@@ -131,13 +142,13 @@ public class SaleService {
                     .filter(found -> found.getStatus() == ProductStatus.published
                             && Boolean.TRUE.equals(found.getChannelPos()))
                     .orElseThrow(() -> notFound("PRODUCT_NOT_FOUND", "Producto no encontrado o no disponible para POS."));
-            BigDecimal gross = money(product.getSalePrice().multiply(line.quantity()));
+            ResolvedProductPrice resolved = productPriceResolver.resolveEffectivePrice(
+                    actor.tenantId(), product, pricingAt, "pos", request.branchId(), line.quantity());
+            BigDecimal gross = money(resolved.basePrice().multiply(line.quantity()));
             BigDecimal manualDiscount = money(line.discount() == null ? BigDecimal.ZERO : line.discount());
             if (manualDiscount.compareTo(gross) > 0) {
                 throw new BusinessException(HttpStatus.BAD_REQUEST, "INVALID_DISCOUNT", "El descuento supera el importe de la línea.");
             }
-            ResolvedProductPrice resolved = productPriceResolver.resolveEffectivePrice(
-                    actor.tenantId(), product, pricingAt, "pos", request.branchId());
             BigDecimal promotionDiscount = money(resolved.discountAmount().multiply(line.quantity()));
             boolean usePromotion = resolved.promotionId() != null
                     && promotionDiscount.compareTo(manualDiscount) >= 0;
@@ -146,8 +157,12 @@ public class SaleService {
                 lineDiscount = gross;
             }
             BigDecimal lineSubtotal = money(gross.subtract(lineDiscount));
-            catalog.add(new LinePricing(
-                    product, lineDiscount, lineSubtotal, usePromotion ? resolved.promotionId() : null));
+            BigDecimal inventoryQuantity = product.getProductType() == ProductType.physical
+                            && Boolean.TRUE.equals(product.getTrackingStock())
+                    ? unitConversionResolver.toBaseQuantity(actor.tenantId(), product, line.quantity())
+                    : null;
+            catalog.add(new LinePricing(product, resolved.basePrice(), inventoryQuantity,
+                    lineDiscount, lineSubtotal, usePromotion ? resolved.promotionId() : null));
             subtotal = subtotal.add(lineSubtotal).setScale(2, RoundingMode.HALF_UP);
             discount = discount.add(lineDiscount).setScale(2, RoundingMode.HALF_UP);
         }
@@ -162,10 +177,15 @@ public class SaleService {
         Sale sale = Sale.builder().branchId(request.branchId()).cashShiftId(shift.getId())
                 .createdByUserId(actor.userId()).number(counter.nextPosSaleNumber(actor.tenantId()))
                 .customerId(request.customerId()).confirmationId(request.confirmationId())
-                .confirmationFingerprint(fingerprint(request)).subtotal(subtotal)
+                .confirmationFingerprint(fingerprint(request, document))
+                .documentType(document.type()).documentTaxId(document.taxId())
+                .documentLegalName(document.legalName()).documentFiscalAddress(document.fiscalAddress())
+                .subtotal(subtotal)
                 .discountTotal(discount).taxTotal(tax).total(total).build();
         sale.setTenantId(actor.tenantId());
         sale = sales.saveAndFlush(sale);
+        List<SaleItem> savedItems = new ArrayList<>();
+        List<InventoryMovement> createdInventoryMovements = new ArrayList<>();
         for (int index = 0; index < request.items().size(); index++) {
             var line = request.items().get(index);
             LinePricing pricing = catalog.get(index);
@@ -174,19 +194,26 @@ public class SaleService {
                     ? productKitService.fulfillment(actor.tenantId(), product, line.quantity()) : List.of();
             if (!fulfillment.isEmpty()) {
                 for (ProductKitService.FulfillmentComponent component : fulfillment) {
-                    inventory.deductStock(new DeductStockCommand(actor.tenantId(), request.branchId(), component.productId(),
-                            component.quantity(), "Venta kit POS #" + sale.getNumber(), "POS_KIT_SALE", sale.getId(), actor.userId()));
+                    createdInventoryMovements.add(inventory.deductStock(new DeductStockCommand(
+                            actor.tenantId(), request.branchId(), component.productId(), component.quantity(),
+                            "Venta kit POS #" + sale.getNumber(), "POS_KIT_SALE", sale.getId(), actor.userId())));
                 }
             } else if (Boolean.TRUE.equals(product.getTrackingStock()) && product.getProductType() == ProductType.physical) {
-                inventory.deductStock(new DeductStockCommand(actor.tenantId(), request.branchId(), product.getId(),
-                        line.quantity(), "Venta POS #" + sale.getNumber(), "POS_SALE", sale.getId(), actor.userId()));
+                createdInventoryMovements.add(inventory.deductStock(new DeductStockCommand(
+                        actor.tenantId(), request.branchId(), product.getId(), pricing.inventoryQuantity(),
+                        "Venta POS #" + sale.getNumber(), "POS_SALE", sale.getId(), actor.userId())));
             }
-            items.save(SaleItem.builder().saleId(sale.getId()).productId(product.getId()).skuSnapshot(product.getSku())
-                    .nameSnapshot(product.getName()).quantity(line.quantity()).unitPrice(product.getSalePrice())
+            SaleItem saleItem = SaleItem.builder().saleId(sale.getId()).productId(product.getId())
+                    .skuSnapshot(product.getSku()).nameSnapshot(product.getName())
+                    .quantity(line.quantity()).unitPrice(pricing.unitPrice())
                     .discount(pricing.discount()).subtotal(pricing.subtotal())
                     .promotionId(pricing.promotionId())
-                    .fulfillmentComponents(KitFulfillmentSnapshot.encode(fulfillment)).build());
+                    .fulfillmentComponents(KitFulfillmentSnapshot.encode(fulfillment)).build();
+            items.save(saleItem);
+            savedItems.add(saleItem);
         }
+        List<Payment> savedPayments = new ArrayList<>();
+        BigDecimal cashAmount = BigDecimal.ZERO.setScale(2);
         for (var paymentRequest : request.payments()) {
             UUID bankAccountId = paymentRequest.method() == PaymentMethod.transfer
                     ? paymentRequest.bankAccountId()
@@ -203,15 +230,21 @@ public class SaleService {
                     .build();
             payment.setTenantId(actor.tenantId());
             payments.save(payment);
+            savedPayments.add(payment);
             if (paymentRequest.method() == PaymentMethod.cash) {
-                CashMovement movement = CashMovement.builder().tenantId(actor.tenantId()).cashShiftId(shift.getId()).type(CashMovementType.in)
-                        .amount(paymentRequest.amount().setScale(2, RoundingMode.HALF_UP))
-                        .reason("Venta POS #" + sale.getNumber()).referenceType("sale").referenceId(sale.getId())
-                        .createdByUserId(actor.userId()).build();
-                cashMovements.save(movement);
+                cashAmount = cashAmount.add(paymentRequest.amount()).setScale(2, RoundingMode.HALF_UP);
             }
         }
-        return SaleResponse.from(sale);
+        CashMovement cashMovement = null;
+        if (cashAmount.signum() > 0) {
+            cashMovement = CashMovement.builder().tenantId(actor.tenantId()).cashShiftId(shift.getId())
+                    .type(CashMovementType.in).amount(cashAmount)
+                    .reason("Venta POS #" + sale.getNumber()).referenceType("sale").referenceId(sale.getId())
+                    .createdByUserId(actor.userId()).build();
+            cashMovements.save(cashMovement);
+        }
+        return confirmationResponse(
+                sale, savedItems, savedPayments, createdInventoryMovements, cashMovement, false);
     }
 
     @Transactional(readOnly = true)
@@ -267,6 +300,9 @@ public class SaleService {
             throw new BusinessException(HttpStatus.CONFLICT, "SALE_NOT_VOIDABLE",
                     "Una venta con devoluciones no puede anularse.");
         }
+        List<InventoryMovement> originalMovements = inventoryMovements
+                .findByTenantIdAndReferenceTypeInAndReferenceIdOrderByCreatedAtAscIdAsc(
+                        actor.tenantId(), List.of("POS_SALE", "POS_KIT_SALE"), sale.getId());
         for (SaleItem item : items.findByTenantIdAndSaleId(actor.tenantId(), id)) {
             Product product = products.findByTenantIdAndId(actor.tenantId(), item.getProductId()).orElse(null);
             List<KitFulfillmentSnapshot.Component> fulfillment = KitFulfillmentSnapshot.decode(item.getFulfillmentComponents());
@@ -277,7 +313,15 @@ public class SaleService {
                             "POS_KIT_SALE_VOID", sale.getId(), actor.userId()));
                 }
             } else if (product != null && Boolean.TRUE.equals(product.getTrackingStock()) && product.getProductType() == ProductType.physical) {
-                inventory.incrementStock(new AddStockCommand(actor.tenantId(), sale.getBranchId(), product.getId(), item.getQuantity(),
+                BigDecimal physicalQuantity = originalMovements.stream()
+                        .filter(movement -> "POS_SALE".equals(movement.getReferenceType()))
+                        .filter(movement -> product.getId().equals(movement.getProductId()))
+                        .map(InventoryMovement::getQuantity)
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
+                if (physicalQuantity.signum() == 0) {
+                    physicalQuantity = item.getQuantity();
+                }
+                inventory.incrementStock(new AddStockCommand(actor.tenantId(), sale.getBranchId(), product.getId(), physicalQuantity,
                         "Anulación venta POS #" + sale.getNumber(), "POS_SALE_VOID", sale.getId(), actor.userId()));
             }
         }
@@ -356,7 +400,108 @@ public class SaleService {
         }
     }
 
-    private static String fingerprint(CreateSaleRequest request) {
+    private SaleConfirmationResponse confirmationResponse(UUID tenantId, Sale sale, boolean idempotent) {
+        List<SaleItem> saleItems = items.findByTenantIdAndSaleId(tenantId, sale.getId());
+        List<Payment> salePayments = payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(
+                tenantId, sale.getId());
+        List<InventoryMovement> movements = inventoryMovements
+                .findByTenantIdAndReferenceTypeInAndReferenceIdOrderByCreatedAtAscIdAsc(
+                        tenantId, List.of("POS_SALE", "POS_KIT_SALE"), sale.getId());
+        CashMovement cashMovement = cashMovements
+                .findFirstByTenantIdAndReferenceTypeAndReferenceIdOrderByCreatedAtAscIdAsc(
+                        tenantId, "sale", sale.getId())
+                .orElse(null);
+        return confirmationResponse(sale, saleItems, salePayments, movements, cashMovement, idempotent);
+    }
+
+    private static SaleConfirmationResponse confirmationResponse(
+            Sale sale,
+            List<SaleItem> saleItems,
+            List<Payment> salePayments,
+            List<InventoryMovement> movements,
+            CashMovement cashMovement,
+            boolean idempotent) {
+        return SaleConfirmationResponse.from(
+                SaleResponse.from(sale),
+                saleItems.stream().map(SaleItemResponse::from).toList(),
+                salePayments.stream().map(PaymentResponse::from).toList(),
+                movements.stream().filter(java.util.Objects::nonNull)
+                        .map(InventoryMovementResponse::from).toList(),
+                cashMovement == null ? null : CashMovementResponse.from(cashMovement),
+                idempotent);
+    }
+
+    private static NormalizedDocument normalizeDocument(CreateSaleRequest.Document input) {
+        SaleDocumentType type = input == null ? SaleDocumentType.ticket : input.type();
+        if (type == null) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "SALE_DOCUMENT_TYPE_REQUIRED",
+                    "El tipo de documento es requerido.");
+        }
+        String taxId = trimToNull(input == null ? null : input.taxId());
+        String legalName = trimToNull(input == null ? null : input.legalName());
+        String fiscalAddress = trimToNull(input == null ? null : input.fiscalAddress());
+        if (type == SaleDocumentType.invoice
+                && (taxId == null || legalName == null || fiscalAddress == null)) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "INVOICE_FISCAL_DATA_REQUIRED",
+                    "La factura requiere NIT, nombre legal y dirección fiscal.");
+        }
+        if (type == SaleDocumentType.ticket
+                && (taxId != null || legalName != null || fiscalAddress != null)) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "TICKET_FISCAL_DATA_NOT_ALLOWED",
+                    "El ticket no admite datos fiscales de factura.");
+        }
+        return new NormalizedDocument(type, taxId, legalName, fiscalAddress);
+    }
+
+    private static String trimToNull(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private static String fingerprint(CreateSaleRequest request, NormalizedDocument document) {
+        String payload = request.branchId()
+                + "|" + request.cashShiftId()
+                + "|" + request.customerId()
+                + "|" + document.type()
+                + ":" + document.taxId()
+                + ":" + document.legalName()
+                + ":" + document.fiscalAddress()
+                + "|" + request.items().stream()
+                        .map(item -> item.productId() + ":" + item.quantity().stripTrailingZeros().toPlainString()
+                                + ":" + (item.discount() == null ? BigDecimal.ZERO : item.discount())
+                                        .stripTrailingZeros().toPlainString())
+                        .sorted()
+                        .collect(Collectors.joining(","))
+                + "|" + request.payments().stream()
+                        .map(payment -> payment.method() + ":"
+                                + payment.amount().stripTrailingZeros().toPlainString()
+                                + ":" + payment.bankAccountId()
+                                + ":" + payment.reference()
+                                + ":" + payment.externallyVerified())
+                        .sorted()
+                        .collect(Collectors.joining(","));
+        return sha256(payload);
+    }
+
+    private static boolean matchesLegacyConfirmation(
+            Sale sale, CreateSaleRequest request, NormalizedDocument document) {
+        return sale.getDocumentType() == null
+                && document.type() == SaleDocumentType.ticket
+                && java.util.Objects.equals(sale.getCashShiftId(), request.cashShiftId())
+                && java.util.Objects.equals(sale.getCustomerId(), request.customerId())
+                && legacyFingerprint(request).equals(sale.getConfirmationFingerprint());
+    }
+
+    private static String legacyFingerprint(CreateSaleRequest request) {
         String payload = request.branchId()
                 + "|" + request.items().stream()
                         .map(item -> item.productId() + ":" + item.quantity().stripTrailingZeros().toPlainString()
@@ -372,6 +517,10 @@ public class SaleService {
                                 + ":" + payment.externallyVerified())
                         .sorted()
                         .collect(Collectors.joining(","));
+        return sha256(payload);
+    }
+
+    private static String sha256(String payload) {
         try {
             byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
                     .digest(payload.getBytes(java.nio.charset.StandardCharsets.UTF_8));
@@ -381,10 +530,26 @@ public class SaleService {
         }
     }
 
+    @SuppressWarnings("unused")
+    private static String fingerprint(CreateSaleRequest request) {
+        return fingerprint(request, normalizeDocument(request.document()));
+    }
+
     private static BigDecimal money(BigDecimal value) {
         return value.setScale(2, RoundingMode.HALF_UP);
     }
 
     private record LinePricing(
-            Product product, BigDecimal discount, BigDecimal subtotal, UUID promotionId) {}
+            Product product,
+            BigDecimal unitPrice,
+            BigDecimal inventoryQuantity,
+            BigDecimal discount,
+            BigDecimal subtotal,
+            UUID promotionId) {}
+
+    private record NormalizedDocument(
+            SaleDocumentType type,
+            String taxId,
+            String legalName,
+            String fiscalAddress) {}
 }

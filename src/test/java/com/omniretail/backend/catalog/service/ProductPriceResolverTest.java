@@ -9,10 +9,12 @@ import static org.mockito.Mockito.lenient;
 
 import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
 import com.omniretail.backend.catalog.entity.Product;
+import com.omniretail.backend.catalog.entity.ProductSalesPriceTier;
 import com.omniretail.backend.catalog.entity.Promotion;
 import com.omniretail.backend.catalog.entity.PromotionDiscountType;
 import com.omniretail.backend.catalog.entity.PromotionStatus;
 import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.catalog.repository.ProductSalesPriceTierRepository;
 import com.omniretail.backend.catalog.repository.PromotionRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
 import java.math.BigDecimal;
@@ -33,6 +35,7 @@ class ProductPriceResolverTest {
 
     @Mock private ProductRepository productRepository;
     @Mock private PromotionRepository promotionRepository;
+    @Mock private ProductSalesPriceTierRepository priceTierRepository;
     @InjectMocks private ProductPriceResolver resolver;
 
     private final UUID tenantId = UUID.randomUUID();
@@ -51,6 +54,22 @@ class ProductPriceResolverTest {
         ReflectionTestUtils.setField(product, "id", productId);
         lenient().when(productRepository.findByTenantIdAndId(tenantId, productId))
                 .thenReturn(Optional.of(product));
+    }
+
+    @Test
+    void resolvesHighestApplicableActiveQuantityTierBeforePromotions() {
+        when(priceTierRepository.findByTenantIdAndProductIdOrderByMinQuantityAsc(
+                tenantId, productId)).thenReturn(List.of(
+                        ProductSalesPriceTier.builder().minQuantity(5)
+                                .unitPrice(new BigDecimal("90.00")).active(true).build(),
+                        ProductSalesPriceTier.builder().minQuantity(10)
+                                .unitPrice(new BigDecimal("80.00")).active(true).build()));
+
+        ResolvedProductPrice result = resolver.resolveEffectivePrice(
+                tenantId, product, at, "pos", UUID.randomUUID(), new BigDecimal("12"));
+
+        assertThat(result.basePrice()).isEqualByComparingTo("80.00");
+        assertThat(result.effectivePrice()).isEqualByComparingTo("80.00");
     }
 
     @Test

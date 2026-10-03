@@ -3,6 +3,7 @@ package com.omniretail.backend.pos.repository;
 import com.omniretail.backend.pos.dto.CashMovementTotals;
 import com.omniretail.backend.pos.entity.CashMovement;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -11,6 +12,9 @@ public interface CashMovementRepository extends JpaRepository<CashMovement, UUID
 
     List<CashMovement> findByTenantIdAndCashShiftIdOrderByCreatedAtAscIdAsc(
             UUID tenantId, UUID cashShiftId);
+
+    Optional<CashMovement> findFirstByTenantIdAndReferenceTypeAndReferenceIdOrderByCreatedAtAscIdAsc(
+            UUID tenantId, String referenceType, UUID referenceId);
 
     @Query("""
             select new com.omniretail.backend.pos.dto.CashMovementTotals(

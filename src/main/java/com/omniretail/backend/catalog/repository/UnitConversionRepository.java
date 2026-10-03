@@ -16,6 +16,9 @@ public interface UnitConversionRepository extends JpaRepository<UnitConversion, 
 
     List<UnitConversion> findByTenantIdAndProductId(UUID tenantId, UUID productId);
 
+    Optional<UnitConversion> findByTenantIdAndProductIdAndFromUnitIdAndToUnitId(
+            UUID tenantId, UUID productId, UUID fromUnitId, UUID toUnitId);
+
     Optional<UnitConversion> findByTenantIdAndFromUnitIdAndToUnitIdAndProductIdIsNull(
             UUID tenantId, UUID fromUnitId, UUID toUnitId);
 
