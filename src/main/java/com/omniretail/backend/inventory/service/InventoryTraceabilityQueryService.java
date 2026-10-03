@@ -6,6 +6,7 @@ import com.omniretail.backend.catalog.entity.Location;
 import com.omniretail.backend.catalog.entity.LocationStatus;
 import com.omniretail.backend.catalog.repository.LocationRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.inventory.dto.ExpiringLotDto;
 import com.omniretail.backend.inventory.dto.InventoryLotAvailabilityDto;
 import com.omniretail.backend.inventory.dto.InventorySerialAvailabilityDto;
 import com.omniretail.backend.inventory.entity.InventoryLot;
@@ -13,19 +14,26 @@ import com.omniretail.backend.inventory.entity.InventoryLotBalance;
 import com.omniretail.backend.inventory.entity.InventorySerial;
 import com.omniretail.backend.inventory.entity.InventorySerialStatus;
 import com.omniretail.backend.inventory.repository.InventoryLotBalanceRepository;
+import com.omniretail.backend.inventory.repository.InventoryLotBalanceRepository.ExpiringLotProjection;
 import com.omniretail.backend.inventory.repository.InventoryLotRepository;
 import com.omniretail.backend.inventory.repository.InventorySerialRepository;
+import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
 import com.omniretail.backend.shared.security.SaasCapability;
 import com.omniretail.backend.shared.security.TenantCapabilityGuard;
+import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -44,10 +52,11 @@ public class InventoryTraceabilityQueryService {
     private final InventoryLotRepository lotRepository;
     private final InventoryLotBalanceRepository lotBalanceRepository;
     private final InventorySerialRepository serialRepository;
+    private final TenantBusinessDateService businessDateService;
 
     public List<InventoryLotAvailabilityDto> availableLots(
             UUID branchId, UUID productId, UUID locationId) {
-        LookupScope scope = requireScope(branchId, productId, locationId);
+        LookupScope scope = requireScope(branchId, productId, locationId, true);
         List<InventoryLotBalance> balances = locationId == null
                 ? lotBalanceRepository.findAvailableByTenantBranchAndProduct(
                         scope.tenantId(), branchId, productId)
@@ -67,7 +76,7 @@ public class InventoryTraceabilityQueryService {
 
     public List<InventorySerialAvailabilityDto> availableSerials(
             UUID branchId, UUID productId, UUID locationId, UUID lotId) {
-        LookupScope scope = requireScope(branchId, productId, locationId);
+        LookupScope scope = requireScope(branchId, productId, locationId, true);
         if (lotId != null) requireLot(scope.tenantId(), productId, lotId);
 
         List<InventorySerial> serials;
@@ -91,7 +100,31 @@ public class InventoryTraceabilityQueryService {
         return serials.stream().map(InventoryTraceabilityQueryService::serialAvailability).toList();
     }
 
-    private LookupScope requireScope(UUID branchId, UUID productId, UUID locationId) {
+    public PageResponse<ExpiringLotDto> expiringLots(
+            UUID branchId,
+            int days,
+            UUID productId,
+            UUID locationId,
+            Pageable requestedPageable) {
+        if (days < 1 || days > 365) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "EXPIRATION_DAYS_INVALID",
+                    "El rango de expiracion debe estar entre 1 y 365 dias.");
+        }
+        LookupScope scope = requireScope(branchId, productId, locationId, false);
+        LocalDate businessDate = businessDateService.currentDate(scope.tenantId());
+        Pageable pageable = PageRequest.of(
+                Math.max(requestedPageable.getPageNumber(), 0),
+                Math.min(Math.max(requestedPageable.getPageSize(), 1), 100));
+        Page<ExpiringLotProjection> page = lotBalanceRepository.findExpiringLots(
+                scope.tenantId(), branchId, businessDate, businessDate.plusDays(days),
+                productId, locationId, pageable);
+        return PageResponse.from(page, row -> expiringLot(row, businessDate));
+    }
+
+    private LookupScope requireScope(
+            UUID branchId, UUID productId, UUID locationId, boolean productRequired) {
         AuthenticatedUser actor = currentUser.require();
         UUID tenantId = actor.tenantId();
         tenantCapabilityGuard.ensureTenantCapability(tenantId, SaasCapability.inventory);
@@ -102,9 +135,11 @@ public class InventoryTraceabilityQueryService {
             throw BusinessException.forbidden(
                     "BRANCH_ACCESS_DENIED", "No tienes acceso a esta sucursal.");
         }
-        productRepository.findByTenantIdAndId(tenantId, productId)
-                .orElseThrow(() -> new BusinessException(
-                        HttpStatus.NOT_FOUND, "PRODUCT_NOT_FOUND", "Producto no encontrado."));
+        if (productRequired || productId != null) {
+            productRepository.findByTenantIdAndId(tenantId, productId)
+                    .orElseThrow(() -> new BusinessException(
+                            HttpStatus.NOT_FOUND, "PRODUCT_NOT_FOUND", "Producto no encontrado."));
+        }
         if (locationId != null) requireLocation(tenantId, branchId, locationId);
         return new LookupScope(tenantId);
     }
@@ -156,6 +191,26 @@ public class InventoryTraceabilityQueryService {
                 serial.getLotId(),
                 serial.getBranchId(),
                 serial.getLocationId());
+    }
+
+    private static ExpiringLotDto expiringLot(
+            ExpiringLotProjection row, LocalDate businessDate) {
+        if (row.getReservedQuantity().compareTo(row.getQuantity()) > 0) {
+            throw new IllegalStateException("El balance de lote tiene una reserva mayor que su existencia.");
+        }
+        return new ExpiringLotDto(
+                row.getLotId(),
+                row.getLotNumber(),
+                row.getExpirationDate(),
+                ChronoUnit.DAYS.between(businessDate, row.getExpirationDate()),
+                row.getProductId(),
+                row.getSku(),
+                row.getProductName(),
+                row.getBranchId(),
+                row.getLocationId(),
+                row.getQuantity(),
+                row.getReservedQuantity(),
+                row.getAvailableQuantity());
     }
 
     private record LookupScope(UUID tenantId) {}

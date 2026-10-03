@@ -2,6 +2,8 @@ package com.omniretail.backend.inventory.repository;
 
 import com.omniretail.backend.inventory.entity.InventoryLotBalance;
 import jakarta.persistence.LockModeType;
+import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -117,4 +119,96 @@ public interface InventoryLotBalanceRepository extends JpaRepository<InventoryLo
             @Param("branchId") UUID branchId,
             @Param("productId") UUID productId,
             @Param("locationId") UUID locationId);
+
+    @Query(
+            value = """
+                    SELECT lot.id AS "lotId",
+                           lot.lot_number AS "lotNumber",
+                           lot.expiration_date AS "expirationDate",
+                           product.id AS "productId",
+                           product.sku AS "sku",
+                           product.name AS "productName",
+                           balance.branch_id AS "branchId",
+                           balance.location_id AS "locationId",
+                           balance.quantity AS "quantity",
+                           balance.reserved_quantity AS "reservedQuantity",
+                           balance.quantity - balance.reserved_quantity AS "availableQuantity"
+                    FROM inventory_lot_balances balance
+                    JOIN inventory_lots lot
+                      ON lot.tenant_id = balance.tenant_id
+                     AND lot.id = balance.lot_id
+                    JOIN products product
+                      ON product.tenant_id = lot.tenant_id
+                     AND product.id = lot.product_id
+                    WHERE balance.tenant_id = :tenantId
+                      AND balance.branch_id = :branchId
+                      AND balance.quantity > 0
+                      AND lot.expiration_date BETWEEN :businessDate AND :limitDate
+                      AND product.status = 'published'
+                      AND product.product_type = 'physical'
+                      AND product.tracking_stock = TRUE
+                      AND product.tracking_lot = TRUE
+                      AND product.tracking_expiration = TRUE
+                      AND (:productId IS NULL OR product.id = :productId)
+                      AND (:locationId IS NULL OR balance.location_id = :locationId)
+                    ORDER BY lot.expiration_date ASC,
+                             LOWER(product.name) ASC,
+                             lot.lot_number ASC,
+                             balance.location_id ASC NULLS FIRST,
+                             balance.id ASC
+                    """,
+            countQuery = """
+                    SELECT COUNT(*)
+                    FROM inventory_lot_balances balance
+                    JOIN inventory_lots lot
+                      ON lot.tenant_id = balance.tenant_id
+                     AND lot.id = balance.lot_id
+                    JOIN products product
+                      ON product.tenant_id = lot.tenant_id
+                     AND product.id = lot.product_id
+                    WHERE balance.tenant_id = :tenantId
+                      AND balance.branch_id = :branchId
+                      AND balance.quantity > 0
+                      AND lot.expiration_date BETWEEN :businessDate AND :limitDate
+                      AND product.status = 'published'
+                      AND product.product_type = 'physical'
+                      AND product.tracking_stock = TRUE
+                      AND product.tracking_lot = TRUE
+                      AND product.tracking_expiration = TRUE
+                      AND (:productId IS NULL OR product.id = :productId)
+                      AND (:locationId IS NULL OR balance.location_id = :locationId)
+                    """,
+            nativeQuery = true)
+    org.springframework.data.domain.Page<ExpiringLotProjection> findExpiringLots(
+            @Param("tenantId") UUID tenantId,
+            @Param("branchId") UUID branchId,
+            @Param("businessDate") LocalDate businessDate,
+            @Param("limitDate") LocalDate limitDate,
+            @Param("productId") UUID productId,
+            @Param("locationId") UUID locationId,
+            org.springframework.data.domain.Pageable pageable);
+
+    interface ExpiringLotProjection {
+        UUID getLotId();
+
+        String getLotNumber();
+
+        LocalDate getExpirationDate();
+
+        UUID getProductId();
+
+        String getSku();
+
+        String getProductName();
+
+        UUID getBranchId();
+
+        UUID getLocationId();
+
+        BigDecimal getQuantity();
+
+        BigDecimal getReservedQuantity();
+
+        BigDecimal getAvailableQuantity();
+    }
 }

@@ -1,6 +1,7 @@
 package com.omniretail.backend.inventory.dto;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.UUID;
 
 public record InventoryStockItemDto(
@@ -18,5 +19,6 @@ public record InventoryStockItemDto(
         BigDecimal reorderPoint,
         UUID defaultLocationId,
         String defaultLocationName,
+        LocalDate nextExpirationDate,
         InventoryAlertStatus status,
         BigDecimal suggestedReorder) {}

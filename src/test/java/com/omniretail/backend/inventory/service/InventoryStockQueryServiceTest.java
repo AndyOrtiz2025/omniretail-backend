@@ -16,6 +16,8 @@ import com.omniretail.backend.shared.security.CurrentUser;
 import com.omniretail.backend.shared.security.SaasCapability;
 import com.omniretail.backend.shared.security.TenantEntitlementResolver;
 import com.omniretail.backend.shared.security.TenantEntitlements;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.EnumSet;
 import java.util.Set;
 import java.util.UUID;
@@ -98,6 +100,69 @@ class InventoryStockQueryServiceTest {
         assertThat(byCategory.items()).hasSize(1);
         assertThat(byCategory.items().getFirst().categoryId()).isEqualTo(otherCategory);
         assertThat(byCategory.summary().activeProducts()).isEqualTo(1);
+    }
+
+    @Test
+    void integratesNextExpirationAndDistinctExpiringKpiWithoutMultiplyingStock() {
+        Fixture fixture = fixture();
+        LocalDate today = LocalDate.now(ZoneId.of("America/Guatemala"));
+        UUID critical = addProduct(
+                fixture, fixture.category(), "Critico perecedero", "5", "0", "10");
+        UUID otherCategory = addCategory(fixture, "Otra categoria perecedera");
+        UUID normal = addProduct(
+                fixture, otherCategory, "Normal perecedero", "20", "0", "10");
+        UUID beyondWindow = addProduct(
+                fixture, fixture.category(), "Caduca despues", "4", "0", "0");
+        UUID trackingDisabled = addProduct(
+                fixture, fixture.category(), "Tracking deshabilitado", "7", "0", "0");
+        enableExpiration(critical);
+        enableExpiration(normal);
+        enableExpiration(beyondWindow);
+
+        addLotBalance(fixture, critical, "EXPIRED", today.minusDays(1), "3", "0");
+        addLotBalance(fixture, critical, "ZERO", today.plusDays(1), "0", "0");
+        addLotBalance(fixture, critical, "EARLIEST", today.plusDays(10), "3", "3");
+        addLotBalance(fixture, critical, "SECOND", today.plusDays(20), "2", "0");
+        addLotBalance(fixture, normal, "BOUNDARY-30", today.plusDays(30), "1", "0");
+        addLotBalance(fixture, beyondWindow, "OUTSIDE-31", today.plusDays(31), "1", "0");
+        addLotBalance(
+                fixture, trackingDisabled, "DISABLED", today.plusDays(5), "1", "0");
+
+        var response = service.list(
+                fixture.branch(), null, null, null, PageRequest.of(0, 20));
+
+        assertThat(response.summary().activeProducts()).isEqualTo(4);
+        assertThat(response.summary().lowStock()).isEqualTo(1);
+        assertThat(response.summary().expiringSoonProducts()).isEqualTo(2);
+        assertThat(response.summary().outOfStock()).isZero();
+        assertThat(response.items())
+                .filteredOn(item -> item.productId().equals(critical))
+                .singleElement()
+                .satisfies(item -> {
+                    assertThat(item.quantity()).isEqualByComparingTo("5.000");
+                    assertThat(item.reservedQuantity()).isEqualByComparingTo("0.000");
+                    assertThat(item.nextExpirationDate()).isEqualTo(today.plusDays(10));
+                });
+        assertThat(response.items())
+                .filteredOn(item -> item.productId().equals(beyondWindow))
+                .singleElement()
+                .satisfies(item -> assertThat(item.nextExpirationDate())
+                        .isEqualTo(today.plusDays(31)));
+        assertThat(response.items())
+                .filteredOn(item -> item.productId().equals(trackingDisabled))
+                .singleElement()
+                .satisfies(item -> assertThat(item.nextExpirationDate()).isNull());
+
+        var bySearch = service.list(
+                fixture.branch(), "critico perecedero", null, null, PageRequest.of(0, 20));
+        assertThat(bySearch.summary().expiringSoonProducts()).isEqualTo(1);
+        var byCategory = service.list(
+                fixture.branch(), null, otherCategory, null, PageRequest.of(0, 20));
+        assertThat(byCategory.summary().expiringSoonProducts()).isEqualTo(1);
+        var byStatus = service.list(
+                fixture.branch(), null, null, InventoryAlertStatus.critical, PageRequest.of(0, 20));
+        assertThat(byStatus.summary().activeProducts()).isEqualTo(1);
+        assertThat(byStatus.summary().expiringSoonProducts()).isEqualTo(1);
     }
 
     @Test
@@ -199,6 +264,33 @@ class InventoryStockQueryServiceTest {
                     """, fixture.tenant(), fixture.branch(), product, quantity, reserved);
         }
         return product;
+    }
+
+    private void enableExpiration(UUID productId) {
+        jdbc.update(
+                "UPDATE products SET tracking_lot = true, tracking_expiration = true WHERE id = ?",
+                productId);
+    }
+
+    private void addLotBalance(
+            Fixture fixture,
+            UUID productId,
+            String lotNumber,
+            LocalDate expirationDate,
+            String quantity,
+            String reservedQuantity) {
+        UUID lotId = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO inventory_lots
+                    (id, tenant_id, product_id, lot_number, expiration_date)
+                VALUES (?, ?, ?, ?, ?)
+                """, lotId, fixture.tenant(), productId, lotNumber, expirationDate);
+        jdbc.update("""
+                INSERT INTO inventory_lot_balances
+                    (id, tenant_id, branch_id, location_id, lot_id, quantity, reserved_quantity)
+                VALUES (?, ?, ?, NULL, ?, ?::numeric, ?::numeric)
+                """, UUID.randomUUID(), fixture.tenant(), fixture.branch(), lotId,
+                quantity, reservedQuantity);
     }
 
     private void useActor(Fixture fixture) {
