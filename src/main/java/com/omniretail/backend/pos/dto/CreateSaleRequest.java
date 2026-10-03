@@ -1,6 +1,7 @@
 package com.omniretail.backend.pos.dto;
 
 import com.omniretail.backend.pos.entity.PaymentMethod;
+import com.omniretail.backend.pos.entity.SaleDocumentType;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotEmpty;
@@ -17,7 +18,19 @@ public record CreateSaleRequest(
         @DecimalMin("0.00") BigDecimal taxTotal,
         @NotEmpty @Valid List<Item> items,
         @NotEmpty @Valid List<PaymentLine> payments,
-        @NotNull UUID confirmationId) {
+        @NotNull UUID confirmationId,
+        @Valid Document document) {
+
+    public CreateSaleRequest(
+            UUID branchId,
+            UUID cashShiftId,
+            UUID customerId,
+            BigDecimal taxTotal,
+            List<Item> items,
+            List<PaymentLine> payments,
+            UUID confirmationId) {
+        this(branchId, cashShiftId, customerId, taxTotal, items, payments, confirmationId, null);
+    }
 
     public CreateSaleRequest(
             UUID branchId,
@@ -26,8 +39,14 @@ public record CreateSaleRequest(
             BigDecimal taxTotal,
             List<Item> items,
             List<PaymentLine> payments) {
-        this(branchId, cashShiftId, customerId, taxTotal, items, payments, UUID.randomUUID());
+        this(branchId, cashShiftId, customerId, taxTotal, items, payments, UUID.randomUUID(), null);
     }
+    public record Document(
+            @NotNull SaleDocumentType type,
+            @Size(max = 100) String taxId,
+            @Size(max = 300) String legalName,
+            @Size(max = 500) String fiscalAddress) {}
+
     public record Item(
             @NotNull UUID productId,
             @NotNull @DecimalMin(value = "0.001") BigDecimal quantity,
@@ -38,6 +57,7 @@ public record CreateSaleRequest(
             this(productId, quantity, discount, List.of());
         }
     }
+
     public record PaymentLine(
             @NotNull PaymentMethod method,
             @NotNull @DecimalMin("0.01") BigDecimal amount,

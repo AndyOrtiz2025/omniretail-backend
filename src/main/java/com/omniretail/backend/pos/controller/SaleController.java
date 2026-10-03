@@ -2,6 +2,7 @@
 package com.omniretail.backend.pos.controller;
 
 import com.omniretail.backend.pos.dto.CreateSaleRequest;
+import com.omniretail.backend.pos.dto.SaleConfirmationResponse;
 import com.omniretail.backend.pos.dto.SaleDetailResponse;
 import com.omniretail.backend.pos.dto.SaleResponse;
 import com.omniretail.backend.pos.entity.SaleStatus;
@@ -33,7 +34,7 @@ public class SaleController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @RequirePermission("pos.sales.create")
-    public SaleResponse create(@Valid @RequestBody CreateSaleRequest request) {
+    public SaleConfirmationResponse create(@Valid @RequestBody CreateSaleRequest request) {
         return service.create(request);
     }
 

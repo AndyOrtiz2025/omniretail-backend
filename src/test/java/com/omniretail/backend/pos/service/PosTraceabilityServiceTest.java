@@ -14,7 +14,7 @@ import com.omniretail.backend.catalog.service.ProductPriceResolver;
 import com.omniretail.backend.pos.dto.CreateSaleRequest;
 import com.omniretail.backend.pos.dto.CreateSaleReturnRequest;
 import com.omniretail.backend.pos.dto.InventoryTrackingSelectionRequest;
-import com.omniretail.backend.pos.dto.SaleResponse;
+import com.omniretail.backend.pos.dto.SaleConfirmationResponse;
 import com.omniretail.backend.pos.entity.PaymentMethod;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
@@ -65,7 +65,7 @@ class PosTraceabilityServiceTest {
             return new BranchAccessResolver.BranchAccess(false, Set.of(actor.branchId()));
         });
         given(priceResolver.resolveEffectivePrice(
-                        any(), any(), any(Instant.class), eq("pos"), any()))
+                        any(), any(), any(Instant.class), eq("pos"), any(), any(BigDecimal.class)))
                 .willReturn(new ResolvedProductPrice(
                         new BigDecimal("10.00"),
                         new BigDecimal("10.00"),
@@ -80,7 +80,7 @@ class PosTraceabilityServiceTest {
         jdbc.update(
                 "UPDATE inventory_lot_balances SET quantity = 6.000 WHERE lot_id = ?",
                 fixture.lotId());
-        SaleResponse sale = sales.create(saleRequest(
+        SaleConfirmationResponse sale = sales.create(saleRequest(
                 fixture,
                 fixture.shiftId(),
                 "10.000",
@@ -122,10 +122,109 @@ class PosTraceabilityServiceTest {
     }
 
     @Test
+    void convertedLotSaleUsesPhysicalQuantityAndVoidRestoresTheSameTrace() {
+        Fixture fixture = fixture(true, false, new BigDecimal("24.000"), List.of());
+        configureSaleUnitConversion(fixture, "12.000000");
+
+        SaleConfirmationResponse sale = sales.create(saleRequest(
+                fixture,
+                fixture.shiftId(),
+                "2.000",
+                UUID.randomUUID(),
+                List.of(selection(fixture, fixture.lotId(), "24.000", List.of()))));
+        UUID saleItemId = saleItemId(sale.id());
+
+        assertThat(jdbc.queryForObject(
+                        "SELECT quantity FROM sale_items WHERE id = ?",
+                        BigDecimal.class,
+                        saleItemId))
+                .isEqualByComparingTo("2.000");
+        assertThat(jdbc.queryForObject(
+                        "SELECT sum(quantity) FROM inventory_movements WHERE reference_type = 'POS_SALE' AND reference_id = ?",
+                        BigDecimal.class,
+                        sale.id()))
+                .isEqualByComparingTo("24.000");
+        assertThat(sale.items().getFirst().quantity()).isEqualByComparingTo("2.000");
+        assertThat(sale.items().getFirst().trackingDetails())
+                .singleElement()
+                .satisfies(detail -> assertThat(detail.quantity()).isEqualByComparingTo("24.000"));
+
+        sales.voidSale(sale.id());
+
+        assertThat(balance(fixture)).isEqualByComparingTo("24.000");
+        assertThat(jdbc.queryForObject(
+                        "SELECT quantity FROM inventory_lot_balances WHERE tenant_id = ? AND location_id = ? AND lot_id = ?",
+                        BigDecimal.class,
+                        fixture.tenantId(),
+                        fixture.locationId(),
+                        fixture.lotId()))
+                .isEqualByComparingTo("24.000");
+        assertThat(jdbc.queryForObject(
+                        "SELECT sum(t.quantity) FROM inventory_movement_traces t JOIN inventory_movements m ON m.id = t.movement_id WHERE m.reference_type = 'POS_SALE_VOID' AND m.reference_id = ? AND t.lot_id = ?",
+                        BigDecimal.class,
+                        sale.id(),
+                        fixture.lotId()))
+                .isEqualByComparingTo("24.000");
+    }
+
+    @Test
+    void convertedLotSaleRejectsCommercialQuantityAsPhysicalSelection() {
+        Fixture fixture = fixture(true, false, new BigDecimal("24.000"), List.of());
+        configureSaleUnitConversion(fixture, "12.000000");
+
+        assertThatThrownBy(() -> sales.create(saleRequest(
+                        fixture,
+                        fixture.shiftId(),
+                        "2.000",
+                        UUID.randomUUID(),
+                        List.of(selection(fixture, fixture.lotId(), "2.000", List.of())))))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("TRACKING_QUANTITY_MISMATCH"));
+
+        assertThat(balance(fixture)).isEqualByComparingTo("24.000");
+    }
+
+    @Test
+    void convertedLotReturnRestoresPhysicalProportion() {
+        Fixture fixture = fixture(true, false, new BigDecimal("24.000"), List.of());
+        configureSaleUnitConversion(fixture, "12.000000");
+        SaleConfirmationResponse sale = sales.create(saleRequest(
+                fixture,
+                fixture.shiftId(),
+                "2.000",
+                UUID.randomUUID(),
+                List.of(selection(fixture, fixture.lotId(), "24.000", List.of()))));
+        UUID saleItemId = saleItemId(sale.id());
+
+        var returned = returns.create(
+                sale.id(),
+                new CreateSaleReturnRequest(
+                        "Devolucion de una caja",
+                        List.of(new CreateSaleReturnRequest.Line(
+                                saleItemId,
+                                BigDecimal.ONE,
+                                List.of(selection(
+                                        fixture, fixture.lotId(), "12.000", List.of()))))));
+
+        assertThat(returned.lines().getFirst().quantity()).isEqualByComparingTo("1.000");
+        assertThat(returned.lines().getFirst().trackingDetails())
+                .singleElement()
+                .satisfies(detail -> assertThat(detail.quantity()).isEqualByComparingTo("12.000"));
+        assertThat(jdbc.queryForObject(
+                        "SELECT sum(quantity) FROM inventory_movements WHERE reference_type = 'POS_SALE_RETURN' AND reference_id = ?",
+                        BigDecimal.class,
+                        returned.id()))
+                .isEqualByComparingTo("12.000");
+        assertThat(balance(fixture)).isEqualByComparingTo("12.000");
+    }
+
+    @Test
     void serialSaleAndPartialReturnRestoreOnlyTheExactSoldSerialOnce() {
         Fixture fixture = fixture(
                 false, true, new BigDecimal("2.000"), List.of("SER-1", "SER-2"));
-        SaleResponse sale = sales.create(saleRequest(
+        SaleConfirmationResponse sale = sales.create(saleRequest(
                 fixture,
                 fixture.shiftId(),
                 "2.000",
@@ -170,7 +269,7 @@ class PosTraceabilityServiceTest {
     void lotAndSerialUseOnlySerialTracesAndReturnRestoresTheExactSubledger() {
         Fixture fixture = fixture(
                 true, true, new BigDecimal("2.000"), List.of("LOT-SER-1", "LOT-SER-2"));
-        SaleResponse sale = sales.create(saleRequest(
+        SaleConfirmationResponse sale = sales.create(saleRequest(
                 fixture,
                 fixture.shiftId(),
                 "2.000",
@@ -397,7 +496,7 @@ class PosTraceabilityServiceTest {
         jdbc.update(
                 "UPDATE inventory_lot_balances SET quantity = 2.000 WHERE lot_id = ?",
                 fixture.lotId());
-        SaleResponse sale = sales.create(saleRequest(
+        SaleConfirmationResponse sale = sales.create(saleRequest(
                 fixture,
                 fixture.shiftId(),
                 "4.000",
@@ -447,7 +546,7 @@ class PosTraceabilityServiceTest {
     @Test
     void voidRollsBackWhenOriginalSerialIsNoLongerConsumed() {
         Fixture fixture = fixture(false, true, BigDecimal.ONE, List.of("VOID-STATE"));
-        SaleResponse sale = sales.create(saleRequest(
+        SaleConfirmationResponse sale = sales.create(saleRequest(
                 fixture,
                 fixture.shiftId(),
                 "1.000",
@@ -535,7 +634,7 @@ class PosTraceabilityServiceTest {
     @Test
     void concurrentReturnsForSameSerialRestoreItOnlyOnce() throws Exception {
         Fixture fixture = fixture(false, true, BigDecimal.ONE, List.of("RETURN-RACE"));
-        SaleResponse sale = sales.create(saleRequest(
+        SaleConfirmationResponse sale = sales.create(saleRequest(
                 fixture,
                 fixture.shiftId(),
                 "1.000",
@@ -567,7 +666,7 @@ class PosTraceabilityServiceTest {
     @Test
     void concurrentLotReturnsCannotExceedTheSoldQuantity() throws Exception {
         Fixture fixture = fixture(true, false, BigDecimal.ONE, List.of());
-        SaleResponse sale = sales.create(saleRequest(
+        SaleConfirmationResponse sale = sales.create(saleRequest(
                 fixture,
                 fixture.shiftId(),
                 "1.000",
@@ -723,6 +822,32 @@ class PosTraceabilityServiceTest {
                 "INSERT INTO inventory_lot_balances (id, tenant_id, branch_id, location_id, lot_id, quantity, reserved_quantity) VALUES (?, ?, ?, ?, ?, ?, 0)",
                 UUID.randomUUID(), fixture.tenantId(), fixture.branchId(), fixture.locationId(), lot, quantity);
         return lot;
+    }
+
+    private void configureSaleUnitConversion(Fixture fixture, String factor) {
+        UUID baseUnitId = jdbc.queryForObject(
+                "SELECT base_unit_id FROM products WHERE id = ?",
+                UUID.class,
+                fixture.productId());
+        UUID saleUnitId = UUID.randomUUID();
+        String suffix = saleUnitId.toString().substring(0, 8);
+        jdbc.update(
+                "INSERT INTO units (id, tenant_id, code, name, symbol, category, allows_decimals, status) VALUES (?, ?, ?, 'Caja', 'cj', 'unit', true, 'active')",
+                saleUnitId,
+                fixture.tenantId(),
+                "BOX-" + suffix);
+        jdbc.update(
+                "UPDATE products SET sale_unit_id = ? WHERE id = ?",
+                saleUnitId,
+                fixture.productId());
+        jdbc.update(
+                "INSERT INTO unit_conversions (id, tenant_id, product_id, from_unit_id, to_unit_id, factor) VALUES (?, ?, ?, ?, ?, ?)",
+                UUID.randomUUID(),
+                fixture.tenantId(),
+                fixture.productId(),
+                saleUnitId,
+                baseUnitId,
+                new BigDecimal(factor));
     }
 
     private UUID addInventoryProduct(

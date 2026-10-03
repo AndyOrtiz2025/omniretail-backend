@@ -10,6 +10,7 @@ import com.omniretail.backend.inventory.dto.InventoryHistoricalTraceDetail;
 import com.omniretail.backend.inventory.dto.InventoryRestoreCommand;
 import com.omniretail.backend.inventory.dto.InventoryTraceabilitySelection;
 import com.omniretail.backend.inventory.entity.InventoryMovement;
+import com.omniretail.backend.inventory.entity.InventoryMovementType;
 import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
 import com.omniretail.backend.inventory.service.InventoryStockService;
 import com.omniretail.backend.inventory.service.InventoryTraceabilityHistoryService;
@@ -159,8 +160,10 @@ public class SaleReturnService {
             created.add(savedReturnItem);
             inventoryPlans.addAll(returnInventoryPlans(
                     actor.tenantId(),
+                    sale,
                     item,
                     savedReturnItem,
+                    previous,
                     line.quantity(),
                     line.trackingSelections(),
                     originalMovements,
@@ -202,8 +205,10 @@ public class SaleReturnService {
 
     private List<ReturnInventoryPlan> returnInventoryPlans(
             UUID tenantId,
+            Sale sale,
             SaleItem saleItem,
             SaleReturnItem returnItem,
+            BigDecimal previouslyReturnedCommercial,
             BigDecimal returnQuantity,
             List<InventoryTrackingSelectionRequest> requestedSelections,
             List<InventoryMovement> originalMovements,
@@ -215,7 +220,12 @@ public class SaleReturnService {
                 ? List.of()
                 : requestedSelections;
         Map<UUID, ExpectedReturnInventory> expected = expectedReturnInventory(
-                tenantId, saleItem, returnQuantity);
+                tenantId,
+                sale,
+                saleItem,
+                previouslyReturnedCommercial,
+                returnQuantity,
+                originalMovements);
         for (InventoryTrackingSelectionRequest selection : selections) {
             if (selection == null || !expected.containsKey(selection.productId())) {
                 throw invalidTrackingSelection(
@@ -283,7 +293,12 @@ public class SaleReturnService {
     }
 
     private Map<UUID, ExpectedReturnInventory> expectedReturnInventory(
-            UUID tenantId, SaleItem saleItem, BigDecimal returnQuantity) {
+            UUID tenantId,
+            Sale sale,
+            SaleItem saleItem,
+            BigDecimal previouslyReturnedCommercial,
+            BigDecimal returnQuantity,
+            List<InventoryMovement> originalMovements) {
         List<KitFulfillmentSnapshot.Component> fulfillment =
                 KitFulfillmentSnapshot.decode(saleItem.getFulfillmentComponents());
         Map<UUID, ExpectedReturnInventory> expected = new HashMap<>();
@@ -293,7 +308,17 @@ public class SaleReturnService {
             if (product.getProductType() == ProductType.physical
                     && Boolean.TRUE.equals(product.getTrackingStock())) {
                 expected.put(product.getId(), new ExpectedReturnInventory(
-                        product, returnQuantity, false));
+                        product,
+                        physicalReturnQuantity(
+                                sale,
+                                saleItem,
+                                product.getId(),
+                                false,
+                                previouslyReturnedCommercial,
+                                returnQuantity,
+                                originalMovements,
+                                saleItem.getQuantity()),
+                        false));
             }
             return expected;
         }
@@ -302,7 +327,15 @@ public class SaleReturnService {
                     .orElseThrow(SaleReturnService::inconsistentSaleHistory);
             expected.put(product.getId(), new ExpectedReturnInventory(
                     product,
-                    returnQuantity.multiply(component.quantityPerKit()),
+                    physicalReturnQuantity(
+                            sale,
+                            saleItem,
+                            product.getId(),
+                            true,
+                            previouslyReturnedCommercial,
+                            returnQuantity,
+                            originalMovements,
+                            saleItem.getQuantity().multiply(component.quantityPerKit())),
                     true));
         }
         return expected;
@@ -520,6 +553,80 @@ public class SaleReturnService {
                     .forEach(values::add);
         }
         return result;
+    }
+
+    private static BigDecimal physicalReturnQuantity(
+            Sale sale,
+            SaleItem item,
+            UUID productId,
+            boolean kitComponent,
+            BigDecimal previouslyReturnedCommercial,
+            BigDecimal returnedCommercial,
+            List<InventoryMovement> originalMovements,
+            BigDecimal legacyOriginalPhysical) {
+        List<InventoryMovement> lineMovements = originalMovements.stream()
+                .filter(movement -> movement.getType() == InventoryMovementType.out)
+                .filter(movement -> sale.getBranchId().equals(movement.getBranchId()))
+                .filter(movement -> productId.equals(movement.getProductId()))
+                .filter(movement -> item.getId().equals(movement.getReferenceLineId()))
+                .toList();
+        if (lineMovements.isEmpty() && !kitComponent) {
+            lineMovements = originalMovements.stream()
+                    .filter(movement -> movement.getType() == InventoryMovementType.out)
+                    .filter(movement -> sale.getBranchId().equals(movement.getBranchId()))
+                    .filter(movement -> productId.equals(movement.getProductId()))
+                    .filter(movement -> movement.getReferenceLineId() == null)
+                    .filter(movement -> "POS_SALE".equals(movement.getReferenceType()))
+                    .toList();
+        }
+        BigDecimal originalPhysicalOut = lineMovements.stream()
+                .map(InventoryMovement::getQuantity)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (originalPhysicalOut.signum() == 0) {
+            originalPhysicalOut = inventoryQuantity(legacyOriginalPhysical);
+        }
+
+        BigDecimal cumulativeCommercial = previouslyReturnedCommercial.add(returnedCommercial);
+        BigDecimal previousPhysicalTarget = physicalTarget(
+                originalPhysicalOut, previouslyReturnedCommercial, item.getQuantity());
+        BigDecimal cumulativePhysicalTarget = cumulativeCommercial.compareTo(item.getQuantity()) == 0
+                ? originalPhysicalOut.setScale(3, RoundingMode.UNNECESSARY)
+                : physicalTarget(originalPhysicalOut, cumulativeCommercial, item.getQuantity());
+        BigDecimal result = cumulativePhysicalTarget.subtract(previousPhysicalTarget);
+        if (result.signum() <= 0) {
+            throw invalidPhysicalReturn();
+        }
+        return inventoryQuantity(result);
+    }
+
+    private static BigDecimal physicalTarget(
+            BigDecimal originalPhysicalOut,
+            BigDecimal returnedCommercial,
+            BigDecimal originalCommercial) {
+        if (returnedCommercial.signum() == 0) {
+            return BigDecimal.ZERO.setScale(3);
+        }
+        try {
+            return originalPhysicalOut.multiply(returnedCommercial)
+                    .divide(originalCommercial, 3, RoundingMode.UNNECESSARY);
+        } catch (ArithmeticException exception) {
+            throw invalidPhysicalReturn();
+        }
+    }
+
+    private static BigDecimal inventoryQuantity(BigDecimal quantity) {
+        try {
+            return quantity.setScale(3, RoundingMode.UNNECESSARY);
+        } catch (ArithmeticException exception) {
+            throw invalidPhysicalReturn();
+        }
+    }
+
+    private static BusinessException invalidPhysicalReturn() {
+        return new BusinessException(
+                HttpStatus.BAD_REQUEST,
+                "RETURN_INVENTORY_QUANTITY_INVALID",
+                "La cantidad devuelta no puede representarse con la precisión de inventario.");
     }
 
     private void registerCashRefund(AuthenticatedUser actor, Sale sale, SaleReturn saleReturn,
