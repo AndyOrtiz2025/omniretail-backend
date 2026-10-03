@@ -41,6 +41,7 @@ public class InventoryStockService {
                 GENERIC_DEDUCTION_REASON,
                 null,
                 null,
+                null,
                 null));
     }
 
@@ -198,6 +199,7 @@ public class InventoryStockService {
                 .toLocationId(balance.getLocationId())
                 .referenceType(command.referenceType())
                 .referenceId(command.referenceId())
+                .referenceLineId(command.referenceLineId())
                 .performedByUserId(command.performedByUserId())
                 .build());
     }
@@ -232,6 +234,7 @@ public class InventoryStockService {
                 .toLocationId(null)
                 .referenceType(command.referenceType())
                 .referenceId(command.referenceId())
+                .referenceLineId(command.referenceLineId())
                 .performedByUserId(command.performedByUserId())
                 .build());
     }

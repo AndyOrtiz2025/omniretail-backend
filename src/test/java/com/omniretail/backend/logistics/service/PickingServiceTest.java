@@ -12,6 +12,7 @@ import com.omniretail.backend.administration.service.BranchAccessResolver.Branch
 import com.omniretail.backend.ecommerce.entity.InventoryReservationStatus;
 import com.omniretail.backend.logistics.dto.CreatePickingIncidentRequest;
 import com.omniretail.backend.logistics.dto.PickingLineResponse;
+import com.omniretail.backend.logistics.dto.PickingTrackingSelectionRequest;
 import com.omniretail.backend.logistics.dto.UpdatePickingItemRequest;
 import com.omniretail.backend.logistics.entity.PickingIncidentType;
 import com.omniretail.backend.logistics.entity.PickingItemStatus;
@@ -27,6 +28,7 @@ import com.omniretail.backend.shared.security.CurrentUser;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -274,15 +276,253 @@ class PickingServiceTest {
     }
 
     @Test
-    void rejectsTraceabilityBeforeWorkStarts() {
+    void allowsAssigningTraceablePickingBeforePhysicalSelection() {
         Fixture fixture = readyFixture();
         jdbc.update("UPDATE products SET tracking_lot = true WHERE id = ?", fixture.productId());
         entityManager.flush();
         entityManager.clear();
 
+        assertThat(service.assign(fixture.branchId(), pickingId(fixture)).status())
+                .isEqualTo(PickingStatus.assigned);
+    }
+
+    @Test
+    void traceableLotSelectionCanBeReplacedAndAssignmentReleasePreservesReservation() {
+        Fixture fixture = readyFixture();
+        UUID location = UUID.randomUUID();
+        UUID firstLot = UUID.randomUUID();
+        UUID secondLot = UUID.randomUUID();
+        jdbc.update("UPDATE products SET tracking_lot = true WHERE id = ?", fixture.productId());
+        jdbc.update("""
+                INSERT INTO locations (id, tenant_id, branch_id, code, name, type, status)
+                VALUES (?, ?, ?, 'TRACE', 'Trazable', 'warehouse', 'active')
+                """, location, fixture.tenantId(), fixture.branchId());
+        jdbc.update("""
+                INSERT INTO inventory_lots (id, tenant_id, product_id, lot_number)
+                VALUES (?, ?, ?, 'LOT-A'), (?, ?, ?, 'LOT-B')
+                """, firstLot, fixture.tenantId(), fixture.productId(),
+                secondLot, fixture.tenantId(), fixture.productId());
+        jdbc.update("""
+                INSERT INTO inventory_lot_balances
+                    (id, tenant_id, branch_id, location_id, lot_id, quantity, reserved_quantity)
+                VALUES (?, ?, ?, ?, ?, 5, 0), (?, ?, ?, ?, ?, 5, 0)
+                """, UUID.randomUUID(), fixture.tenantId(), fixture.branchId(), location, firstLot,
+                UUID.randomUUID(), fixture.tenantId(), fixture.branchId(), location, secondLot);
+        entityManager.flush();
+        entityManager.clear();
+
+        UUID pickingId = pickingId(fixture);
+        UUID itemId = itemId(fixture, pickingId);
+        service.assign(fixture.branchId(), pickingId);
+        UpdatePickingItemRequest firstSelection = new UpdatePickingItemRequest(
+                new BigDecimal("5.000"),
+                location,
+                "lot-a",
+                List.of(new PickingTrackingSelectionRequest(
+                        location, firstLot, new BigDecimal("5.000"), List.of())));
+        service.updateItem(
+                fixture.branchId(),
+                pickingId,
+                itemId,
+                firstSelection);
+        assertThat(lotReserved(firstLot)).isEqualByComparingTo("5.000");
+        assertThat(service.updateItem(fixture.branchId(), pickingId, itemId, firstSelection))
+                .isNotNull();
         assertCode(
-                () -> service.assign(fixture.branchId(), pickingId(fixture)),
-                "TRACEABILITY_NOT_SUPPORTED");
+                () -> service.updateItem(
+                        fixture.branchId(),
+                        pickingId,
+                        itemId,
+                        new UpdatePickingItemRequest(
+                                new BigDecimal("5.0"),
+                                location,
+                                "lot-a",
+                                List.of(new PickingTrackingSelectionRequest(
+                                        location, secondLot, new BigDecimal("5"), List.of())))),
+                "PICKING_OPERATION_ID_REUSED");
+        assertThat(lotReserved(firstLot)).isEqualByComparingTo("5.000");
+        assertThat(lotReserved(secondLot)).isEqualByComparingTo("0.000");
+
+        service.updateItem(
+                fixture.branchId(),
+                pickingId,
+                itemId,
+                new UpdatePickingItemRequest(
+                        new BigDecimal("5.000"),
+                        location,
+                        "lot-b",
+                        List.of(new PickingTrackingSelectionRequest(
+                                location, secondLot, new BigDecimal("5.000"), List.of()))));
+        assertThat(lotReserved(firstLot)).isEqualByComparingTo("0.000");
+        assertThat(lotReserved(secondLot)).isEqualByComparingTo("5.000");
+
+        service.release(fixture.branchId(), pickingId, "Cambio de operador");
+        assertThat(lotReserved(secondLot)).isEqualByComparingTo("5.000");
+        assertThat(jdbc.queryForObject(
+                        "SELECT picked_traces IS NOT NULL FROM picking_items WHERE id = ?",
+                        Boolean.class,
+                        itemId))
+                .isTrue();
+
+        service.assign(fixture.branchId(), pickingId);
+        service.complete(fixture.branchId(), pickingId);
+        assertThat(lotReserved(secondLot)).isEqualByComparingTo("5.000");
+        assertThat(pickingStatus(pickingId)).isEqualTo(PickingStatus.completed.name());
+    }
+
+    @Test
+    void traceableSerialReplacementReleasesOldAndReservesNewSerial() {
+        Fixture fixture = readyFixture();
+        UUID location = UUID.randomUUID();
+        jdbc.update("UPDATE products SET tracking_serial = true WHERE id = ?", fixture.productId());
+        jdbc.update("""
+                INSERT INTO locations (id, tenant_id, branch_id, code, name, type, status)
+                VALUES (?, ?, ?, 'SERIAL', 'Seriales', 'warehouse', 'active')
+                """, location, fixture.tenantId(), fixture.branchId());
+        jdbc.update("""
+                INSERT INTO inventory_serials
+                    (id, tenant_id, branch_id, location_id, product_id, serial_number, status, version)
+                VALUES (?, ?, ?, ?, ?, 'SER-A', 'AVAILABLE', 0),
+                       (?, ?, ?, ?, ?, 'SER-B', 'AVAILABLE', 0)
+                """, UUID.randomUUID(), fixture.tenantId(), fixture.branchId(), location, fixture.productId(),
+                UUID.randomUUID(), fixture.tenantId(), fixture.branchId(), location, fixture.productId());
+        entityManager.flush();
+        entityManager.clear();
+
+        UUID pickingId = pickingId(fixture);
+        UUID itemId = itemId(fixture, pickingId);
+        service.assign(fixture.branchId(), pickingId);
+        service.updateItem(
+                fixture.branchId(),
+                pickingId,
+                itemId,
+                new UpdatePickingItemRequest(
+                        BigDecimal.ONE,
+                        location,
+                        "serial-a",
+                        List.of(new PickingTrackingSelectionRequest(
+                                location, null, BigDecimal.ONE, List.of("SER-A")))));
+        assertThat(serialStatus(fixture, "SER-A")).isEqualTo("RESERVED");
+
+        service.updateItem(
+                fixture.branchId(),
+                pickingId,
+                itemId,
+                new UpdatePickingItemRequest(
+                        BigDecimal.ONE,
+                        location,
+                        "serial-b",
+                        List.of(new PickingTrackingSelectionRequest(
+                                location, null, BigDecimal.ONE, List.of("SER-B")))));
+        assertThat(serialStatus(fixture, "SER-A")).isEqualTo("AVAILABLE");
+        assertThat(serialStatus(fixture, "SER-B")).isEqualTo("RESERVED");
+
+        service.release(fixture.branchId(), pickingId, "Pausa operativa");
+        assertThat(serialStatus(fixture, "SER-B")).isEqualTo("RESERVED");
+    }
+
+    @Test
+    void traceablePickingRejectsExpiredAndInsufficientLots() {
+        Fixture fixture = readyFixture();
+        UUID location = UUID.randomUUID();
+        UUID expiredLot = UUID.randomUUID();
+        UUID insufficientLot = UUID.randomUUID();
+        jdbc.update(
+                "UPDATE products SET tracking_lot = true, tracking_expiration = true WHERE id = ?",
+                fixture.productId());
+        jdbc.update("""
+                INSERT INTO locations (id, tenant_id, branch_id, code, name, type, status)
+                VALUES (?, ?, ?, 'LOT-VALIDATION', 'Validacion lotes', 'warehouse', 'active')
+                """, location, fixture.tenantId(), fixture.branchId());
+        jdbc.update("""
+                INSERT INTO inventory_lots
+                    (id, tenant_id, product_id, lot_number, expiration_date)
+                VALUES (?, ?, ?, 'EXPIRED', CURRENT_DATE - 1),
+                       (?, ?, ?, 'INSUFFICIENT', CURRENT_DATE + 30)
+                """, expiredLot, fixture.tenantId(), fixture.productId(),
+                insufficientLot, fixture.tenantId(), fixture.productId());
+        jdbc.update("""
+                INSERT INTO inventory_lot_balances
+                    (id, tenant_id, branch_id, location_id, lot_id, quantity, reserved_quantity)
+                VALUES (?, ?, ?, ?, ?, 5.000, 0.000),
+                       (?, ?, ?, ?, ?, 4.000, 0.000)
+                """, UUID.randomUUID(), fixture.tenantId(), fixture.branchId(), location, expiredLot,
+                UUID.randomUUID(), fixture.tenantId(), fixture.branchId(), location, insufficientLot);
+        entityManager.flush();
+        entityManager.clear();
+
+        UUID pickingId = pickingId(fixture);
+        UUID itemId = itemId(fixture, pickingId);
+        service.assign(fixture.branchId(), pickingId);
+        assertCode(
+                () -> service.updateItem(
+                        fixture.branchId(),
+                        pickingId,
+                        itemId,
+                        new UpdatePickingItemRequest(
+                                new BigDecimal("5.000"),
+                                location,
+                                "expired-lot",
+                                List.of(new PickingTrackingSelectionRequest(
+                                        location,
+                                        expiredLot,
+                                        new BigDecimal("5.000"),
+                                        List.of())))),
+                "LOT_EXPIRED");
+        assertThat(lotReserved(expiredLot)).isEqualByComparingTo("0.000");
+
+        assertCode(
+                () -> service.updateItem(
+                        fixture.branchId(),
+                        pickingId,
+                        itemId,
+                        new UpdatePickingItemRequest(
+                                new BigDecimal("5.000"),
+                                location,
+                                "insufficient-lot",
+                                List.of(new PickingTrackingSelectionRequest(
+                                        location,
+                                        insufficientLot,
+                                        new BigDecimal("5.000"),
+                                        List.of())))),
+                "INSUFFICIENT_TRACEABLE_STOCK");
+        assertThat(lotReserved(insufficientLot)).isEqualByComparingTo("0.000");
+    }
+
+    @Test
+    void serialReservedOutsideThePickedTracesCannotBeClaimed() {
+        Fixture fixture = readyFixture();
+        UUID location = UUID.randomUUID();
+        jdbc.update("UPDATE products SET tracking_serial = true WHERE id = ?", fixture.productId());
+        jdbc.update("""
+                INSERT INTO locations (id, tenant_id, branch_id, code, name, type, status)
+                VALUES (?, ?, ?, 'SERIAL-LOCKED', 'Serial reservado', 'warehouse', 'active')
+                """, location, fixture.tenantId(), fixture.branchId());
+        jdbc.update("""
+                INSERT INTO inventory_serials
+                    (id, tenant_id, branch_id, location_id, product_id, serial_number, status, version)
+                VALUES (?, ?, ?, ?, ?, 'SER-LOCKED', 'RESERVED', 0)
+                """, UUID.randomUUID(), fixture.tenantId(), fixture.branchId(), location,
+                fixture.productId());
+        entityManager.flush();
+        entityManager.clear();
+
+        UUID pickingId = pickingId(fixture);
+        UUID itemId = itemId(fixture, pickingId);
+        service.assign(fixture.branchId(), pickingId);
+        assertCode(
+                () -> service.updateItem(
+                        fixture.branchId(),
+                        pickingId,
+                        itemId,
+                        new UpdatePickingItemRequest(
+                                BigDecimal.ONE,
+                                location,
+                                "locked-serial",
+                                List.of(new PickingTrackingSelectionRequest(
+                                        location, null, BigDecimal.ONE, List.of("SER-LOCKED"))))),
+                "SERIAL_RESERVATION_CONFLICT");
+        assertThat(serialStatus(fixture, "SER-LOCKED")).isEqualTo("RESERVED");
     }
 
     @Test
@@ -433,6 +673,21 @@ class PickingServiceTest {
                 "SELECT reserved_quantity FROM inventory_balances WHERE id = ?",
                 BigDecimal.class,
                 fixture.balanceId());
+    }
+
+    private BigDecimal lotReserved(UUID lotId) {
+        return jdbc.queryForObject(
+                "SELECT reserved_quantity FROM inventory_lot_balances WHERE lot_id = ?",
+                BigDecimal.class,
+                lotId);
+    }
+
+    private String serialStatus(Fixture fixture, String serialNumber) {
+        return jdbc.queryForObject(
+                "SELECT status FROM inventory_serials WHERE tenant_id = ? AND serial_number = ?",
+                String.class,
+                fixture.tenantId(),
+                serialNumber);
     }
 
     private String reservationStatus(Fixture fixture) {

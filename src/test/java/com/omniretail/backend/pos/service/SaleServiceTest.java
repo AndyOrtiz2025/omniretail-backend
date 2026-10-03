@@ -19,7 +19,11 @@ import com.omniretail.backend.catalog.service.ProductKitService;
 import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.inventory.service.InventoryStockService;
+import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
+import com.omniretail.backend.inventory.service.InventoryTraceabilityHistoryService;
+import com.omniretail.backend.inventory.service.InventoryTraceabilityMutationService;
 import com.omniretail.backend.pos.dto.CreateSaleRequest;
+import com.omniretail.backend.pos.dto.InventoryTrackingSelectionRequest;
 import com.omniretail.backend.pos.entity.CashShift;
 import com.omniretail.backend.pos.entity.CashShiftStatus;
 import com.omniretail.backend.pos.entity.PaymentMethod;
@@ -71,6 +75,9 @@ class SaleServiceTest {
     @Mock PaymentRepository payments;
     @Mock CashMovementRepository cashMovements;
     @Mock InventoryStockService inventory;
+    @Mock InventoryTraceabilityMutationService traceabilityMutation;
+    @Mock InventoryTraceabilityHistoryService traceabilityHistory;
+    @Mock InventoryMovementRepository inventoryMovements;
     @Mock DocumentCounterService counter;
     @Mock ProductPriceResolver productPriceResolver;
     @Mock ProductKitService productKitService;
@@ -101,6 +108,12 @@ class SaleServiceTest {
                         new BigDecimal("20.00"),
                         BigDecimal.ZERO.setScale(2),
                         null));
+        lenient().when(items.saveAndFlush(any())).thenAnswer(invocation -> {
+            SaleItem value = invocation.getArgument(0);
+            if (value.getId() == null) ReflectionTestUtils.setField(value, "id", UUID.randomUUID());
+            return value;
+        });
+        lenient().when(traceabilityHistory.expand(any(), any())).thenReturn(java.util.Map.of());
     }
 
     @Test
@@ -117,7 +130,7 @@ class SaleServiceTest {
         assertThat(result.subtotal()).isEqualByComparingTo("40.00");
         assertThat(result.total()).isEqualByComparingTo("40.00");
         verify(inventory).deductStock(any());
-        verify(items).save(any());
+        verify(items).saveAndFlush(any());
         verify(payments).save(any());
         verify(cashMovements).save(any());
     }
@@ -132,14 +145,89 @@ class SaleServiceTest {
         when(productKitService.fulfillment(eq(tenant), eq(kit), eq(new BigDecimal("2"))))
                 .thenReturn(List.of(new ProductKitService.FulfillmentComponent(
                         componentId, new BigDecimal("3.000"), new BigDecimal("6.000"))));
+        Product component = product();
+        ReflectionTestUtils.setField(component, "id", componentId);
+        when(products.findByTenantIdAndId(tenant, componentId)).thenReturn(Optional.of(component));
         stubSalePersistence();
 
         service.create(request(new BigDecimal("40.00"), new BigDecimal("2")));
 
         verify(inventory).deductStock(argThat(command -> command.productId().equals(componentId)
                 && command.qty().compareTo(new BigDecimal("6.000")) == 0));
-        verify(items).save(argThat(item -> item.getProductId().equals(productId)
+        verify(items).saveAndFlush(argThat(item -> item.getProductId().equals(productId)
                 && item.getFulfillmentComponents().contains(componentId.toString())));
+    }
+
+    @Test
+    void traceableKitComponentRequiresAndUsesItsExplicitSelection() {
+        UUID componentId = UUID.randomUUID();
+        UUID locationId = UUID.randomUUID();
+        UUID lotId = UUID.randomUUID();
+        Product kit = product();
+        kit.setProductType(ProductType.kit);
+        kit.setTrackingStock(false);
+        Product component = product();
+        ReflectionTestUtils.setField(component, "id", componentId);
+        component.setTrackingLot(true);
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(kit));
+        when(products.findByTenantIdAndId(tenant, componentId)).thenReturn(Optional.of(component));
+        when(productKitService.fulfillment(eq(tenant), eq(kit), eq(new BigDecimal("2"))))
+                .thenReturn(List.of(new ProductKitService.FulfillmentComponent(
+                        componentId, new BigDecimal("3.000"), new BigDecimal("6.000"))));
+        stubSalePersistence();
+        CreateSaleRequest request = new CreateSaleRequest(
+                branch,
+                shiftId,
+                null,
+                BigDecimal.ZERO,
+                List.of(new CreateSaleRequest.Item(
+                        productId,
+                        new BigDecimal("2"),
+                        BigDecimal.ZERO,
+                        List.of(new InventoryTrackingSelectionRequest(
+                                componentId,
+                                locationId,
+                                lotId,
+                                new BigDecimal("6.000"),
+                                List.of())))),
+                List.of(new CreateSaleRequest.PaymentLine(
+                        PaymentMethod.cash, new BigDecimal("40.00"), null)),
+                UUID.randomUUID());
+
+        service.create(request);
+
+        verify(traceabilityMutation).consume(argThat(command ->
+                command.product().getId().equals(componentId)
+                        && command.baseQuantity().compareTo(new BigDecimal("6.000")) == 0
+                        && command.locationId().equals(locationId)
+                        && command.referenceType().equals("POS_KIT_SALE")
+                        && command.referenceLineId() != null));
+        verifyNoInteractions(inventory);
+    }
+
+    @Test
+    void traceableKitComponentCannotUseLegacyStockPathWithoutSelection() {
+        UUID componentId = UUID.randomUUID();
+        Product kit = product();
+        kit.setProductType(ProductType.kit);
+        kit.setTrackingStock(false);
+        Product component = product();
+        ReflectionTestUtils.setField(component, "id", componentId);
+        component.setTrackingSerial(true);
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(kit));
+        when(products.findByTenantIdAndId(tenant, componentId)).thenReturn(Optional.of(component));
+        when(productKitService.fulfillment(eq(tenant), eq(kit), eq(new BigDecimal("2"))))
+                .thenReturn(List.of(new ProductKitService.FulfillmentComponent(
+                        componentId, new BigDecimal("3.000"), new BigDecimal("6.000"))));
+        stubSalePersistence();
+
+        assertThatThrownBy(() -> service.create(
+                        request(new BigDecimal("40.00"), new BigDecimal("2"))))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("TRACKING_SELECTIONS_REQUIRED"));
+        verifyNoInteractions(inventory, traceabilityMutation);
     }
 
     @Test
@@ -156,9 +244,12 @@ class SaleServiceTest {
                 .discount(BigDecimal.ZERO).subtotal(new BigDecimal("20.00"))
                 .fulfillmentComponents("[{\"productId\":\"" + componentId
                         + "\",\"quantityPerKit\":3.000}]").build();
+        ReflectionTestUtils.setField(item, "id", UUID.randomUUID());
         when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
         when(items.findByTenantIdAndSaleId(tenant, sale.getId())).thenReturn(List.of(item));
-        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.empty());
+        Product component = product();
+        ReflectionTestUtils.setField(component, "id", componentId);
+        when(products.findByTenantIdAndId(tenant, componentId)).thenReturn(Optional.of(component));
         when(sales.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
         service.voidSale(sale.getId());
@@ -180,7 +271,7 @@ class SaleServiceTest {
         service.create(request(new BigDecimal("15.00"), BigDecimal.ONE, BigDecimal.ZERO));
 
         ArgumentCaptor<SaleItem> saved = ArgumentCaptor.forClass(SaleItem.class);
-        verify(items).save(saved.capture());
+        verify(items).saveAndFlush(saved.capture());
         assertThat(saved.getValue().getDiscount()).isEqualByComparingTo("5.00");
         assertThat(saved.getValue().getSubtotal()).isEqualByComparingTo("15.00");
         assertThat(saved.getValue().getPromotionId()).isEqualTo(promotionId);
@@ -200,7 +291,7 @@ class SaleServiceTest {
         service.create(request(new BigDecimal("13.00"), BigDecimal.ONE, new BigDecimal("7.00")));
 
         ArgumentCaptor<SaleItem> saved = ArgumentCaptor.forClass(SaleItem.class);
-        verify(items).save(saved.capture());
+        verify(items).saveAndFlush(saved.capture());
         assertThat(saved.getValue().getDiscount()).isEqualByComparingTo("7.00");
         assertThat(saved.getValue().getPromotionId()).isNull();
     }
@@ -217,7 +308,7 @@ class SaleServiceTest {
 
         service.create(request(new BigDecimal("15.00"), BigDecimal.ONE, new BigDecimal("5.00")));
 
-        verify(items).save(argThat(item -> promotionId.equals(item.getPromotionId())));
+        verify(items).saveAndFlush(argThat(item -> promotionId.equals(item.getPromotionId())));
     }
 
     @Test
@@ -232,7 +323,7 @@ class SaleServiceTest {
 
         service.create(request(new BigDecimal("30.00"), new BigDecimal("2"), new BigDecimal("7.00")));
 
-        verify(items).save(argThat(item ->
+        verify(items).saveAndFlush(argThat(item ->
                 promotionId.equals(item.getPromotionId())
                         && item.getDiscount().compareTo(new BigDecimal("10.00")) == 0
                         && item.getSubtotal().compareTo(new BigDecimal("30.00")) == 0));
@@ -277,7 +368,7 @@ class SaleServiceTest {
         var response = service.create(request);
 
         assertThat(response.total()).isEqualByComparingTo("1.00");
-        verify(items).save(argThat(item ->
+        verify(items).saveAndFlush(argThat(item ->
                 productId.equals(item.getProductId())
                         && item.getDiscount().compareTo(new BigDecimal("20.00")) == 0
                         && item.getSubtotal().compareTo(BigDecimal.ZERO) == 0

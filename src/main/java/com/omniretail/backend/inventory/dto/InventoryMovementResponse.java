@@ -20,6 +20,7 @@ public record InventoryMovementResponse(
         UUID toLocationId,
         String referenceType,
         UUID referenceId,
+        UUID referenceLineId,
         UUID performedByUserId,
         Instant createdAt) {
 
@@ -38,6 +39,7 @@ public record InventoryMovementResponse(
                 movement.getToLocationId(),
                 movement.getReferenceType(),
                 movement.getReferenceId(),
+                movement.getReferenceLineId(),
                 movement.getPerformedByUserId(),
                 movement.getCreatedAt());
     }

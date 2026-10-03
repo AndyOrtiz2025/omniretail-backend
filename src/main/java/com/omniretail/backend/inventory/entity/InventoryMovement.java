@@ -78,6 +78,9 @@ public class InventoryMovement {
     @Column(name = "reference_id", updatable = false)
     private UUID referenceId;
 
+    @Column(name = "reference_line_id", updatable = false)
+    private UUID referenceLineId;
+
     @Column(name = "performed_by_user_id", updatable = false)
     private UUID performedByUserId;
 

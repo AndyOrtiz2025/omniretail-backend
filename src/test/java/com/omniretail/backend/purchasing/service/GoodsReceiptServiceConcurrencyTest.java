@@ -13,6 +13,7 @@ import com.omniretail.backend.purchasing.dto.CreateGoodsReceiptRequest;
 import com.omniretail.backend.purchasing.dto.CreateReceiptIncidentRequest;
 import com.omniretail.backend.purchasing.dto.GoodsReceiptItemRequest;
 import com.omniretail.backend.purchasing.dto.GoodsReceiptResponse;
+import com.omniretail.backend.purchasing.dto.TrackingDetailRequest;
 import com.omniretail.backend.purchasing.entity.ReceiptIncidentType;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
@@ -101,6 +102,40 @@ class GoodsReceiptServiceConcurrencyTest {
         assertThat(confirmedTotal(fixture)).isEqualByComparingTo("10");
         assertThat(balance(fixture)).isEqualByComparingTo("10");
         assertThat(movementCount(fixture)).isOne();
+        assertThat(orderStatus(fixture)).isEqualTo("received");
+    }
+
+    @Test
+    void concurrentDoubleConfirmOnlyCreatesTraceableStockOnce() throws Exception {
+        Fixture fixture = fixture();
+        jdbc.update("UPDATE products SET tracking_lot = true WHERE id = ?", fixture.product());
+        GoodsReceiptResponse receipt = createTracked(fixture, "10", "RACE-LOT");
+
+        List<Outcome> outcomes = race(receipt.id(), receipt.id());
+
+        assertThat(outcomes).filteredOn(Outcome::success).hasSize(1);
+        assertThat(outcomes)
+                .filteredOn(outcome -> !outcome.success())
+                .singleElement()
+                .extracting(Outcome::code)
+                .isEqualTo("GOODS_RECEIPT_INVALID_STATUS");
+        assertThat(balance(fixture)).isEqualByComparingTo("10");
+        assertThat(movementCount(fixture)).isOne();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM inventory_lots WHERE tenant_id = ?",
+                        Long.class,
+                        fixture.tenant()))
+                .isOne();
+        assertThat(jdbc.queryForObject(
+                        "SELECT sum(quantity) FROM inventory_lot_balances WHERE tenant_id = ?",
+                        BigDecimal.class,
+                        fixture.tenant()))
+                .isEqualByComparingTo("10");
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM inventory_movement_traces WHERE tenant_id = ?",
+                        Long.class,
+                        fixture.tenant()))
+                .isOne();
         assertThat(orderStatus(fixture)).isEqualTo("received");
     }
 
@@ -235,6 +270,18 @@ class GoodsReceiptServiceConcurrencyTest {
                 null,
                 List.of(new GoodsReceiptItemRequest(
                         fixture.orderItem(), new BigDecimal(quantity), fixture.location()))));
+    }
+
+    private GoodsReceiptResponse createTracked(Fixture fixture, String quantity, String lotNumber) {
+        return service.create(new CreateGoodsReceiptRequest(
+                fixture.order(),
+                null,
+                List.of(new GoodsReceiptItemRequest(
+                        fixture.orderItem(),
+                        new BigDecimal(quantity),
+                        fixture.location(),
+                        List.of(new TrackingDetailRequest(
+                                new BigDecimal(quantity), lotNumber, null, List.of()))))));
     }
 
     private Fixture fixture() {

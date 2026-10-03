@@ -15,6 +15,8 @@ import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Entity
 @Table(name = "picking_items")
@@ -58,6 +60,10 @@ public class PickingItem extends TenantScopedEntity {
 
     @Column(name = "location_id")
     private UUID locationId;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "picked_traces", columnDefinition = "jsonb")
+    private String pickedTraces;
 
     @NotNull
     @Builder.Default

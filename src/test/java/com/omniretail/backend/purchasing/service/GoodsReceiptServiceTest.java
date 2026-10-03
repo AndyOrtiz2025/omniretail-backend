@@ -11,6 +11,7 @@ import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.purchasing.dto.CreateGoodsReceiptRequest;
 import com.omniretail.backend.purchasing.dto.GoodsReceiptItemRequest;
 import com.omniretail.backend.purchasing.dto.GoodsReceiptResponse;
+import com.omniretail.backend.purchasing.dto.TrackingDetailRequest;
 import com.omniretail.backend.purchasing.dto.UpdateGoodsReceiptRequest;
 import com.omniretail.backend.purchasing.entity.GoodsReceiptStatus;
 import com.omniretail.backend.purchasing.entity.PurchaseOrderStatus;
@@ -22,6 +23,7 @@ import com.omniretail.backend.shared.security.SaasCapability;
 import com.omniretail.backend.shared.security.TenantEntitlementResolver;
 import com.omniretail.backend.shared.security.TenantEntitlements;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.UUID;
@@ -70,6 +72,7 @@ class GoodsReceiptServiceTest {
             assertThat(item.purchaseToBaseFactor()).isEqualByComparingTo("2");
             assertThat(item.baseQuantity()).isEqualByComparingTo("6");
             assertThat(item.unitCost()).isEqualByComparingTo("9.50");
+            assertThat(item.trackingDetails()).isEmpty();
         });
         assertThat(count("inventory_movements", fixture.tenant())).isZero();
         assertThat(count("inventory_balances", fixture.tenant())).isZero();
@@ -122,8 +125,8 @@ class GoodsReceiptServiceTest {
         assertThat(balance(fixture, fixture.product(), fixture.location())).isEqualByComparingTo("20");
         assertThat(jdbc.queryForMap(
                         """
-                        SELECT type, reason, reference_type, reference_id, from_location_id, to_location_id,
-                               performed_by_user_id, quantity
+                        SELECT type, reason, reference_type, reference_id, reference_line_id,
+                               from_location_id, to_location_id, performed_by_user_id, quantity
                         FROM inventory_movements WHERE tenant_id = ?
                         """,
                         fixture.tenant()))
@@ -131,9 +134,11 @@ class GoodsReceiptServiceTest {
                 .containsEntry("reason", "Recepción de orden de compra")
                 .containsEntry("reference_type", "goods_receipt")
                 .containsEntry("reference_id", draft.id())
+                .containsEntry("reference_line_id", draft.items().getFirst().id())
                 .containsEntry("from_location_id", null)
                 .containsEntry("to_location_id", fixture.location())
                 .containsEntry("performed_by_user_id", fixture.user());
+        assertThat(count("inventory_movement_traces", fixture.tenant())).isZero();
         assertThatThrownBy(() -> service.update(
                         draft.id(),
                         new UpdateGoodsReceiptRequest(
@@ -391,12 +396,356 @@ class GoodsReceiptServiceTest {
         assertThat(count("inventory_movements", fixture.tenant())).isZero();
     }
 
+    @Test
+    void traceableDraftPersistsReturnsAndReplacesCanonicalDetailsWithoutStockMutation() {
+        Fixture fixture = fixture(true, false, true, "approved", "2");
+        jdbc.update(
+                "UPDATE products SET tracking_lot = true WHERE id = ?",
+                fixture.product());
+        assertThatThrownBy(() -> createTracked(
+                        fixture,
+                        fixture.orderItem(),
+                        "3",
+                        List.of(detail("3.000", "PURCHASE-QUANTITY", null, List.of()))))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("TRACKING_QUANTITY_MISMATCH"));
+        assertThatThrownBy(() -> createTracked(
+                        fixture,
+                        fixture.orderItem(),
+                        "3",
+                        List.of(
+                                detail("3.000", "DUPLICATE-LOT", null, List.of()),
+                                detail("3.000", "DUPLICATE-LOT", null, List.of()))))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("DUPLICATE_LOT_DETAIL"));
+        GoodsReceiptResponse draft = createTracked(
+                fixture,
+                fixture.orderItem(),
+                "3",
+                List.of(
+                        detail("2.000", "LOT-B", null, List.of()),
+                        detail("4.000", " LOT-A ", null, List.of())));
+
+        assertThat(draft.items()).singleElement().satisfies(item -> {
+            assertThat(item.baseQuantity()).isEqualByComparingTo("6.000");
+            assertThat(item.trackingDetails())
+                    .extracting(TrackingDetailRequest::lotNumber)
+                    .containsExactly("LOT-A", "LOT-B");
+        });
+        assertThat(jdbc.queryForObject(
+                        "SELECT tracking_details::text FROM goods_receipt_items WHERE id = ?",
+                        String.class,
+                        draft.items().getFirst().id()))
+                .contains("LOT-A", "LOT-B");
+        assertThat(count("inventory_balances", fixture.tenant())).isZero();
+        assertThat(count("inventory_lots", fixture.tenant())).isZero();
+
+        GoodsReceiptResponse updated = service.update(
+                draft.id(),
+                new UpdateGoodsReceiptRequest(
+                        null,
+                        List.of(new GoodsReceiptItemRequest(
+                                fixture.orderItem(),
+                                new BigDecimal("3"),
+                                fixture.location(),
+                                List.of(detail("6.000", "LOT-C", null, List.of()))))));
+        assertThat(updated.items().getFirst().trackingDetails())
+                .extracting(TrackingDetailRequest::lotNumber)
+                .containsExactly("LOT-C");
+        assertThat(service.get(draft.id()).items().getFirst().trackingDetails())
+                .extracting(TrackingDetailRequest::lotNumber)
+                .containsExactly("LOT-C");
+        assertThat(count("inventory_movements", fixture.tenant())).isZero();
+    }
+
+    @Test
+    void confirmRevalidatesPersistedTrackingDetailsAgainstCurrentProductSettings() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        jdbc.update("UPDATE products SET tracking_lot = true WHERE id = ?", fixture.product());
+        GoodsReceiptResponse draft = createTracked(
+                fixture,
+                fixture.orderItem(),
+                "2",
+                List.of(detail("2.000", "DRAFT-LOT", null, List.of())));
+        jdbc.update("UPDATE products SET tracking_lot = false WHERE id = ?", fixture.product());
+
+        assertThatThrownBy(() -> service.confirm(draft.id()))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("INVALID_TRACKING_PAYLOAD"));
+        assertThat(receiptStatus(draft.id())).isEqualTo("draft");
+        assertThat(count("inventory_balances", fixture.tenant())).isZero();
+        assertThat(count("inventory_lots", fixture.tenant())).isZero();
+        assertThat(count("inventory_movements", fixture.tenant())).isZero();
+    }
+
+    @Test
+    void multipleLotsCreateOneMovementAndLotTracesSumToBaseQuantity() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        jdbc.update("UPDATE products SET tracking_lot = true WHERE id = ?", fixture.product());
+        GoodsReceiptResponse draft = createTracked(
+                fixture,
+                fixture.orderItem(),
+                "10",
+                List.of(
+                        detail("6.000", "LOT-A", null, List.of()),
+                        detail("4.000", "LOT-B", null, List.of())));
+
+        service.confirm(draft.id());
+
+        assertThat(count("inventory_movements", fixture.tenant())).isOne();
+        assertThat(count("inventory_lots", fixture.tenant())).isEqualTo(2);
+        assertThat(jdbc.queryForObject(
+                        "SELECT sum(quantity) FROM inventory_lot_balances WHERE tenant_id = ?",
+                        BigDecimal.class,
+                        fixture.tenant()))
+                .isEqualByComparingTo("10.000");
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM inventory_movement_traces WHERE tenant_id = ? AND lot_id IS NOT NULL AND serial_id IS NULL",
+                        Long.class,
+                        fixture.tenant()))
+                .isEqualTo(2L);
+        assertThat(jdbc.queryForObject(
+                        "SELECT sum(quantity) FROM inventory_movement_traces WHERE tenant_id = ?",
+                        BigDecimal.class,
+                        fixture.tenant()))
+                .isEqualByComparingTo("10.000");
+    }
+
+    @Test
+    void existingLotIsReusedAndExpirationMismatchRollsBackSecondReceipt() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        jdbc.update(
+                "UPDATE products SET tracking_lot = true, tracking_expiration = true WHERE id = ?",
+                fixture.product());
+        LocalDate expiration = LocalDate.now().plusDays(30);
+        GoodsReceiptResponse first = createTracked(
+                fixture,
+                fixture.orderItem(),
+                "4",
+                List.of(detail("4.000", "EXP-LOT", expiration, List.of())));
+        service.confirm(first.id());
+        GoodsReceiptResponse matching = createTracked(
+                fixture,
+                fixture.orderItem(),
+                "2",
+                List.of(detail("2.000", "EXP-LOT", expiration, List.of())));
+        service.confirm(matching.id());
+        GoodsReceiptResponse conflicting = createTracked(
+                fixture,
+                fixture.orderItem(),
+                "2",
+                List.of(detail("2.000", "EXP-LOT", expiration.plusDays(1), List.of())));
+
+        assertThatThrownBy(() -> service.confirm(conflicting.id()))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("LOT_EXPIRATION_MISMATCH"));
+        assertThat(count("inventory_lots", fixture.tenant())).isOne();
+        assertThat(balance(fixture, fixture.product(), fixture.location()))
+                .isEqualByComparingTo("6.000");
+        assertThat(count("inventory_movements", fixture.tenant())).isEqualTo(2);
+        assertThat(receiptStatus(conflicting.id())).isEqualTo("draft");
+    }
+
+    @Test
+    void serialReceiptCreatesAvailableSerialsAndPersistedDuplicateRollsBack() {
+        Fixture fixture = fixture(true, true, true, "approved", "1");
+        GoodsReceiptResponse first = createTracked(
+                fixture,
+                fixture.orderItem(),
+                "2",
+                List.of(detail("2.000", null, null, List.of("SER-2", "SER-1"))));
+        service.confirm(first.id());
+
+        assertThat(jdbc.queryForList(
+                        "SELECT serial_number FROM inventory_serials WHERE tenant_id = ? ORDER BY serial_number",
+                        String.class,
+                        fixture.tenant()))
+                .containsExactly("SER-1", "SER-2");
+        assertThat(jdbc.queryForList(
+                        "SELECT status FROM inventory_serials WHERE tenant_id = ? ORDER BY serial_number",
+                        String.class,
+                        fixture.tenant()))
+                .containsOnly("AVAILABLE");
+        assertThat(count("inventory_movement_traces", fixture.tenant())).isEqualTo(2);
+
+        GoodsReceiptResponse duplicate = createTracked(
+                fixture,
+                fixture.orderItem(),
+                "1",
+                List.of(detail("1.000", null, null, List.of("SER-1"))));
+        assertThatThrownBy(() -> service.confirm(duplicate.id()))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode()).isEqualTo("DUPLICATE_SERIAL"));
+        assertThat(balance(fixture, fixture.product(), fixture.location()))
+                .isEqualByComparingTo("2.000");
+        assertThat(count("inventory_movements", fixture.tenant())).isOne();
+        assertThat(receiptStatus(duplicate.id())).isEqualTo("draft");
+    }
+
+    @Test
+    void serialValidationRejectsCountAndDuplicatesWithinOrAcrossDetails() {
+        Fixture fixture = fixture(true, true, true, "approved", "1");
+
+        assertThatThrownBy(() -> createTracked(
+                        fixture,
+                        fixture.orderItem(),
+                        "2",
+                        List.of(detail("2.000", null, null, List.of("ONLY-ONE")))))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("SERIAL_COUNT_MISMATCH"));
+        assertThatThrownBy(() -> createTracked(
+                        fixture,
+                        fixture.orderItem(),
+                        "2",
+                        List.of(detail("2.000", null, null, List.of("DUP", "DUP")))))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode()).isEqualTo("DUPLICATE_SERIAL"));
+        assertThatThrownBy(() -> createTracked(
+                        fixture,
+                        fixture.orderItem(),
+                        "2",
+                        List.of(
+                                detail("1.000", null, null, List.of("CROSS")),
+                                detail("1.000", null, null, List.of("CROSS")))))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode()).isEqualTo("DUPLICATE_SERIAL"));
+        assertThat(count("goods_receipts", fixture.tenant())).isZero();
+    }
+
+    @Test
+    void lotAndSerialReceiptLinksEachSerialAndCreatesOnlySerialTraces() {
+        Fixture fixture = fixture(true, true, true, "approved", "1");
+        jdbc.update("UPDATE products SET tracking_lot = true WHERE id = ?", fixture.product());
+        GoodsReceiptResponse draft = createTracked(
+                fixture,
+                fixture.orderItem(),
+                "3",
+                List.of(
+                        detail("2.000", "LOT-A", null, List.of("A-1", "A-2")),
+                        detail("1.000", "LOT-B", null, List.of("B-1"))));
+
+        service.confirm(draft.id());
+
+        assertThat(count("inventory_movements", fixture.tenant())).isOne();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM inventory_serials s JOIN inventory_lots l ON l.id = s.lot_id WHERE s.tenant_id = ? AND ((s.serial_number LIKE 'A-%' AND l.lot_number = 'LOT-A') OR (s.serial_number = 'B-1' AND l.lot_number = 'LOT-B'))",
+                        Long.class,
+                        fixture.tenant()))
+                .isEqualTo(3L);
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM inventory_movement_traces WHERE tenant_id = ? AND serial_id IS NOT NULL AND lot_id IS NULL",
+                        Long.class,
+                        fixture.tenant()))
+                .isEqualTo(3L);
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM inventory_movement_traces WHERE tenant_id = ? AND lot_id IS NOT NULL",
+                        Long.class,
+                        fixture.tenant()))
+                .isZero();
+    }
+
+    @Test
+    void duplicateSerialInLaterDeterministicItemRollsBackEarlierLotMutation() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        UUID secondProduct = addProductAndOrderItem(fixture, true);
+        UUID secondItem = jdbc.queryForObject(
+                "SELECT id FROM purchase_order_items WHERE purchase_order_id = ? AND product_id = ?",
+                UUID.class,
+                fixture.order(),
+                secondProduct);
+        UUID lotProduct = fixture.product().compareTo(secondProduct) < 0
+                ? fixture.product()
+                : secondProduct;
+        UUID lotItem = lotProduct.equals(fixture.product()) ? fixture.orderItem() : secondItem;
+        UUID serialProduct = lotProduct.equals(fixture.product()) ? secondProduct : fixture.product();
+        UUID serialItem = serialProduct.equals(fixture.product()) ? fixture.orderItem() : secondItem;
+        jdbc.update(
+                "UPDATE products SET tracking_lot = true, tracking_serial = false WHERE id = ?",
+                lotProduct);
+        jdbc.update(
+                "UPDATE products SET tracking_lot = false, tracking_serial = true WHERE id = ?",
+                serialProduct);
+        jdbc.update(
+                """
+                INSERT INTO inventory_serials
+                    (id, tenant_id, branch_id, location_id, product_id, serial_number, status, version)
+                VALUES (?, ?, ?, ?, ?, 'PERSISTED-DUP', 'AVAILABLE', 0)
+                """,
+                UUID.randomUUID(),
+                fixture.tenant(),
+                fixture.branch(),
+                fixture.location(),
+                serialProduct);
+        GoodsReceiptResponse draft = service.create(new CreateGoodsReceiptRequest(
+                fixture.order(),
+                null,
+                List.of(
+                        new GoodsReceiptItemRequest(
+                                serialItem,
+                                BigDecimal.ONE,
+                                fixture.location(),
+                                List.of(detail("1.000", null, null, List.of("PERSISTED-DUP")))),
+                        new GoodsReceiptItemRequest(
+                                lotItem,
+                                BigDecimal.ONE,
+                                fixture.location(),
+                                List.of(detail("1.000", "ROLLBACK-LOT", null, List.of()))))));
+
+        assertThatThrownBy(() -> service.confirm(draft.id()))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode()).isEqualTo("DUPLICATE_SERIAL"));
+        assertThat(count("inventory_lots", fixture.tenant())).isZero();
+        assertThat(count("inventory_balances", fixture.tenant())).isZero();
+        assertThat(count("inventory_movements", fixture.tenant())).isZero();
+        assertThat(receiptStatus(draft.id())).isEqualTo("draft");
+        assertThat(orderStatus(fixture.order())).isEqualTo("approved");
+    }
+
     private GoodsReceiptResponse create(Fixture fixture, UUID orderItem, String quantity, UUID location) {
         useActor(fixture);
         return service.create(new CreateGoodsReceiptRequest(
                 fixture.order(),
                 "Recepción test",
                 List.of(new GoodsReceiptItemRequest(orderItem, new BigDecimal(quantity), location))));
+    }
+
+    private GoodsReceiptResponse createTracked(
+            Fixture fixture,
+            UUID orderItem,
+            String quantity,
+            List<TrackingDetailRequest> trackingDetails) {
+        useActor(fixture);
+        return service.create(new CreateGoodsReceiptRequest(
+                fixture.order(),
+                "Recepcion trazable",
+                List.of(new GoodsReceiptItemRequest(
+                        orderItem,
+                        new BigDecimal(quantity),
+                        fixture.location(),
+                        trackingDetails))));
+    }
+
+    private static TrackingDetailRequest detail(
+            String baseQuantity,
+            String lotNumber,
+            LocalDate expirationDate,
+            List<String> serialNumbers) {
+        return new TrackingDetailRequest(
+                new BigDecimal(baseQuantity), lotNumber, expirationDate, serialNumbers);
     }
 
     private void useActor(Fixture fixture) {

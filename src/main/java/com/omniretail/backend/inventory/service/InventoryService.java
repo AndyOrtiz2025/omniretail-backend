@@ -201,7 +201,8 @@ public class InventoryService {
                 movement.getQuantityBefore(), movement.getQuantityAfter(), movement.getFromLocationId(),
                 from == null ? null : from.getName(), movement.getToLocationId(),
                 to == null ? null : to.getName(), movement.getReferenceType(), movement.getReferenceId(),
-                referenceLabel, movement.getPerformedByUserId(), userLabel(user), movement.getCreatedAt());
+                movement.getReferenceLineId(), referenceLabel, movement.getPerformedByUserId(),
+                userLabel(user), movement.getCreatedAt());
     }
 
     private static Pageable movementPageable(Pageable pageable) {

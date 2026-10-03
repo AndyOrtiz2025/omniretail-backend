@@ -240,14 +240,143 @@ class DispatchServiceTest {
     }
 
     @Test
-    void traceableProductIsRejectedWithoutAnySideEffect() {
+    void traceableProductWithoutCompletedPhysicalSelectionIsRejectedWithoutSideEffect() {
         DispatchTestFixture.Data fixture = fixture(2);
         jdbc.update("UPDATE products SET tracking_lot = true WHERE id = ?", fixture.productId());
 
         assertCode(() -> service.confirm(fixture.branchId(), fixture.orderId(),
-                request("traceability", explicitPackages())), "TRACEABILITY_NOT_SUPPORTED");
+                request("traceability", explicitPackages())),
+                "PICKING_TRACE_HISTORY_INCONSISTENT");
 
         assertUntouched(fixture);
+    }
+
+    @Test
+    void traceableLotDispatchConsumesAggregateAndPhysicalReservationExactlyOnce() {
+        DispatchTestFixture.Data fixture = fixture(2);
+        UUID lot = UUID.randomUUID();
+        UUID picking = jdbc.queryForObject(
+                "SELECT picking_order_id FROM packings WHERE id = ?",
+                UUID.class,
+                fixture.packingId());
+        jdbc.update("UPDATE products SET tracking_lot = true WHERE id = ?", fixture.productId());
+        jdbc.update("""
+                INSERT INTO inventory_lots (id, tenant_id, product_id, lot_number)
+                VALUES (?, ?, ?, 'DISPATCH-LOT')
+                """, lot, fixture.tenantId(), fixture.productId());
+        jdbc.update("""
+                INSERT INTO inventory_lot_balances
+                    (id, tenant_id, branch_id, location_id, lot_id, quantity, reserved_quantity)
+                VALUES (?, ?, ?, ?, ?, 5.000, 5.000)
+                """, UUID.randomUUID(), fixture.tenantId(), fixture.branchId(),
+                fixture.locationId(), lot);
+        jdbc.update("""
+                INSERT INTO picking_items
+                    (id, tenant_id, picking_order_id, source_line_id, order_item_id,
+                     product_id, requested_quantity, picked_quantity, location_id,
+                     picked_traces, status)
+                VALUES (?, ?, ?, ?, ?, ?, 5.000, 5.000, ?, ?::jsonb, 'completed')
+                """, UUID.randomUUID(), fixture.tenantId(), picking,
+                fixture.orderItemId(), fixture.orderItemId(), fixture.productId(),
+                fixture.locationId(),
+                "[{\"locationId\":\"" + fixture.locationId()
+                        + "\",\"lotId\":\"" + lot
+                        + "\",\"quantity\":5.000,\"serialNumbers\":[]}]");
+
+        DispatchResponse result = service.confirm(
+                fixture.branchId(), fixture.orderId(),
+                request("traceable-lot", explicitPackages()));
+
+        assertBalance(fixture, "5.000", "0.000");
+        assertThat(jdbc.queryForObject(
+                        "SELECT quantity FROM inventory_lot_balances WHERE lot_id = ?",
+                        BigDecimal.class,
+                        lot))
+                .isEqualByComparingTo("0.000");
+        assertThat(jdbc.queryForObject(
+                        "SELECT reserved_quantity FROM inventory_lot_balances WHERE lot_id = ?",
+                        BigDecimal.class,
+                        lot))
+                .isEqualByComparingTo("0.000");
+        assertThat(jdbc.queryForObject("""
+                        SELECT count(*) FROM inventory_movement_traces trace
+                        JOIN inventory_movements movement ON movement.id = trace.movement_id
+                        WHERE movement.reference_id = ?
+                          AND movement.reference_line_id = ?
+                          AND trace.lot_id = ?
+                        """, Long.class, result.dispatchId(), fixture.orderItemId(), lot))
+                .isOne();
+    }
+
+    @Test
+    void traceableSerialDispatchConsumesReservedSerialsAndWritesSerialOnlyTraces() {
+        DispatchTestFixture.Data fixture = fixture(2);
+        UUID picking = jdbc.queryForObject(
+                "SELECT picking_order_id FROM packings WHERE id = ?",
+                UUID.class,
+                fixture.packingId());
+        jdbc.update("UPDATE products SET tracking_serial = true WHERE id = ?", fixture.productId());
+        for (int index = 1; index <= 5; index++) {
+            jdbc.update(
+                    """
+                    INSERT INTO inventory_serials
+                        (id, tenant_id, branch_id, location_id, product_id,
+                         serial_number, status, version)
+                    VALUES (?, ?, ?, ?, ?, ?, 'RESERVED', 0)
+                    """,
+                    UUID.randomUUID(),
+                    fixture.tenantId(),
+                    fixture.branchId(),
+                    fixture.locationId(),
+                    fixture.productId(),
+                    "ORDER-SER-" + index);
+        }
+        jdbc.update("""
+                INSERT INTO picking_items
+                    (id, tenant_id, picking_order_id, source_line_id, order_item_id,
+                     product_id, requested_quantity, picked_quantity, location_id,
+                     picked_traces, status)
+                VALUES (?, ?, ?, ?, ?, ?, 5.000, 5.000, ?, ?::jsonb, 'completed')
+                """, UUID.randomUUID(), fixture.tenantId(), picking,
+                fixture.orderItemId(), fixture.orderItemId(), fixture.productId(),
+                fixture.locationId(),
+                "[{\"locationId\":\"" + fixture.locationId()
+                        + "\",\"lotId\":null,\"quantity\":5.000,\"serialNumbers\":["
+                        + "\"ORDER-SER-1\",\"ORDER-SER-2\",\"ORDER-SER-3\","
+                        + "\"ORDER-SER-4\",\"ORDER-SER-5\"]}]");
+
+        DispatchResponse result = service.confirm(
+                fixture.branchId(), fixture.orderId(),
+                request("traceable-serial", explicitPackages()));
+        DispatchResponse replay = service.confirm(
+                fixture.branchId(), fixture.orderId(),
+                request("traceable-serial", explicitPackages()));
+
+        assertThat(replay.idempotent()).isTrue();
+        assertThat(replay.dispatchId()).isEqualTo(result.dispatchId());
+        assertBalance(fixture, "5.000", "0.000");
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*) FROM inventory_serials
+                        WHERE tenant_id = ? AND product_id = ? AND status = 'CONSUMED'
+                        """,
+                        Long.class,
+                        fixture.tenantId(),
+                        fixture.productId()))
+                .isEqualTo(5L);
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*) FROM inventory_movement_traces trace
+                        JOIN inventory_movements movement ON movement.id = trace.movement_id
+                        WHERE movement.reference_id = ?
+                          AND movement.reference_line_id = ?
+                          AND trace.serial_id IS NOT NULL
+                          AND trace.lot_id IS NULL
+                        """,
+                        Long.class,
+                        result.dispatchId(),
+                        fixture.orderItemId()))
+                .isEqualTo(5L);
     }
 
     @Test

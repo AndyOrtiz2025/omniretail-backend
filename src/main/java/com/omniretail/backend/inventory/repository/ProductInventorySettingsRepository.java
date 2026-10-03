@@ -2,6 +2,7 @@ package com.omniretail.backend.inventory.repository;
 
 import com.omniretail.backend.inventory.entity.ProductInventorySettings;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
@@ -197,8 +198,29 @@ public interface ProductInventorySettingsRepository
                                OR LOWER(COALESCE(l.name, '')) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%'))
                         GROUP BY p.id, p.sku, p.name, p.category_id, c.name, p.base_unit_id,
                                  s.min_stock, s.reorder_point, s.default_location_id, l.name
+                    ), expiration_summary AS (
+                        SELECT lot.product_id,
+                               MIN(lot.expiration_date) AS next_expiration_date
+                        FROM inventory_lots lot
+                        JOIN inventory_lot_balances balance
+                          ON balance.tenant_id = lot.tenant_id
+                         AND balance.lot_id = lot.id
+                         AND balance.branch_id = :branchId
+                         AND balance.quantity > 0
+                        JOIN products expiration_product
+                          ON expiration_product.tenant_id = lot.tenant_id
+                         AND expiration_product.id = lot.product_id
+                        WHERE lot.tenant_id = :tenantId
+                          AND lot.expiration_date >= :businessDate
+                          AND expiration_product.status = 'published'
+                          AND expiration_product.product_type = 'physical'
+                          AND expiration_product.tracking_stock = TRUE
+                          AND expiration_product.tracking_lot = TRUE
+                          AND expiration_product.tracking_expiration = TRUE
+                        GROUP BY lot.product_id
                     ), classified AS (
                         SELECT product_stock.*,
+                               expiration_summary.next_expiration_date,
                                CASE
                                    WHEN available_quantity <= 0 THEN 'out_of_stock'
                                    WHEN min_stock > 0 AND available_quantity < min_stock THEN 'critical'
@@ -208,12 +230,15 @@ public interface ProductInventorySettingsRepository
                                GREATEST(CAST(0 AS numeric), COALESCE(reorder_point, min_stock) - available_quantity)
                                    AS suggested_reorder
                         FROM product_stock
+                        LEFT JOIN expiration_summary
+                          ON expiration_summary.product_id = product_stock.product_id
                     )
                     SELECT product_id AS "productId", :branchId AS "branchId", sku, product_name AS "productName",
                            category_id AS "categoryId", category_name AS "categoryName", base_unit_id AS "baseUnitId",
                            quantity, reserved_quantity AS "reservedQuantity", available_quantity AS "availableQuantity",
                            min_stock AS "minStock", reorder_point AS "reorderPoint",
                            default_location_id AS "defaultLocationId", default_location_name AS "defaultLocationName",
+                           next_expiration_date AS "nextExpirationDate",
                            stock_status AS "stockStatus", suggested_reorder AS "suggestedReorder"
                     FROM classified
                     WHERE stock_status = COALESCE(CAST(:status AS text), stock_status)
@@ -262,6 +287,7 @@ public interface ProductInventorySettingsRepository
                     SELECT COUNT(*) FROM classified
                     WHERE stock_status = COALESCE(CAST(:status AS text), stock_status)
                       AND CAST(:sortField AS text) IS NOT NULL AND CAST(:sortDirection AS text) IS NOT NULL
+                      AND CAST(:businessDate AS date) IS NOT NULL
                     """,
             nativeQuery = true)
     Page<InventoryStockProjection> findStock(
@@ -270,6 +296,7 @@ public interface ProductInventorySettingsRepository
             @Param("search") String search,
             @Param("categoryId") UUID categoryId,
             @Param("status") String status,
+            @Param("businessDate") LocalDate businessDate,
             @Param("sortField") String sortField,
             @Param("sortDirection") String sortDirection,
             Pageable pageable);
@@ -296,27 +323,52 @@ public interface ProductInventorySettingsRepository
                        OR LOWER(COALESCE(c.name, '')) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%')
                        OR LOWER(COALESCE(l.name, '')) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%'))
                 GROUP BY p.id, s.min_stock
+            ), expiration_products AS (
+                SELECT DISTINCT lot.product_id
+                FROM inventory_lots lot
+                JOIN inventory_lot_balances balance
+                  ON balance.tenant_id = lot.tenant_id
+                 AND balance.lot_id = lot.id
+                 AND balance.branch_id = :branchId
+                 AND balance.quantity > 0
+                JOIN products expiration_product
+                  ON expiration_product.tenant_id = lot.tenant_id
+                 AND expiration_product.id = lot.product_id
+                WHERE lot.tenant_id = :tenantId
+                  AND lot.expiration_date BETWEEN CAST(:businessDate AS date)
+                                               AND CAST(:businessDate AS date) + 30
+                  AND expiration_product.status = 'published'
+                  AND expiration_product.product_type = 'physical'
+                  AND expiration_product.tracking_stock = TRUE
+                  AND expiration_product.tracking_lot = TRUE
+                  AND expiration_product.tracking_expiration = TRUE
             ), classified AS (
-                SELECT CASE WHEN available_quantity <= 0 THEN 'out_of_stock'
+                SELECT product_id,
+                       CASE WHEN available_quantity <= 0 THEN 'out_of_stock'
                             WHEN min_stock > 0 AND available_quantity < min_stock THEN 'critical'
                             WHEN min_stock > 0 AND available_quantity <= min_stock * 1.25 THEN 'near_minimum'
                             ELSE 'normal' END AS stock_status
                 FROM product_stock
             ), filtered AS (
-                SELECT stock_status FROM classified
+                SELECT product_id, stock_status FROM classified
                 WHERE stock_status = COALESCE(CAST(:status AS text), stock_status)
             )
             SELECT COUNT(*) AS "activeProducts",
                    COUNT(*) FILTER (WHERE stock_status IN ('critical', 'near_minimum')) AS "lowStock",
+                   COUNT(*) FILTER (WHERE expiration_products.product_id IS NOT NULL)
+                       AS "expiringSoonProducts",
                    COUNT(*) FILTER (WHERE stock_status = 'out_of_stock') AS "outOfStock"
             FROM filtered
+            LEFT JOIN expiration_products
+              ON expiration_products.product_id = filtered.product_id
             """, nativeQuery = true)
     InventoryStockSummaryProjection summarizeStock(
             @Param("tenantId") UUID tenantId,
             @Param("branchId") UUID branchId,
             @Param("search") String search,
             @Param("categoryId") UUID categoryId,
-            @Param("status") String status);
+            @Param("status") String status,
+            @Param("businessDate") LocalDate businessDate);
 
     interface InventoryAlertProjection {
         UUID getProductId();
@@ -361,6 +413,7 @@ public interface ProductInventorySettingsRepository
         BigDecimal getReorderPoint();
         UUID getDefaultLocationId();
         String getDefaultLocationName();
+        LocalDate getNextExpirationDate();
         String getStockStatus();
         BigDecimal getSuggestedReorder();
     }
@@ -368,6 +421,7 @@ public interface ProductInventorySettingsRepository
     interface InventoryStockSummaryProjection {
         long getActiveProducts();
         long getLowStock();
+        long getExpiringSoonProducts();
         long getOutOfStock();
     }
 }
