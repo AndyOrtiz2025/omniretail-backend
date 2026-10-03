@@ -6,6 +6,9 @@ import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.service.KitFulfillmentSnapshot;
 import com.omniretail.backend.inventory.dto.AddStockCommand;
+import com.omniretail.backend.inventory.entity.InventoryMovement;
+import com.omniretail.backend.inventory.entity.InventoryMovementType;
+import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
 import com.omniretail.backend.inventory.service.InventoryStockService;
 import com.omniretail.backend.pos.dto.CreateSaleReturnRequest;
 import com.omniretail.backend.pos.dto.SaleReturnResponse;
@@ -64,6 +67,7 @@ public class SaleReturnService {
     private final SaleReturnItemRepository returnItems;
     private final ProductRepository products;
     private final InventoryStockService inventory;
+    private final InventoryMovementRepository inventoryMovements;
     private final CashShiftRepository shifts;
     private final CashMovementRepository movements;
     private final PaymentRepository payments;
@@ -85,6 +89,9 @@ public class SaleReturnService {
 
         Map<UUID, SaleItem> available = saleItems.findByTenantIdAndSaleId(actor.tenantId(), saleId)
                 .stream().collect(Collectors.toMap(SaleItem::getId, item -> item));
+        List<InventoryMovement> originalMovements = inventoryMovements
+                .findByTenantIdAndReferenceTypeInAndReferenceIdOrderByCreatedAtAscIdAsc(
+                        actor.tenantId(), List.of("POS_SALE"), saleId);
         Set<UUID> seen = new HashSet<>();
         List<SaleReturnItem> created = new ArrayList<>();
         Map<UUID, BigDecimal> returnedQuantities = new HashMap<>();
@@ -135,8 +142,10 @@ public class SaleReturnService {
                 Product product = products.findByTenantIdAndId(actor.tenantId(), item.getProductId()).orElse(null);
                 if (product != null && Boolean.TRUE.equals(product.getTrackingStock())
                         && product.getProductType() == ProductType.physical) {
+                    BigDecimal physicalQuantity = physicalReturnQuantity(
+                            sale, item, previous, line.quantity(), originalMovements);
                     inventory.incrementStock(new AddStockCommand(actor.tenantId(), sale.getBranchId(),
-                            product.getId(), line.quantity(), "Devolución venta POS #" + sale.getNumber(),
+                            product.getId(), physicalQuantity, "Devolución venta POS #" + sale.getNumber(),
                             "POS_SALE_RETURN", saleReturn.getId(), actor.userId()));
                 }
             }
@@ -153,6 +162,65 @@ public class SaleReturnService {
         sale.setStatus(allReturned ? SaleStatus.returned : SaleStatus.partially_returned);
         sales.save(sale);
         return SaleReturnResponse.from(saleReturn, created);
+    }
+
+    private static BigDecimal physicalReturnQuantity(
+            Sale sale,
+            SaleItem item,
+            BigDecimal previouslyReturnedCommercial,
+            BigDecimal returnedCommercial,
+            List<InventoryMovement> originalMovements) {
+        BigDecimal originalPhysicalOut = originalMovements.stream()
+                .filter(movement -> movement.getType() == InventoryMovementType.out)
+                .filter(movement -> sale.getBranchId().equals(movement.getBranchId()))
+                .filter(movement -> item.getProductId().equals(movement.getProductId()))
+                .map(InventoryMovement::getQuantity)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (originalPhysicalOut.signum() == 0) {
+            return inventoryQuantity(returnedCommercial);
+        }
+
+        BigDecimal cumulativeCommercial = previouslyReturnedCommercial.add(returnedCommercial);
+        BigDecimal previousPhysicalTarget = physicalTarget(
+                originalPhysicalOut, previouslyReturnedCommercial, item.getQuantity());
+        BigDecimal cumulativePhysicalTarget = cumulativeCommercial.compareTo(item.getQuantity()) == 0
+                ? originalPhysicalOut.setScale(3, RoundingMode.UNNECESSARY)
+                : physicalTarget(originalPhysicalOut, cumulativeCommercial, item.getQuantity());
+        BigDecimal result = cumulativePhysicalTarget.subtract(previousPhysicalTarget);
+        if (result.signum() <= 0) {
+            throw invalidPhysicalReturn();
+        }
+        return inventoryQuantity(result);
+    }
+
+    private static BigDecimal physicalTarget(
+            BigDecimal originalPhysicalOut,
+            BigDecimal returnedCommercial,
+            BigDecimal originalCommercial) {
+        if (returnedCommercial.signum() == 0) {
+            return BigDecimal.ZERO.setScale(3);
+        }
+        try {
+            return originalPhysicalOut.multiply(returnedCommercial)
+                    .divide(originalCommercial, 3, RoundingMode.UNNECESSARY);
+        } catch (ArithmeticException exception) {
+            throw invalidPhysicalReturn();
+        }
+    }
+
+    private static BigDecimal inventoryQuantity(BigDecimal quantity) {
+        try {
+            return quantity.setScale(3, RoundingMode.UNNECESSARY);
+        } catch (ArithmeticException exception) {
+            throw invalidPhysicalReturn();
+        }
+    }
+
+    private static BusinessException invalidPhysicalReturn() {
+        return new BusinessException(
+                HttpStatus.BAD_REQUEST,
+                "RETURN_INVENTORY_QUANTITY_INVALID",
+                "La cantidad devuelta no puede representarse con la precisión de inventario.");
     }
 
     private void registerCashRefund(AuthenticatedUser actor, Sale sale, SaleReturn saleReturn,
