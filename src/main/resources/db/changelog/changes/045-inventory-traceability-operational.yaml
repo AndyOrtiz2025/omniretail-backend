@@ -1,6 +1,6 @@
 databaseChangeLog:
   - changeSet:
-      id: 044-inventory-traceability-operational
+      id: 045-inventory-traceability-operational
       author: omniretail
       changes:
         - sql:

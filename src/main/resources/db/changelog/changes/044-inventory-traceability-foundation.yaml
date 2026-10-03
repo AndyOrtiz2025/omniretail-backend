@@ -1,6 +1,6 @@
 databaseChangeLog:
   - changeSet:
-      id: 043-inventory-traceability-foundation
+      id: 044-inventory-traceability-foundation
       author: omniretail
       changes:
         - createTable:
