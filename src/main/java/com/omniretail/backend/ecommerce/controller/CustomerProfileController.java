@@ -22,7 +22,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/me/profile")
 @RequiredArgsConstructor
-@Tag(name = "Mi cuenta", description = "Perfil y direcciones del cliente autenticado.")
+@Tag(name = "Mi cuenta", description = "Perfil, direcciones y métodos de pago del cliente autenticado.")
 @ApiResponses({
     @ApiResponse(responseCode = "401", description = "Sin token, token inválido o vencido, o sesión revocada."),
     @ApiResponse(

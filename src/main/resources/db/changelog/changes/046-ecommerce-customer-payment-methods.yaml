@@ -1,0 +1,112 @@
+databaseChangeLog:
+  - changeSet:
+      id: 046-ecommerce-customer-payment-methods
+      author: AndyOrtiz2025
+      changes:
+        # Tarjetas guardadas del cliente (CustomerPaymentMethod.ts). Nunca se guarda el numero completo
+        # ni el CVV: solo el token simulado del proveedor, marca, banco, ultimos 4 y vencimiento.
+        - createTable:
+            tableName: customer_payment_methods
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_customer_payment_methods_tenant
+              - column:
+                  name: customer_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: customers
+                    referencedColumnNames: id
+                    foreignKeyName: fk_customer_payment_methods_customer
+              - column:
+                  name: type
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: provider_payment_method_id
+                  type: VARCHAR(100)
+                  constraints:
+                    nullable: false
+                    unique: true
+                    uniqueConstraintName: uk_customer_payment_methods_provider_id
+              - column:
+                  name: brand
+                  type: VARCHAR(40)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: issuing_bank
+                  type: VARCHAR(80)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: last4
+                  type: VARCHAR(4)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: expiration_month
+                  type: INTEGER
+                  constraints:
+                    nullable: false
+              - column:
+                  name: expiration_year
+                  type: INTEGER
+                  constraints:
+                    nullable: false
+              - column:
+                  name: cardholder_name
+                  type: VARCHAR(60)
+              - column:
+                  name: is_default
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - sql:
+            sql: "ALTER TABLE customer_payment_methods ADD CONSTRAINT ck_customer_payment_methods_type CHECK (type = 'card')"
+        - sql:
+            sql: "ALTER TABLE customer_payment_methods ADD CONSTRAINT ck_customer_payment_methods_last4 CHECK (last4 ~ '^[0-9]{4}$')"
+        - sql:
+            sql: "ALTER TABLE customer_payment_methods ADD CONSTRAINT ck_customer_payment_methods_expiration_month CHECK (expiration_month BETWEEN 1 AND 12)"
+        - createIndex:
+            tableName: customer_payment_methods
+            indexName: idx_customer_payment_methods_tenant_customer
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: customer_id
+        # Red de seguridad para "a lo sumo una tarjeta principal por cliente", igual que
+        # uk_addresses_customer_default (043): el service ya serializa bloqueando al cliente.
+        - sql:
+            sql: "CREATE UNIQUE INDEX uk_customer_payment_methods_default ON customer_payment_methods (customer_id) WHERE is_default = true"
+      rollback:
+        - dropTable:
+            tableName: customer_payment_methods
