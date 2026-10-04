@@ -1,0 +1,27 @@
+databaseChangeLog:
+  - changeSet:
+      id: 048-catalog-attributes-admin-permissions
+      author: melbyn
+      changes:
+        - sql:
+            # Mismo criterio que 030-admin-orders-permissions: solo el rol de sistema "Administrador"
+            # de cada tenant (is_system = TRUE). Union de conjuntos: idempotente y sin duplicados.
+            sql: |
+              UPDATE roles
+              SET permissions = (
+                SELECT ARRAY(
+                  SELECT DISTINCT permission
+                  FROM unnest(permissions || ARRAY['catalog.attributes.read', 'catalog.attributes.manage']::text[]) AS permission
+                  ORDER BY permission
+                )
+              )
+              WHERE name = 'Administrador' AND is_system = TRUE;
+      # roles.permissions es NOT NULL (default '{}'), por eso la union no necesita COALESCE.
+      # Limite: solo cubre roles Administrador que YA existen al migrar. En una BD nueva de dev corre
+      # antes de 999-01 (0 filas) y lo cubre 999-07. Un provisioning futuro de tenants (hoy inexistente en
+      # este backend) debe crear su Administrador con estos permisos.
+      rollback:
+        # Intencionalmente sin efecto: sin estado adicional no se puede saber si el permiso ya estaba
+        # concedido antes de esta migracion (p. ej. por 025 o manualmente), y quitarlo seria destructivo.
+        - sql:
+            sql: SELECT 1
