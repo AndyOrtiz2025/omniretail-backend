@@ -92,6 +92,24 @@ class SaleReturnServiceTest {
     }
 
     @Test
+    void rejectsDeferredSaleReturnBeforeAnyPersistentEffect() {
+        Sale sale = sale(SaleStatus.completed);
+        sale.setSourceOrderId(UUID.randomUUID());
+        when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId()))
+                .thenReturn(Optional.of(sale));
+
+        assertThatThrownBy(() -> service.create(sale.getId(), request(BigDecimal.ONE)))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("DEFERRED_SALE_RETURN_NOT_SUPPORTED"));
+
+        verifyNoInteractions(saleItems, inventory, traceabilityMutation, inventoryMovements,
+                returns, returnItems, shifts, movements, payments);
+        verify(sales, never()).save(any());
+    }
+
+    @Test
     void convertedPartialReturnRestoresItsPhysicalProportion() {
         Sale sale = sale(SaleStatus.completed);
         when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
