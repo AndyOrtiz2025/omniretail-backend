@@ -47,6 +47,7 @@ class InventoryControllerTest {
 
     private static final String BALANCES = "/api/v1/inventory/balances";
     private static final String STOCK = "/api/v1/inventory/stock";
+    private static final String CROSS_BRANCH_STOCK = "/api/v1/inventory/stock/branches";
     private static final String READ_PERMISSION = "inventory.stock.read";
 
     @Autowired
@@ -133,6 +134,155 @@ class InventoryControllerTest {
                         .param("branchId", fixture.firstBranchId().toString()))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+    }
+
+    @Test
+    void crossBranchStockReturnsAccessibleBranchesWithAvailableAndZeroInStableOrder()
+            throws Exception {
+        Fixture fixture = createFixture();
+        UUID zeroStockBranchId = UUID.randomUUID();
+        insertBranch(
+                zeroStockBranchId,
+                fixture.tenantId(),
+                "ZERO-" + zeroStockBranchId,
+                "Almacen sin stock",
+                "warehouse");
+        insertBalance(
+                fixture.tenantId(), fixture.secondBranchId(), fixture.productId(), null,
+                "20.000", "5.000");
+
+        mockMvc.perform(get(CROSS_BRANCH_STOCK)
+                        .header("Authorization", token(fixture.tenantId()))
+                        .param("productId", fixture.productId().toString())
+                        .param("branchId", fixture.firstBranchId().toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[0].branchId").value(zeroStockBranchId.toString()))
+                .andExpect(jsonPath("$[0].branchName").value("Almacen sin stock"))
+                .andExpect(jsonPath("$[0].availableQuantity").value(0.000))
+                .andExpect(jsonPath("$[1].branchId").value(fixture.secondBranchId().toString()))
+                .andExpect(jsonPath("$[1].availableQuantity").value(15.000))
+                .andExpect(jsonPath("$[?(@.branchId == '%s')]"
+                                .formatted(fixture.firstBranchId()))
+                        .isEmpty());
+    }
+
+    @Test
+    void crossBranchStockDoesNotExposeUnauthorizedBranches() throws Exception {
+        Fixture fixture = createFixture();
+        UUID unauthorizedBranchId = UUID.randomUUID();
+        insertBranch(
+                unauthorizedBranchId,
+                fixture.tenantId(),
+                "DENIED-" + unauthorizedBranchId,
+                "Sucursal restringida",
+                "warehouse");
+        insertBalance(
+                fixture.tenantId(), unauthorizedBranchId, fixture.productId(), null,
+                "30.000", "0.000");
+        given(branchAccessResolver.resolve(any())).willReturn(new BranchAccess(
+                false, Set.of(fixture.firstBranchId(), fixture.secondBranchId())));
+
+        mockMvc.perform(get(CROSS_BRANCH_STOCK)
+                        .header("Authorization", token(fixture.tenantId()))
+                        .param("productId", fixture.productId().toString())
+                        .param("branchId", fixture.firstBranchId().toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].branchId").value(fixture.secondBranchId().toString()))
+                .andExpect(jsonPath("$[?(@.branchId == '%s')]"
+                                .formatted(unauthorizedBranchId))
+                        .isEmpty());
+    }
+
+    @Test
+    void crossBranchStockDoesNotExposeBranchesFromAnotherTenant() throws Exception {
+        Fixture tenantA = createFixture();
+        Fixture tenantB = createFixture();
+
+        mockMvc.perform(get(CROSS_BRANCH_STOCK)
+                        .header("Authorization", token(tenantA.tenantId()))
+                        .param("productId", tenantA.productId().toString())
+                        .param("branchId", tenantA.firstBranchId().toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].branchId").value(tenantA.secondBranchId().toString()))
+                .andExpect(jsonPath("$[?(@.branchId == '%s')]"
+                                .formatted(tenantB.firstBranchId()))
+                        .isEmpty())
+                .andExpect(jsonPath("$[?(@.branchId == '%s')]"
+                                .formatted(tenantB.secondBranchId()))
+                        .isEmpty());
+    }
+
+    @Test
+    void crossBranchStockRejectsUnauthorizedCurrentBranch() throws Exception {
+        Fixture fixture = createFixture();
+        given(branchAccessResolver.resolve(any())).willReturn(
+                new BranchAccess(false, Set.of(fixture.secondBranchId())));
+
+        mockMvc.perform(get(CROSS_BRANCH_STOCK)
+                        .header("Authorization", token(fixture.tenantId()))
+                        .param("productId", fixture.productId().toString())
+                        .param("branchId", fixture.firstBranchId().toString()))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("BRANCH_ACCESS_DENIED"));
+    }
+
+    @Test
+    void crossBranchStockDoesNotAcceptBranchFromAnotherTenant() throws Exception {
+        Fixture tenantA = createFixture();
+        Fixture tenantB = createFixture();
+
+        mockMvc.perform(get(CROSS_BRANCH_STOCK)
+                        .header("Authorization", token(tenantA.tenantId()))
+                        .param("productId", tenantA.productId().toString())
+                        .param("branchId", tenantB.firstBranchId().toString()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("BRANCH_NOT_FOUND"));
+    }
+
+    @Test
+    void crossBranchStockDoesNotAcceptProductFromAnotherTenant() throws Exception {
+        Fixture tenantA = createFixture();
+        Fixture tenantB = createFixture();
+
+        mockMvc.perform(get(CROSS_BRANCH_STOCK)
+                        .header("Authorization", token(tenantA.tenantId()))
+                        .param("productId", tenantB.productId().toString())
+                        .param("branchId", tenantA.firstBranchId().toString()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("PRODUCT_NOT_FOUND"));
+    }
+
+    @Test
+    void crossBranchStockRequiresInventoryStockReadPermission() throws Exception {
+        Fixture fixture = createFixture();
+        given(permissionResolver.hasPermission(
+                        any(UUID.class), any(UUID.class), eq(READ_PERMISSION)))
+                .willReturn(false);
+
+        mockMvc.perform(get(CROSS_BRANCH_STOCK)
+                        .header("Authorization", token(fixture.tenantId()))
+                        .param("productId", fixture.productId().toString())
+                        .param("branchId", fixture.firstBranchId().toString()))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+    }
+
+    @Test
+    void crossBranchStockRequiresInventoryCapability() throws Exception {
+        Fixture fixture = createFixture();
+        given(entitlementResolver.resolve(fixture.tenantId()))
+                .willReturn(new TenantEntitlements(
+                        true, true, EnumSet.of(SaasCapability.pos)));
+
+        mockMvc.perform(get(CROSS_BRANCH_STOCK)
+                        .header("Authorization", token(fixture.tenantId()))
+                        .param("productId", fixture.productId().toString())
+                        .param("branchId", fixture.firstBranchId().toString()))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("CAPABILITY_REQUIRED"));
     }
 
     @Test

@@ -25,6 +25,8 @@ public interface ProductRepository extends JpaRepository<Product, UUID>, JpaSpec
 
     Optional<Product> findByTenantIdAndId(UUID tenantId, UUID id);
 
+    boolean existsByTenantIdAndId(UUID tenantId, UUID id);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select product from Product product where product.tenantId = :tenantId and product.id = :id")
     Optional<Product> findForUpdateByTenantIdAndId(
