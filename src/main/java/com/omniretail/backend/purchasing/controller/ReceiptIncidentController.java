@@ -2,6 +2,7 @@ package com.omniretail.backend.purchasing.controller;
 
 import com.omniretail.backend.purchasing.dto.CreateReceiptIncidentRequest;
 import com.omniretail.backend.purchasing.dto.ReceiptIncidentResponse;
+import com.omniretail.backend.purchasing.dto.ResolveReceiptIncidentWithReplacementRequest;
 import com.omniretail.backend.purchasing.service.ReceiptIncidentService;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.security.RequirePermission;
@@ -41,6 +42,14 @@ public class ReceiptIncidentController {
             @PathVariable UUID receiptId,
             @Valid @RequestBody CreateReceiptIncidentRequest request) {
         return receiptIncidentService.create(receiptId, request);
+    }
+
+    @PostMapping("/incidents/{incidentId}/resolve-with-replacement")
+    @RequirePermission("receiving.incidents.manage")
+    public ReceiptIncidentResponse resolveWithReplacement(
+            @PathVariable UUID incidentId,
+            @Valid @RequestBody ResolveReceiptIncidentWithReplacementRequest request) {
+        return receiptIncidentService.resolveWithReplacement(incidentId, request);
     }
 
     @PatchMapping("/incidents/{incidentId}/resolve")

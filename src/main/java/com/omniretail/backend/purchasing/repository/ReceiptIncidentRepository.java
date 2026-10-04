@@ -3,6 +3,7 @@ package com.omniretail.backend.purchasing.repository;
 import com.omniretail.backend.purchasing.entity.ReceiptIncident;
 import com.omniretail.backend.purchasing.entity.ReceiptIncidentStatus;
 import jakarta.persistence.LockModeType;
+import java.math.BigDecimal;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
@@ -25,6 +26,17 @@ public interface ReceiptIncidentRepository extends JpaRepository<ReceiptIncident
             UUID tenantId, UUID goodsReceiptId, Pageable pageable);
 
     boolean existsByTenantIdAndGoodsReceiptItemId(UUID tenantId, UUID goodsReceiptItemId);
+
+    @Query("""
+            select coalesce(sum(incident.quantityAffected), 0) from ReceiptIncident incident
+            where incident.tenantId = :tenantId
+              and incident.goodsReceiptItemId = :goodsReceiptItemId
+              and incident.status = :status
+            """)
+    BigDecimal sumQuantityAffectedByItemAndStatus(
+            @Param("tenantId") UUID tenantId,
+            @Param("goodsReceiptItemId") UUID goodsReceiptItemId,
+            @Param("status") ReceiptIncidentStatus status);
 
     boolean existsByTenantIdAndGoodsReceiptIdAndStatus(
             UUID tenantId, UUID goodsReceiptId, ReceiptIncidentStatus status);

@@ -12,6 +12,7 @@ import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
 import com.omniretail.backend.inventory.dto.InventoryInboundCommand;
 import com.omniretail.backend.inventory.dto.InventoryInboundTraceDetail;
+import com.omniretail.backend.inventory.repository.InventorySerialRepository;
 import com.omniretail.backend.inventory.service.InventoryTraceabilityMutationService;
 import com.omniretail.backend.pos.service.DocumentCounterService;
 import com.omniretail.backend.purchasing.dto.CreateGoodsReceiptRequest;
@@ -97,6 +98,7 @@ public class GoodsReceiptService {
     private final UnitRepository unitRepository;
     private final LocationRepository locationRepository;
     private final InventoryTraceabilityMutationService traceabilityMutationService;
+    private final InventorySerialRepository inventorySerialRepository;
     private final DocumentCounterService documentCounterService;
     private final BranchAccessResolver branchAccessResolver;
     private final TenantCapabilityGuard tenantCapabilityGuard;
@@ -396,6 +398,188 @@ public class GoodsReceiptService {
         purchaseOrderRepository.save(order);
         GoodsReceipt savedReceipt = goodsReceiptRepository.saveAndFlush(receipt);
         return response(savedReceipt, order, storedItems, purchaseOrderItemsById(resolvedItems));
+    }
+
+    /**
+     * Agrega mercancía de reposición a una línea protegida por incidencia. Es la única vía que muta
+     * cantidad/tracking de una línea con incidencias (el PUT normal sigue bloqueado). El llamador ya
+     * tiene el lock del receipt; aquí se toma el de la orden (orden global Receipt -> PurchaseOrder).
+     * No toca stock ni movimientos: eso ocurre solo en confirm().
+     */
+    public void appendIncidentReplacement(
+            UUID tenantId,
+            GoodsReceipt receipt,
+            GoodsReceiptItem item,
+            BigDecimal expectedQuantity,
+            BigDecimal replacementQuantity,
+            List<TrackingDetailRequest> replacementDetails) {
+        requireDraft(receipt);
+        PurchaseOrder order = requirePurchaseOrderForUpdate(tenantId, receipt.getPurchaseOrderId());
+        requireReceivable(order);
+        PurchaseOrderItem orderItem = purchaseOrderItemRepository
+                .findByTenantIdAndPurchaseOrderIdOrderByIdAsc(tenantId, order.getId())
+                .stream()
+                .filter(candidate -> candidate.getId().equals(item.getPurchaseOrderItemId()))
+                .findFirst()
+                .orElseThrow(GoodsReceiptService::purchaseOrderItemNotFound);
+
+        if (replacementQuantity == null || expectedQuantity == null
+                || replacementQuantity.compareTo(expectedQuantity) != 0) {
+            throw badRequest(
+                    "RECEIPT_REPLACEMENT_QUANTITY_MISMATCH",
+                    "La cantidad de reposición debe ser exactamente la cantidad afectada de la incidencia.");
+        }
+        // Cabe si ordenado - confirmado - aceptado - OTRAS incidencias abiertas >= reposición. La propia
+        // incidencia sigue abierta aquí, por eso se suma de vuelta a pendingQuantity.
+        BigDecimal remaining = pendingQuantity(tenantId, receipt, item, orderItem).add(expectedQuantity);
+        if (remaining.signum() <= 0) {
+            throw BusinessException.conflict(
+                    "RECEIPT_REPLACEMENT_NOT_ALLOWED",
+                    "La línea no tiene cantidad pendiente por recibir; resuelve la incidencia sin reposición.");
+        }
+        if (replacementQuantity.compareTo(remaining) > 0) {
+            throw BusinessException.conflict(
+                    "RECEIPT_REPLACEMENT_EXCEEDS_REMAINING",
+                    "La reposición supera la cantidad pendiente por recibir de la orden de compra.");
+        }
+
+        Product product = requireProduct(tenantId, item.getProductId());
+        Unit purchaseUnit = requireUnit(tenantId, item.getUnitId());
+        Unit baseUnit = requireUnit(tenantId, product.getBaseUnitId());
+        validateReceivedQuantity(replacementQuantity, purchaseUnit);
+        BigDecimal newTotal = item.getReceivedQuantity().add(replacementQuantity);
+        BigDecimal replacementBase = calculateBaseQuantity(replacementQuantity, item.getPurchaseToBaseFactor());
+        BigDecimal newTotalBase = calculateBaseQuantity(newTotal, item.getPurchaseToBaseFactor());
+        requireBaseQuantityShape(product, baseUnit, replacementBase);
+        requireBaseQuantityShape(product, baseUnit, newTotalBase);
+
+        List<InventoryInboundTraceDetail> newDetails = traceabilityMutationService.validateAndNormalize(
+                tenantId, product, replacementBase, inboundTrackingDetails(replacementDetails));
+        List<InventoryInboundTraceDetail> finalDetails = List.of();
+        if (!newDetails.isEmpty()) {
+            requireNewSerialsAvailable(tenantId, receipt.getId(), item, product, newDetails);
+            List<InventoryInboundTraceDetail> merged = mergeTrackingDetails(
+                    inboundTrackingDetails(deserializeTrackingDetails(item.getTrackingDetails())),
+                    newDetails);
+            // Revalida la línea completa: lotes únicos, seriales únicos y suma == nueva cantidad base.
+            finalDetails = traceabilityMutationService.validateAndNormalize(
+                    tenantId, product, newTotalBase, merged);
+        }
+
+        item.setReceivedQuantity(newTotal);
+        item.setBaseQuantity(newTotalBase);
+        item.setTrackingDetails(serializeTrackingDetails(finalDetails));
+        goodsReceiptItemRepository.saveAndFlush(item);
+    }
+
+    /**
+     * Cantidad de la línea de orden aún sin justificar:
+     * ordenado - confirmado previo - aceptado (receivedQuantity del draft) - incidencias OPEN de la línea.
+     * Una incidencia es mercancía afectada y NO aceptada: no forma parte de receivedQuantity. Las
+     * resueltas ya se sumaron a receivedQuantity, por eso no cuentan aquí. Puede ser negativa solo
+     * con datos previos inconsistentes.
+     */
+    public BigDecimal pendingQuantity(UUID tenantId, GoodsReceipt receipt, GoodsReceiptItem item) {
+        PurchaseOrderItem orderItem = purchaseOrderItemRepository
+                .findByTenantIdAndPurchaseOrderIdOrderByIdAsc(tenantId, receipt.getPurchaseOrderId())
+                .stream()
+                .filter(candidate -> candidate.getId().equals(item.getPurchaseOrderItemId()))
+                .findFirst()
+                .orElseThrow(GoodsReceiptService::purchaseOrderItemNotFound);
+        return pendingQuantity(tenantId, receipt, item, orderItem);
+    }
+
+    private BigDecimal pendingQuantity(
+            UUID tenantId, GoodsReceipt receipt, GoodsReceiptItem item, PurchaseOrderItem orderItem) {
+        // Si el receipt ya está confirmado, su línea ya está dentro de la suma confirmada.
+        BigDecimal confirmed = confirmedQuantities(tenantId, receipt.getPurchaseOrderId())
+                .getOrDefault(orderItem.getId(), BigDecimal.ZERO);
+        BigDecimal accepted = receipt.getStatus() == GoodsReceiptStatus.draft
+                ? item.getReceivedQuantity()
+                : BigDecimal.ZERO;
+        BigDecimal openIncidents = receiptIncidentRepository.sumQuantityAffectedByItemAndStatus(
+                tenantId, item.getId(), ReceiptIncidentStatus.open);
+        return orderItem.getQuantity().subtract(confirmed).subtract(accepted).subtract(openIncidents);
+    }
+
+    private void requireBaseQuantityShape(Product product, Unit baseUnit, BigDecimal baseQuantity) {
+        if ((!baseUnit.getAllowsDecimals() || Boolean.TRUE.equals(product.getTrackingSerial()))
+                && !isInteger(baseQuantity)) {
+            throw badRequest(
+                    "GOODS_RECEIPT_INVALID_BASE_QUANTITY",
+                    "La cantidad convertida a la unidad base debe ser entera.");
+        }
+    }
+
+    private void requireNewSerialsAvailable(
+            UUID tenantId,
+            UUID receiptId,
+            GoodsReceiptItem item,
+            Product product,
+            List<InventoryInboundTraceDetail> newDetails) {
+        List<String> newSerials = newDetails.stream()
+                .flatMap(detail -> detail.serialNumbers().stream())
+                .toList();
+        if (newSerials.isEmpty()) {
+            return;
+        }
+        // Una sola consulta batch; la unicidad al confirmar sigue siendo la garantía definitiva.
+        if (!inventorySerialRepository
+                .findExistingSerialNumbers(tenantId, product.getId(), newSerials)
+                .isEmpty()) {
+            throw duplicateSerialConflict();
+        }
+        Set<String> requested = new HashSet<>(newSerials);
+        for (GoodsReceiptItem other : goodsReceiptItemRepository
+                .findByTenantIdAndGoodsReceiptIdOrderByIdAsc(tenantId, receiptId)) {
+            if (other.getId().equals(item.getId())) {
+                continue;
+            }
+            for (TrackingDetailRequest detail : deserializeTrackingDetails(other.getTrackingDetails())) {
+                if (detail.serialNumbers() != null
+                        && detail.serialNumbers().stream().anyMatch(requested::contains)) {
+                    throw duplicateSerialConflict();
+                }
+            }
+        }
+    }
+
+    /** Agrega los detalles nuevos a los existentes; un lote ya presente acumula, nunca se sobrescribe. */
+    private static List<InventoryInboundTraceDetail> mergeTrackingDetails(
+            List<InventoryInboundTraceDetail> existing, List<InventoryInboundTraceDetail> added) {
+        List<InventoryInboundTraceDetail> merged = new ArrayList<>(existing);
+        for (InventoryInboundTraceDetail detail : added) {
+            int index = -1;
+            for (int i = 0; i < merged.size() && detail.lotNumber() != null; i++) {
+                if (detail.lotNumber().equals(merged.get(i).lotNumber())) {
+                    index = i;
+                    break;
+                }
+            }
+            if (index < 0) {
+                merged.add(detail);
+                continue;
+            }
+            InventoryInboundTraceDetail current = merged.get(index);
+            if (!Objects.equals(current.expirationDate(), detail.expirationDate())) {
+                throw BusinessException.conflict(
+                        "LOT_EXPIRATION_MISMATCH",
+                        "El lote ya existe en la línea con otra fecha de vencimiento.");
+            }
+            List<String> serials = new ArrayList<>(current.serialNumbers());
+            serials.addAll(detail.serialNumbers());
+            merged.set(index, new InventoryInboundTraceDetail(
+                    current.baseQuantity().add(detail.baseQuantity()),
+                    current.lotNumber(),
+                    current.expirationDate(),
+                    serials));
+        }
+        return merged;
+    }
+
+    private static BusinessException duplicateSerialConflict() {
+        return BusinessException.conflict(
+                "DUPLICATE_SERIAL", "Uno o mas numeros de serie ya existen o estan repetidos.");
     }
 
     private List<ResolvedItem> resolveItems(

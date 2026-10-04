@@ -8,7 +8,14 @@ import static org.mockito.BDDMockito.given;
 
 import com.omniretail.backend.TestcontainersConfiguration;
 import com.omniretail.backend.administration.entity.UserType;
+import com.omniretail.backend.inventory.dto.ValidateSerialsRequest;
+import com.omniretail.backend.inventory.service.InventorySerialValidationService;
 import com.omniretail.backend.purchasing.dto.CreateGoodsReceiptRequest;
+import com.omniretail.backend.purchasing.dto.CreateReceiptIncidentRequest;
+import com.omniretail.backend.purchasing.dto.ReceiptIncidentResponse;
+import com.omniretail.backend.purchasing.entity.ReceiptIncidentType;
+import com.omniretail.backend.purchasing.dto.ResolveReceiptIncidentWithReplacementRequest;
+import com.omniretail.backend.purchasing.entity.ReceiptIncidentStatus;
 import com.omniretail.backend.purchasing.dto.GoodsReceiptItemRequest;
 import com.omniretail.backend.purchasing.dto.GoodsReceiptResponse;
 import com.omniretail.backend.purchasing.dto.TrackingDetailRequest;
@@ -43,6 +50,8 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 class GoodsReceiptServiceTest {
 
     @Autowired private GoodsReceiptService service;
+    @Autowired private ReceiptIncidentService incidents;
+    @Autowired private InventorySerialValidationService serialValidation;
     @Autowired private JdbcTemplate jdbc;
     @MockitoBean private CurrentUser currentUser;
     @MockitoBean private PermissionResolver permissions;
@@ -885,6 +894,298 @@ class GoodsReceiptServiceTest {
                 .isZero();
     }
 
+    @Test
+    void replacementFillsPendingQuantityKeepsItemIdAndDoesNotTouchStock() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        setOrderedQuantity(fixture.orderItem(), 20);
+        GoodsReceiptResponse draft = create(fixture, fixture.orderItem(), "15", fixture.location());
+        UUID itemId = receiptItemId(draft, fixture.orderItem());
+        UUID incident = addIncident(fixture, draft.id(), itemId, "open", "5");
+
+        ReceiptIncidentResponse resolved = incidents.resolveWithReplacement(incident, replacement("5", null));
+
+        assertThat(resolved.status()).isEqualTo(ReceiptIncidentStatus.resolved);
+        assertThat(itemReceived(itemId)).isEqualByComparingTo("20");
+        assertThat(service.get(draft.id()).items()).singleElement().satisfies(item -> {
+            assertThat(item.id()).isEqualTo(itemId);
+            assertThat(item.baseQuantity()).isEqualByComparingTo("20");
+            assertThat(item.trackingDetails()).isEmpty();
+        });
+        assertThat(count("inventory_movements", fixture.tenant())).isZero();
+        assertThat(count("inventory_balances", fixture.tenant())).isZero();
+        assertThat(receiptStatus(draft.id())).isEqualTo("draft");
+    }
+
+    @Test
+    void replacementIsRejectedWhenNothingIsPendingAndNeverExceedsOrderedQuantity() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        GoodsReceiptResponse full = create(fixture, fixture.orderItem(), "10", fixture.location());
+        UUID fullItem = receiptItemId(full, fixture.orderItem());
+        UUID fullIncident = addIncident(fixture, full.id(), fullItem, "open", "5");
+
+        assertThatThrownBy(() -> incidents.resolveWithReplacement(fullIncident, replacement("5", null)))
+                .satisfies(thrown -> assertCode(thrown, "RECEIPT_REPLACEMENT_NOT_ALLOWED"));
+        assertThat(itemReceived(fullItem)).isEqualByComparingTo("10");
+        assertThat(incidentStatus(fullIncident)).isEqualTo("open");
+        // Dato histórico sobrecomprometido (10 aceptadas + 5 afectadas > 10 ordenadas): sin pendiente.
+        // La resolución normal sigue disponible.
+        assertThat(incidents.resolve(fullIncident).status()).isEqualTo(ReceiptIncidentStatus.resolved);
+
+        Fixture partial = fixture(true, false, true, "approved", "1");
+        setOrderedQuantity(partial.orderItem(), 20);
+        GoodsReceiptResponse draft = create(partial, partial.orderItem(), "18", partial.location());
+        UUID item = receiptItemId(draft, partial.orderItem());
+        UUID exceeding = addIncident(partial, draft.id(), item, "open", "5");
+        assertThatThrownBy(() -> incidents.resolveWithReplacement(exceeding, replacement("5", null)))
+                .satisfies(thrown -> assertCode(thrown, "RECEIPT_REPLACEMENT_EXCEEDS_REMAINING"));
+        assertThatThrownBy(() -> incidents.resolveWithReplacement(exceeding, replacement("2", null)))
+                .satisfies(thrown -> assertCode(thrown, "RECEIPT_REPLACEMENT_QUANTITY_MISMATCH"));
+        assertThat(itemReceived(item)).isEqualByComparingTo("18");
+        assertThat(incidentStatus(exceeding)).isEqualTo("open");
+    }
+
+    @Test
+    void incidentQuantityIsAffectedNotAcceptedAndMayExceedReceivedQuantity() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        setOrderedQuantity(fixture.orderItem(), 20);
+        GoodsReceiptResponse draft = create(fixture, fixture.orderItem(), "3", fixture.location());
+        UUID item = receiptItemId(draft, fixture.orderItem());
+
+        // 3 aceptadas + 17 afectadas = 20 justificadas; 17 > receivedQuantity es válido.
+        assertThat(incidents.create(draft.id(), incidentRequest(item, "17")).status())
+                .isEqualTo(ReceiptIncidentStatus.open);
+        assertThatThrownBy(() -> incidents.create(draft.id(), incidentRequest(item, "0.001")))
+                .satisfies(thrown -> assertCode(thrown, "RECEIPT_INCIDENT_QUANTITY_EXCEEDS_PENDING"));
+        assertThat(itemReceived(item)).isEqualByComparingTo("3");
+    }
+
+    @Test
+    void multipleOpenIncidentsAreResolvedIndependentlyUntilOrderedQuantityIsAccounted() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        setOrderedQuantity(fixture.orderItem(), 20);
+        GoodsReceiptResponse draft = create(fixture, fixture.orderItem(), "12", fixture.location());
+        UUID item = receiptItemId(draft, fixture.orderItem());
+        UUID damaged = incidents.create(draft.id(), incidentRequest(item, "5")).id();
+        UUID wrongItem = incidents.create(draft.id(), incidentRequest(item, "3")).id();
+
+        // 12 aceptadas + 5 + 3 = 20: nada más cabe.
+        assertThatThrownBy(() -> incidents.create(draft.id(), incidentRequest(item, "1")))
+                .satisfies(thrown -> assertCode(thrown, "RECEIPT_INCIDENT_QUANTITY_EXCEEDS_PENDING"));
+        assertThatThrownBy(() -> service.confirm(draft.id()))
+                .satisfies(thrown -> assertCode(thrown, "RECEIPT_HAS_OPEN_INCIDENTS"));
+
+        incidents.resolveWithReplacement(damaged, replacement("5", null));
+        assertThat(itemReceived(item)).isEqualByComparingTo("17");
+        assertThat(incidentStatus(damaged)).isEqualTo("resolved");
+        assertThat(incidentStatus(wrongItem)).isEqualTo("open");
+        assertThatThrownBy(() -> service.confirm(draft.id()))
+                .satisfies(thrown -> assertCode(thrown, "RECEIPT_HAS_OPEN_INCIDENTS"));
+        assertThat(count("inventory_movements", fixture.tenant())).isZero();
+
+        incidents.resolveWithReplacement(wrongItem, replacement("3", null));
+        assertThat(itemReceived(item)).isEqualByComparingTo("20");
+        assertThat(incidentStatus(wrongItem)).isEqualTo("resolved");
+        assertThat(count("inventory_movements", fixture.tenant())).isZero();
+
+        service.confirm(draft.id());
+        assertThat(balance(fixture, fixture.product(), fixture.location())).isEqualByComparingTo("20");
+        assertThat(count("inventory_movements", fixture.tenant())).isOne();
+        assertThat(orderStatus(fixture.order())).isEqualTo("received");
+    }
+
+    @Test
+    void replacementIsRejectedWhenOtherConfirmedReceiptsConsumedTheOrderedQuantity() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        GoodsReceiptResponse first = create(fixture, fixture.orderItem(), "3", fixture.location());
+        UUID item = receiptItemId(first, fixture.orderItem());
+        UUID incident = incidents.create(first.id(), incidentRequest(item, "2")).id();
+        GoodsReceiptResponse second = create(fixture, fixture.orderItem(), "7", fixture.location());
+        service.confirm(second.id());
+
+        // ordenado 10 = 7 confirmadas + 3 aceptadas: ya no cabe la reposición de 2 (nunca 12).
+        assertThatThrownBy(() -> incidents.resolveWithReplacement(incident, replacement("2", null)))
+                .satisfies(thrown -> assertCode(thrown, "RECEIPT_REPLACEMENT_NOT_ALLOWED"));
+        assertThat(itemReceived(item)).isEqualByComparingTo("3");
+        assertThat(incidentStatus(incident)).isEqualTo("open");
+    }
+
+    @Test
+    void serialLineKeepsOnlyAcceptedSerialsAndReplacementAddsTheNewOnes() {
+        Fixture fixture = fixture(true, true, true, "approved", "1");
+        setOrderedQuantity(fixture.orderItem(), 20);
+        List<String> accepted = java.util.stream.IntStream.rangeClosed(1, 15)
+                .mapToObj(number -> "OK-%02d".formatted(number))
+                .toList();
+        GoodsReceiptResponse draft = createTracked(
+                fixture, fixture.orderItem(), "15", List.of(detail("15.000", null, null, accepted)));
+        UUID item = receiptItemId(draft, fixture.orderItem());
+        UUID incident = incidents.create(draft.id(), incidentRequest(item, "5")).id();
+
+        // El tracking contiene solo las 15 aceptadas; las 5 afectadas nunca se escanean.
+        assertThat(service.get(draft.id()).items().getFirst().trackingDetails())
+                .flatExtracting(TrackingDetailRequest::serialNumbers)
+                .hasSize(15);
+
+        incidents.resolveWithReplacement(
+                incident,
+                replacement("5", List.of(detail("5.000", null, null,
+                        List.of("NEW-1", "NEW-2", "NEW-3", "NEW-4", "NEW-5")))));
+
+        assertThat(itemReceived(item)).isEqualByComparingTo("20");
+        assertThat(service.get(draft.id()).items().getFirst().trackingDetails())
+                .flatExtracting(TrackingDetailRequest::serialNumbers)
+                .hasSize(20)
+                .contains("OK-01", "OK-15", "NEW-1", "NEW-5");
+        assertThat(incidentStatus(incident)).isEqualTo("resolved");
+        assertThat(count("inventory_serials", fixture.tenant())).isZero();
+        assertThat(count("inventory_movements", fixture.tenant())).isZero();
+    }
+
+    @Test
+    void replacementOfAlreadyResolvedIncidentIsRejected() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        GoodsReceiptResponse draft = create(fixture, fixture.orderItem(), "4", fixture.location());
+        UUID item = receiptItemId(draft, fixture.orderItem());
+        UUID incident = addIncident(fixture, draft.id(), item, "resolved", "2");
+
+        assertThatThrownBy(() -> incidents.resolveWithReplacement(incident, replacement("2", null)))
+                .satisfies(thrown -> assertCode(thrown, "RECEIPT_INCIDENT_ALREADY_RESOLVED"));
+        assertThat(itemReceived(item)).isEqualByComparingTo("4");
+    }
+
+    @Test
+    void replacementAppendsLotTrackingWithoutOverwritingExistingDetails() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        jdbc.update("UPDATE products SET tracking_lot = true WHERE id = ?", fixture.product());
+        setOrderedQuantity(fixture.orderItem(), 20);
+        GoodsReceiptResponse draft = createTracked(
+                fixture, fixture.orderItem(), "15", List.of(detail("15.000", "LOT-A", null, List.of())));
+        UUID item = receiptItemId(draft, fixture.orderItem());
+        UUID incident = addIncident(fixture, draft.id(), item, "open", "5");
+
+        assertThatThrownBy(() -> incidents.resolveWithReplacement(incident, replacement("5", null)))
+                .satisfies(thrown -> assertCode(thrown, "TRACKING_DETAILS_REQUIRED"));
+        incidents.resolveWithReplacement(
+                incident, replacement("5", List.of(detail("5.000", "LOT-B", null, List.of()))));
+
+        assertThat(service.get(draft.id()).items()).singleElement().satisfies(response -> {
+            assertThat(response.id()).isEqualTo(item);
+            assertThat(response.receivedQuantity()).isEqualByComparingTo("20");
+            assertThat(response.trackingDetails())
+                    .extracting(TrackingDetailRequest::lotNumber)
+                    .containsExactly("LOT-A", "LOT-B");
+            assertThat(response.trackingDetails())
+                    .extracting(tracking -> tracking.baseQuantity().intValue())
+                    .containsExactly(15, 5);
+        });
+        assertThat(count("inventory_movements", fixture.tenant())).isZero();
+        assertThat(count("inventory_lots", fixture.tenant())).isZero();
+    }
+
+    @Test
+    void replacementOfExistingLotAccumulatesQuantityInSameDetail() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        jdbc.update("UPDATE products SET tracking_lot = true WHERE id = ?", fixture.product());
+        GoodsReceiptResponse draft = createTracked(
+                fixture, fixture.orderItem(), "6", List.of(detail("6.000", "LOT-A", null, List.of())));
+        UUID item = receiptItemId(draft, fixture.orderItem());
+        UUID incident = addIncident(fixture, draft.id(), item, "open", "2");
+
+        incidents.resolveWithReplacement(
+                incident, replacement("2", List.of(detail("2.000", "LOT-A", null, List.of()))));
+
+        assertThat(service.get(draft.id()).items().getFirst().trackingDetails()).singleElement()
+                .satisfies(detail -> {
+                    assertThat(detail.lotNumber()).isEqualTo("LOT-A");
+                    assertThat(detail.baseQuantity()).isEqualByComparingTo("8");
+                });
+    }
+
+    @Test
+    void replacementAppendsSerialsAndRejectsDuplicatesAndInconsistentCounts() {
+        Fixture fixture = fixture(true, true, true, "approved", "1");
+        GoodsReceiptResponse draft = createTracked(
+                fixture,
+                fixture.orderItem(),
+                "3",
+                List.of(detail("3.000", null, null, List.of("A1", "A2", "A3"))));
+        UUID item = receiptItemId(draft, fixture.orderItem());
+        UUID incident = addIncident(fixture, draft.id(), item, "open", "2");
+        insertSerial(fixture, fixture.product(), "EXISTING");
+
+        assertThatThrownBy(() -> incidents.resolveWithReplacement(
+                        incident, replacement("2", List.of(detail("2.000", null, null, List.of("B1", "B1"))))))
+                .satisfies(thrown -> assertCode(thrown, "DUPLICATE_SERIAL"));
+        assertThatThrownBy(() -> incidents.resolveWithReplacement(
+                        incident, replacement("2", List.of(detail("2.000", null, null, List.of("B1"))))))
+                .satisfies(thrown -> assertCode(thrown, "SERIAL_COUNT_MISMATCH"));
+        assertThatThrownBy(() -> incidents.resolveWithReplacement(
+                        incident, replacement("2", List.of(detail("2.000", null, null, List.of("A1", "B2"))))))
+                .satisfies(thrown -> assertCode(thrown, "DUPLICATE_SERIAL"));
+        assertThatThrownBy(() -> incidents.resolveWithReplacement(
+                        incident,
+                        replacement("2", List.of(detail("2.000", null, null, List.of("EXISTING", "B2"))))))
+                .satisfies(thrown -> assertCode(thrown, "DUPLICATE_SERIAL"));
+        assertThat(itemReceived(item)).isEqualByComparingTo("3");
+        assertThat(incidentStatus(incident)).isEqualTo("open");
+
+        incidents.resolveWithReplacement(
+                incident, replacement("2", List.of(detail("2.000", null, null, List.of("B2", "B1")))));
+
+        assertThat(itemReceived(item)).isEqualByComparingTo("5");
+        assertThat(incidentStatus(incident)).isEqualTo("resolved");
+        assertThat(service.get(draft.id()).items().getFirst().trackingDetails())
+                .flatExtracting(TrackingDetailRequest::serialNumbers)
+                .containsExactlyInAnyOrder("A1", "A2", "A3", "B1", "B2");
+        assertThat(count("inventory_serials", fixture.tenant())).isEqualTo(1);
+        assertThat(count("inventory_movements", fixture.tenant())).isZero();
+    }
+
+    @Test
+    void serialBatchValidationReportsExistingAndRepeatedWithTenantAndProductIsolation() {
+        Fixture fixture = fixture(true, true, true, "approved", "1");
+        Fixture other = fixture(true, true, true, "approved", "1");
+        insertSerial(fixture, fixture.product(), "SER-2");
+        insertSerial(other, other.product(), "SER-1");
+        useActor(fixture);
+
+        assertThat(serialValidation.validate(new ValidateSerialsRequest(
+                        fixture.product(), List.of("SER-1", "SER-3"))))
+                .satisfies(result -> {
+                    assertThat(result.duplicates()).isEmpty();
+                    assertThat(result.repeatedInRequest()).isEmpty();
+                });
+        assertThat(serialValidation.validate(new ValidateSerialsRequest(
+                        fixture.product(), List.of("SER-1", " SER-2 ", "SER-3", "SER-3"))))
+                .satisfies(result -> {
+                    assertThat(result.duplicates()).containsExactly("SER-2");
+                    assertThat(result.repeatedInRequest()).containsExactly("SER-3");
+                });
+        assertThatThrownBy(() -> serialValidation.validate(
+                        new ValidateSerialsRequest(other.product(), List.of("SER-1"))))
+                .satisfies(thrown -> assertCode(thrown, "PRODUCT_NOT_FOUND"));
+        assertThatThrownBy(() -> serialValidation.validate(
+                        new ValidateSerialsRequest(fixture.product(), List.of("SER-1", "  "))))
+                .satisfies(thrown -> assertCode(thrown, "SERIAL_INVALID"));
+        assertThat(count("inventory_serials", fixture.tenant())).isOne();
+    }
+
+    @Test
+    void serialBatchValidationIsAvailableToReceivingOrInventoryTenants() {
+        Fixture fixture = fixture(true, true, true, "approved", "1");
+        ValidateSerialsRequest request = new ValidateSerialsRequest(fixture.product(), List.of("SER-1"));
+
+        for (SaasCapability capability : List.of(SaasCapability.receiving, SaasCapability.inventory)) {
+            given(entitlements.resolve(fixture.tenant())).willReturn(
+                    new TenantEntitlements(true, true, EnumSet.of(capability)));
+            assertThat(serialValidation.validate(request).duplicates()).isEmpty();
+        }
+        given(entitlements.resolve(fixture.tenant())).willReturn(
+                new TenantEntitlements(true, true, EnumSet.noneOf(SaasCapability.class)));
+        assertThatThrownBy(() -> serialValidation.validate(request))
+                .satisfies(thrown -> assertCode(thrown, "CAPABILITY_REQUIRED"));
+    }
+
     private GoodsReceiptItemRequest line(UUID orderItem, String quantity, UUID location) {
         return new GoodsReceiptItemRequest(orderItem, new BigDecimal(quantity), location);
     }
@@ -921,22 +1222,67 @@ class GoodsReceiptServiceTest {
     }
 
     private void addIncident(Fixture fixture, UUID receipt, UUID receiptItem, String status) {
+        addIncident(fixture, receipt, receiptItem, status, "1");
+    }
+
+    private UUID addIncident(
+            Fixture fixture, UUID receipt, UUID receiptItem, String status, String quantityAffected) {
         boolean resolved = status.equals("resolved");
+        UUID id = UUID.randomUUID();
         jdbc.update("""
                 INSERT INTO receipt_incidents
                     (id, tenant_id, branch_id, goods_receipt_id, goods_receipt_item_id, incident_type,
                      status, quantity_affected, notes, created_by_user_id, resolved_by_user_id, resolved_at)
-                VALUES (?, ?, ?, ?, ?, 'damaged', ?, 1, 'Incidencia test', ?, ?, CASE WHEN ? THEN now() END)
+                VALUES (?, ?, ?, ?, ?, 'damaged', ?, ?::numeric, 'Incidencia test', ?, ?, CASE WHEN ? THEN now() END)
                 """,
-                UUID.randomUUID(),
+                id,
                 fixture.tenant(),
                 fixture.branch(),
                 receipt,
                 receiptItem,
                 status,
+                quantityAffected,
                 fixture.user(),
                 resolved ? fixture.user() : null,
                 resolved);
+        return id;
+    }
+
+    private static CreateReceiptIncidentRequest incidentRequest(UUID item, String quantity) {
+        return new CreateReceiptIncidentRequest(
+                ReceiptIncidentType.damaged, item, new BigDecimal(quantity), "Incidencia test");
+    }
+
+    private void setOrderedQuantity(UUID orderItem, int quantity) {
+        jdbc.update("UPDATE purchase_order_items SET quantity = ? WHERE id = ?", quantity, orderItem);
+    }
+
+    private ResolveReceiptIncidentWithReplacementRequest replacement(
+            String quantity, List<TrackingDetailRequest> details) {
+        return new ResolveReceiptIncidentWithReplacementRequest(new BigDecimal(quantity), details);
+    }
+
+    private static void assertCode(Throwable thrown, String code) {
+        assertThat(thrown).isInstanceOfSatisfying(
+                BusinessException.class, exception -> assertThat(exception.getCode()).isEqualTo(code));
+    }
+
+    private String incidentStatus(UUID incident) {
+        return jdbc.queryForObject("SELECT status FROM receipt_incidents WHERE id = ?", String.class, incident);
+    }
+
+    private BigDecimal itemReceived(UUID item) {
+        return jdbc.queryForObject(
+                "SELECT received_quantity FROM goods_receipt_items WHERE id = ?", BigDecimal.class, item);
+    }
+
+    private void insertSerial(Fixture fixture, UUID product, String serial) {
+        jdbc.update("""
+                INSERT INTO inventory_serials
+                    (id, tenant_id, branch_id, location_id, product_id, serial_number, status, version)
+                VALUES (?, ?, ?, ?, ?, ?, 'AVAILABLE', 0)
+                """,
+                UUID.randomUUID(), fixture.tenant(), fixture.branch(), fixture.location(), product, serial);
     }
 
     private GoodsReceiptResponse create(Fixture fixture, UUID orderItem, String quantity, UUID location) {
