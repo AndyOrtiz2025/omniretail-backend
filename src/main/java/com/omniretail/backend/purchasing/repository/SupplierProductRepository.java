@@ -71,6 +71,44 @@ public interface SupplierProductRepository extends JpaRepository<SupplierProduct
             @Param("productId") UUID productId,
             @Param("packagingEnabled") boolean packagingEnabled);
 
+    /**
+     * Productos de UN proveedor para lectura informativa: sin filtrar por estado de proveedor, producto
+     * o unidad (forman parte del historial). Producto y unidad se resuelven por join en la misma query.
+     * {@code pattern} es un LIKE en minúsculas con comodines escapados con '!' ("%" sin búsqueda).
+     */
+    @Query(
+            value = """
+                    select new com.omniretail.backend.purchasing.dto.PurchasingSupplierProductRow(
+                        sp.id, p.id, p.name, p.sku, sp.supplierSku, u.symbol, sp.purchaseToBaseFactor,
+                        sp.lastCost, sp.leadTimeDays, sp.minimumOrderQuantity, sp.preferred, sp.active)
+                    from SupplierProduct sp, Product p, Unit u
+                    where sp.tenantId = :tenantId
+                      and sp.supplierId = :supplierId
+                      and p.id = sp.productId and p.tenantId = :tenantId
+                      and u.id = sp.purchaseUnitId and u.tenantId = :tenantId
+                      and (:active is null or sp.active = :active)
+                      and (lower(p.name) like :pattern escape '!'
+                           or lower(p.sku) like :pattern escape '!'
+                           or lower(sp.supplierSku) like :pattern escape '!')
+                    order by p.name asc, sp.id asc
+                    """,
+            countQuery = """
+                    select count(sp) from SupplierProduct sp, Product p
+                    where sp.tenantId = :tenantId
+                      and sp.supplierId = :supplierId
+                      and p.id = sp.productId and p.tenantId = :tenantId
+                      and (:active is null or sp.active = :active)
+                      and (lower(p.name) like :pattern escape '!'
+                           or lower(p.sku) like :pattern escape '!'
+                           or lower(sp.supplierSku) like :pattern escape '!')
+                    """)
+    Page<com.omniretail.backend.purchasing.dto.PurchasingSupplierProductRow> findSupplierProductRows(
+            @Param("tenantId") UUID tenantId,
+            @Param("supplierId") UUID supplierId,
+            @Param("active") Boolean active,
+            @Param("pattern") String pattern,
+            Pageable pageable);
+
     @Modifying
     @Query("""
             update SupplierProduct sp set sp.preferred = false

@@ -46,7 +46,8 @@ import org.springframework.test.web.servlet.MockMvc;
 @Import(TestcontainersConfiguration.class)
 class PurchasingSupplierControllerIntegrationTest {
 
-    private static final String BASE = "/api/v1/purchasing/suppliers/active";
+    private static final String LIST = "/api/v1/purchasing/suppliers";
+    private static final String BASE = LIST + "/active";
 
     @Autowired private MockMvc mvc;
     @Autowired private JwtService jwtService;
@@ -135,6 +136,149 @@ class PurchasingSupplierControllerIntegrationTest {
                 .andExpect(jsonPath("$.code").value("CAPABILITY_REQUIRED"));
     }
 
+    @Test
+    void listIsPaginatedInDatabaseWithStableNameOrder() throws Exception {
+        Tenant tenant = tenant();
+        supplier(tenant, "Beta", SupplierStatus.active, null);
+        supplier(tenant, "Alfa", SupplierStatus.inactive, null);
+        supplier(tenant, "Gamma", SupplierStatus.archived, null);
+        given(permissions.hasPermission(any(), any(), eq("purchasing.orders.read"))).willReturn(true);
+
+        mvc.perform(get(LIST).header("Authorization", token(tenant)).param("page", "1").param("size", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.page").value(1))
+                .andExpect(jsonPath("$.pageSize").value(2))
+                .andExpect(jsonPath("$.totalItems").value(3))
+                .andExpect(jsonPath("$.totalPages").value(2))
+                .andExpect(jsonPath("$.items.length()").value(2))
+                .andExpect(jsonPath("$.items[0].name").value("Alfa"))
+                .andExpect(jsonPath("$.items[1].name").value("Beta"))
+                .andExpect(jsonPath("$.items[0].tenantId").doesNotExist())
+                .andExpect(jsonPath("$.items[0].address").doesNotExist())
+                .andExpect(jsonPath("$.items[0].notes").doesNotExist());
+        mvc.perform(get(LIST).header("Authorization", token(tenant)).param("page", "2").param("size", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.page").value(2))
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].name").value("Gamma"));
+    }
+
+    @Test
+    void searchIsCaseInsensitiveOverNameLegalNameTaxIdEmailAndTreatsWildcardsLiterally() throws Exception {
+        Tenant tenant = tenant();
+        supplier(tenant, "Distribuidora Norte", "Norte Sociedad Anonima", "1234567-8", SupplierStatus.active);
+        supplier(tenant, "Otro", "Otra Razon", "999-K", SupplierStatus.active);
+        given(permissions.hasPermission(any(), any(), eq("purchasing.orders.read"))).willReturn(true);
+
+        for (String term : new String[] {"distribuidora", "NORTE SOCIEDAD", "1234567", "norte@example"}) {
+            mvc.perform(get(LIST).header("Authorization", token(tenant)).param("search", term))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.totalItems").value(1))
+                    .andExpect(jsonPath("$.items[0].name").value("Distribuidora Norte"));
+        }
+        mvc.perform(get(LIST).header("Authorization", token(tenant)).param("search", "%"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalItems").value(0));
+        mvc.perform(get(LIST).header("Authorization", token(tenant)).param("search", "   "))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalItems").value(2));
+    }
+
+    @Test
+    void statusFilterUsesRealSupplierStatusesAndDefaultsToAll() throws Exception {
+        Tenant tenant = tenant();
+        supplier(tenant, "Activo", SupplierStatus.active, null);
+        supplier(tenant, "Inactivo", SupplierStatus.inactive, null);
+        supplier(tenant, "Archivado", SupplierStatus.archived, null);
+        given(permissions.hasPermission(any(), any(), eq("purchasing.orders.read"))).willReturn(true);
+
+        mvc.perform(get(LIST).header("Authorization", token(tenant)).param("status", "inactive"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalItems").value(1))
+                .andExpect(jsonPath("$.items[0].status").value("inactive"));
+        mvc.perform(get(LIST).header("Authorization", token(tenant)).param("status", "archived"))
+                .andExpect(jsonPath("$.items[0].name").value("Archivado"));
+        mvc.perform(get(LIST).header("Authorization", token(tenant)))
+                .andExpect(jsonPath("$.totalItems").value(3));
+        mvc.perform(get(LIST).header("Authorization", token(tenant)).param("status", "bogus"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void listAndDetailAreIsolatedByTenant() throws Exception {
+        Tenant tenant = tenant();
+        Tenant other = tenant();
+        supplier(tenant, "Propio", SupplierStatus.active, null);
+        Supplier foreign = supplier(other, "Ajeno", SupplierStatus.active, null);
+        given(permissions.hasPermission(any(), any(), eq("purchasing.orders.read"))).willReturn(true);
+
+        mvc.perform(get(LIST)
+                        .header("Authorization", token(tenant))
+                        .param("tenantId", other.getId().toString()))
+                .andExpect(jsonPath("$.totalItems").value(1))
+                .andExpect(jsonPath("$.items[0].name").value("Propio"));
+        mvc.perform(get(LIST + "/" + foreign.getId()).header("Authorization", token(tenant)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("SUPPLIER_NOT_FOUND"));
+    }
+
+    @Test
+    void detailReturnsListFieldsPlusAddressAndNotes() throws Exception {
+        Tenant tenant = tenant();
+        Supplier supplier = supplier(tenant, "Detalle", "Detalle S.A.", "555-5", SupplierStatus.active);
+        given(permissions.hasPermission(any(), any(), eq("purchasing.orders.approve"))).willReturn(true);
+
+        mvc.perform(get(LIST + "/" + supplier.getId()).header("Authorization", token(tenant)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(supplier.getId().toString()))
+                .andExpect(jsonPath("$.name").value("Detalle"))
+                .andExpect(jsonPath("$.legalName").value("Detalle S.A."))
+                .andExpect(jsonPath("$.taxId").value("555-5"))
+                .andExpect(jsonPath("$.email").value("detalle@example.com"))
+                .andExpect(jsonPath("$.phone").value("5555-1234"))
+                .andExpect(jsonPath("$.address").value("Zona 1"))
+                .andExpect(jsonPath("$.notes").value("Notas internas"))
+                .andExpect(jsonPath("$.status").value("active"))
+                .andExpect(jsonPath("$.tenantId").doesNotExist());
+        verify(permissions, never()).hasPermission(any(), any(), eq("admin.suppliers.manage"));
+    }
+
+    @Test
+    void listAndDetailRequirePermissionAndCapability() throws Exception {
+        Tenant tenant = tenant();
+        Supplier supplier = supplier(tenant, "Proveedor", SupplierStatus.active, null);
+
+        mvc.perform(get(LIST).header("Authorization", token(tenant)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+        mvc.perform(get(LIST + "/" + supplier.getId()).header("Authorization", token(tenant)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        given(permissions.hasPermission(any(), any(), eq("purchasing.orders.read"))).willReturn(true);
+        given(entitlements.resolve(tenant.getId())).willReturn(
+                new TenantEntitlements(true, true, EnumSet.of(SaasCapability.inventory)));
+        mvc.perform(get(LIST).header("Authorization", token(tenant)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("CAPABILITY_REQUIRED"));
+        mvc.perform(get(LIST + "/" + supplier.getId()).header("Authorization", token(tenant)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("CAPABILITY_REQUIRED"));
+    }
+
+    @Test
+    void activeEndpointIsNotShadowedByTheDetailRoute() throws Exception {
+        Tenant tenant = tenant();
+        supplier(tenant, "Activo", SupplierStatus.active, null);
+        supplier(tenant, "Inactivo", SupplierStatus.inactive, null);
+        given(permissions.hasPermission(any(), any(), eq("purchasing.orders.read"))).willReturn(true);
+
+        mvc.perform(get(LIST + "/active").header("Authorization", token(tenant)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].name").value("Activo"));
+    }
+
     private Tenant tenant() {
         String suffix = UUID.randomUUID().toString();
         return tenantRepository.save(Tenant.builder()
@@ -144,6 +288,22 @@ class PurchasingSupplierControllerIntegrationTest {
                 .defaultCurrency("GTQ")
                 .timezone("America/Guatemala")
                 .build());
+    }
+
+    private Supplier supplier(
+            Tenant tenant, String name, String legalName, String taxId, SupplierStatus status) {
+        Supplier supplier = Supplier.builder()
+                .name(name)
+                .legalName(legalName)
+                .taxId(taxId)
+                .email(name.toLowerCase().replace(" ", "") + "@example.com")
+                .phone("5555-1234")
+                .address("Zona 1")
+                .notes("Notas internas")
+                .status(status)
+                .build();
+        supplier.setTenantId(tenant.getId());
+        return supplierRepository.save(supplier);
     }
 
     private Supplier supplier(Tenant tenant, String name, SupplierStatus status, Integer leadTimeDays) {
