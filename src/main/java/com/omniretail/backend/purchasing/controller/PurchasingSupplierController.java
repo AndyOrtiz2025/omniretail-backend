@@ -2,7 +2,10 @@ package com.omniretail.backend.purchasing.controller;
 
 import com.omniretail.backend.administration.entity.SupplierStatus;
 import com.omniretail.backend.purchasing.dto.PurchasingSupplierDetailResponse;
+import com.omniretail.backend.purchasing.dto.PurchasingSupplierIncidentResponse;
+import com.omniretail.backend.purchasing.dto.PurchasingSupplierProductResponse;
 import com.omniretail.backend.purchasing.dto.PurchasingSupplierResponse;
+import com.omniretail.backend.purchasing.entity.ReceiptIncidentStatus;
 import com.omniretail.backend.purchasing.dto.PurchasingSupplierSummaryResponse;
 import com.omniretail.backend.purchasing.service.PurchasingSupplierService;
 import com.omniretail.backend.shared.dto.PageResponse;
@@ -35,6 +38,24 @@ public class PurchasingSupplierController {
             @RequestParam(required = false) String search,
             @PageableDefault(size = 20) Pageable pageable) {
         return purchasingSupplierService.list(status, search, pageable);
+    }
+
+    @GetMapping("/{supplierId}/products")
+    public PageResponse<PurchasingSupplierProductResponse> listProducts(
+            @PathVariable UUID supplierId,
+            @RequestParam(required = false) Boolean active,
+            @RequestParam(required = false) String search,
+            @PageableDefault(size = 20) Pageable pageable) {
+        return purchasingSupplierService.listProducts(supplierId, active, search, pageable);
+    }
+
+    @GetMapping("/{supplierId}/incidents")
+    public PageResponse<PurchasingSupplierIncidentResponse> listIncidents(
+            @PathVariable UUID supplierId,
+            @RequestParam(required = false) ReceiptIncidentStatus status,
+            @RequestParam(required = false) UUID branchId,
+            @PageableDefault(size = 20) Pageable pageable) {
+        return purchasingSupplierService.listIncidents(supplierId, status, branchId, pageable);
     }
 
     @GetMapping("/{id}")
