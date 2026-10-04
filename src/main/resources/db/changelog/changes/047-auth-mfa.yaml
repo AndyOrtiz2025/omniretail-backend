@@ -1,0 +1,250 @@
+databaseChangeLog:
+  - changeSet:
+      id: 047-auth-mfa
+      author: AndyOrtiz2025
+      changes:
+        # Verificacion en dos pasos (MfaEnrollment.ts). El secreto TOTP se guarda cifrado con
+        # AES-256-GCM (clave derivada de MFA_ENCRYPTION_KEY); nunca en claro. secret_ciphertext es
+        # null cuando el MFA esta desactivado. last_used_step impide aceptar dos veces el mismo codigo.
+        - createTable:
+            tableName: mfa_enrollments
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: user_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    unique: true
+                    uniqueConstraintName: uk_mfa_enrollments_user
+                    referencedTableName: users
+                    referencedColumnNames: id
+                    foreignKeyName: fk_mfa_enrollments_user
+                    deleteCascade: true
+              - column:
+                  name: method
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: secret_ciphertext
+                  type: VARCHAR(255)
+              - column:
+                  name: enabled
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: verified_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: failed_attempts
+                  type: INTEGER
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: last_used_step
+                  type: BIGINT
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - sql:
+            sql: "ALTER TABLE mfa_enrollments ADD CONSTRAINT ck_mfa_enrollments_method CHECK (method IN ('totp'))"
+
+        # Desafio de segundo factor (MfaChallenge.ts): se abre en el login cuando la contrasena es
+        # correcta y el MFA esta activo. Solo se guarda el hash del token; un solo uso, 5 minutos y
+        # 5 intentos.
+        - createTable:
+            tableName: mfa_challenges
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: user_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: users
+                    referencedColumnNames: id
+                    foreignKeyName: fk_mfa_challenges_user
+                    deleteCascade: true
+              - column:
+                  name: token_hash
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+                    unique: true
+                    uniqueConstraintName: uk_mfa_challenges_token_hash
+              - column:
+                  name: method
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: failed_attempts
+                  type: INTEGER
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: remember_me
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: device_label
+                  type: VARCHAR(200)
+              - column:
+                  name: expires_at
+                  type: TIMESTAMPTZ
+                  constraints:
+                    nullable: false
+              - column:
+                  name: consumed_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: invalidated_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - createIndex:
+            tableName: mfa_challenges
+            indexName: idx_mfa_challenges_user
+            columns:
+              - column:
+                  name: user_id
+
+        # Codigos de recuperacion (RecoveryCode.ts): solo HMAC-SHA256 del codigo, de un solo uso.
+        - createTable:
+            tableName: mfa_recovery_codes
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: user_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: users
+                    referencedColumnNames: id
+                    foreignKeyName: fk_mfa_recovery_codes_user
+                    deleteCascade: true
+              - column:
+                  name: code_hash
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: used_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addUniqueConstraint:
+            tableName: mfa_recovery_codes
+            columnNames: user_id, code_hash
+            constraintName: uk_mfa_recovery_codes_user_code
+
+        # Auditoria de autenticacion (AuditLog.ts con entityType AuthAccount). Append-only.
+        - createTable:
+            tableName: auth_audit_logs
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_auth_audit_logs_tenant
+              - column:
+                  name: actor_user_id
+                  type: UUID
+              - column:
+                  name: auth_account_id
+                  type: UUID
+              - column:
+                  name: action
+                  type: VARCHAR(60)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: metadata
+                  type: JSONB
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - createIndex:
+            tableName: auth_audit_logs
+            indexName: idx_auth_audit_logs_account_created
+            columns:
+              - column:
+                  name: auth_account_id
+              - column:
+                  name: created_at
+      rollback:
+        - dropTable:
+            tableName: auth_audit_logs
+        - dropTable:
+            tableName: mfa_recovery_codes
+        - dropTable:
+            tableName: mfa_challenges
+        - dropTable:
+            tableName: mfa_enrollments

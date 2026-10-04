@@ -2,6 +2,8 @@ package com.omniretail.backend.inventory.repository;
 
 import com.omniretail.backend.inventory.entity.InventoryBalance;
 import jakarta.persistence.LockModeType;
+import java.math.BigDecimal;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -86,4 +88,62 @@ public interface InventoryBalanceRepository extends JpaRepository<InventoryBalan
             nativeQuery = true)
     boolean existsPositiveStockByTenantIdAndProductId(
             @Param("tenantId") UUID tenantId, @Param("productId") UUID productId);
+
+    @Query(
+            value = """
+                    SELECT branch.id AS "branchId",
+                           branch.name AS "branchName",
+                           COALESCE(
+                               SUM(balance.quantity - balance.reserved_quantity),
+                               CAST(0 AS numeric)
+                           ) AS "availableQuantity"
+                    FROM branches branch
+                    LEFT JOIN inventory_balances balance
+                      ON balance.tenant_id = branch.tenant_id
+                     AND balance.branch_id = branch.id
+                     AND balance.product_id = :productId
+                    WHERE branch.tenant_id = :tenantId
+                      AND branch.id <> :excludedBranchId
+                    GROUP BY branch.id, branch.name
+                    ORDER BY LOWER(branch.name) ASC, branch.id ASC
+                    """,
+            nativeQuery = true)
+    List<CrossBranchStockProjection> findCrossBranchStock(
+            @Param("tenantId") UUID tenantId,
+            @Param("productId") UUID productId,
+            @Param("excludedBranchId") UUID excludedBranchId);
+
+    @Query(
+            value = """
+                    SELECT branch.id AS "branchId",
+                           branch.name AS "branchName",
+                           COALESCE(
+                               SUM(balance.quantity - balance.reserved_quantity),
+                               CAST(0 AS numeric)
+                           ) AS "availableQuantity"
+                    FROM branches branch
+                    LEFT JOIN inventory_balances balance
+                      ON balance.tenant_id = branch.tenant_id
+                     AND balance.branch_id = branch.id
+                     AND balance.product_id = :productId
+                    WHERE branch.tenant_id = :tenantId
+                      AND branch.id IN (:branchIds)
+                      AND branch.id <> :excludedBranchId
+                    GROUP BY branch.id, branch.name
+                    ORDER BY LOWER(branch.name) ASC, branch.id ASC
+                    """,
+            nativeQuery = true)
+    List<CrossBranchStockProjection> findCrossBranchStockIn(
+            @Param("tenantId") UUID tenantId,
+            @Param("productId") UUID productId,
+            @Param("excludedBranchId") UUID excludedBranchId,
+            @Param("branchIds") Collection<UUID> branchIds);
+
+    interface CrossBranchStockProjection {
+        UUID getBranchId();
+
+        String getBranchName();
+
+        BigDecimal getAvailableQuantity();
+    }
 }

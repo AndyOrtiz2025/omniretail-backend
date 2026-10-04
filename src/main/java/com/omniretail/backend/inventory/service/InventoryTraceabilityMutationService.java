@@ -1027,6 +1027,18 @@ public class InventoryTraceabilityMutationService {
         }
     }
 
+    /** Misma normalización que usa la persistencia de seriales (trim; vacío no permitido). */
+    public static String normalizeSerialNumber(String value) {
+        String normalized = trimToNull(value);
+        if (normalized == null) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "SERIAL_INVALID",
+                    "Los numeros de serie no pueden estar vacios.");
+        }
+        return normalized;
+    }
+
     private static List<String> normalizeSerials(List<String> values) {
         if (values == null) return List.of();
         List<String> normalized = values.stream()

@@ -12,6 +12,7 @@ import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
 import com.omniretail.backend.inventory.dto.InventoryInboundCommand;
 import com.omniretail.backend.inventory.dto.InventoryInboundTraceDetail;
+import com.omniretail.backend.inventory.repository.InventorySerialRepository;
 import com.omniretail.backend.inventory.service.InventoryTraceabilityMutationService;
 import com.omniretail.backend.pos.service.DocumentCounterService;
 import com.omniretail.backend.purchasing.dto.CreateGoodsReceiptRequest;
@@ -50,11 +51,13 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -95,6 +98,7 @@ public class GoodsReceiptService {
     private final UnitRepository unitRepository;
     private final LocationRepository locationRepository;
     private final InventoryTraceabilityMutationService traceabilityMutationService;
+    private final InventorySerialRepository inventorySerialRepository;
     private final DocumentCounterService documentCounterService;
     private final BranchAccessResolver branchAccessResolver;
     private final TenantCapabilityGuard tenantCapabilityGuard;
@@ -175,14 +179,143 @@ public class GoodsReceiptService {
         PurchaseOrder order = requirePurchaseOrder(tenantId, receipt.getPurchaseOrderId());
         requireReceivable(order);
 
-        // La colección completa se valida antes de eliminar una sola línea existente.
+        // La colección completa se valida antes de modificar o eliminar una sola línea existente.
         List<ResolvedItem> resolvedItems = resolveItems(tenantId, order, request.items());
         validateDraftLocations(tenantId, order.getBranchId(), resolvedItems);
         receipt.setNotes(normalize(request.notes()));
-        goodsReceiptItemRepository.deleteByTenantIdAndGoodsReceiptId(tenantId, receipt.getId());
-        List<GoodsReceiptItem> savedItems = saveResolvedItems(tenantId, receipt.getId(), resolvedItems);
+        List<GoodsReceiptItem> savedItems = upsertItems(tenantId, receipt.getId(), resolvedItems);
         GoodsReceipt savedReceipt = goodsReceiptRepository.saveAndFlush(receipt);
         return response(savedReceipt, order, savedItems, purchaseOrderItemsById(resolvedItems));
+    }
+
+    /**
+     * UPSERT por purchaseOrderItemId: conserva el id de las líneas existentes (las incidencias las
+     * referencian por FK), inserta las nuevas y elimina solo las omitidas sin incidencias. Corre bajo el
+     * lock del receipt, que también toman la creación y resolución de incidencias.
+     */
+    private List<GoodsReceiptItem> upsertItems(
+            UUID tenantId, UUID receiptId, List<ResolvedItem> resolvedItems) {
+        Map<UUID, GoodsReceiptItem> existingByOrderItem = goodsReceiptItemRepository
+                .findByTenantIdAndGoodsReceiptIdOrderByIdAsc(tenantId, receiptId)
+                .stream()
+                .collect(Collectors.toMap(
+                        GoodsReceiptItem::getPurchaseOrderItemId, Function.identity()));
+        Set<UUID> requestedOrderItemIds = resolvedItems.stream()
+                .map(resolved -> resolved.purchaseOrderItem().getId())
+                .collect(Collectors.toSet());
+
+        // Fase 1: validar todo antes de persistir cualquier cambio.
+        Set<UUID> lockedByIncident = new HashSet<>();
+        for (GoodsReceiptItem existing : existingByOrderItem.values()) {
+            if (receiptIncidentRepository.existsByTenantIdAndGoodsReceiptItemId(
+                    tenantId, existing.getId())) {
+                lockedByIncident.add(existing.getPurchaseOrderItemId());
+            }
+        }
+        for (ResolvedItem resolved : resolvedItems) {
+            UUID orderItemId = resolved.purchaseOrderItem().getId();
+            GoodsReceiptItem existing = existingByOrderItem.get(orderItemId);
+            if (existing != null
+                    && lockedByIncident.contains(orderItemId)
+                    && !sameReceivedValues(existing, resolved)) {
+                throw BusinessException.conflict(
+                        "GOODS_RECEIPT_ITEM_LOCKED_BY_INCIDENT",
+                        "No se puede modificar cantidad, ubicación ni trazabilidad de una línea de recepción asociada a incidencias.");
+            }
+        }
+        List<GoodsReceiptItem> omitted = existingByOrderItem.values().stream()
+                .filter(existing -> !requestedOrderItemIds.contains(existing.getPurchaseOrderItemId()))
+                .toList();
+        if (omitted.stream().anyMatch(item -> lockedByIncident.contains(item.getPurchaseOrderItemId()))) {
+            throw lineWithIncidentsCannotBeDeleted();
+        }
+
+        // Fase 2: eliminar omitidas; la FK RESTRICT sigue como última defensa ante una carrera.
+        if (!omitted.isEmpty()) {
+            try {
+                goodsReceiptItemRepository.deleteAll(omitted);
+                goodsReceiptItemRepository.flush();
+            } catch (DataIntegrityViolationException exception) {
+                if (isReceiptItemIncidentViolation(exception)) {
+                    throw lineWithIncidentsCannotBeDeleted();
+                }
+                throw exception;
+            }
+        }
+
+        // Fase 3: actualizar líneas existentes sin incidencias e insertar las nuevas.
+        List<GoodsReceiptItem> toUpdate = new ArrayList<>();
+        List<GoodsReceiptItem> toInsert = new ArrayList<>();
+        for (ResolvedItem resolved : resolvedItems) {
+            UUID orderItemId = resolved.purchaseOrderItem().getId();
+            GoodsReceiptItem existing = existingByOrderItem.get(orderItemId);
+            if (existing == null) {
+                toInsert.add(newItem(tenantId, receiptId, resolved));
+            } else if (!lockedByIncident.contains(orderItemId)) {
+                applyResolved(existing, resolved);
+                toUpdate.add(existing);
+            }
+        }
+        goodsReceiptItemRepository.saveAll(toUpdate);
+        Map<UUID, GoodsReceiptItem> inserted = goodsReceiptItemRepository.saveAllAndFlush(toInsert)
+                .stream()
+                .collect(Collectors.toMap(
+                        GoodsReceiptItem::getPurchaseOrderItemId, Function.identity()));
+
+        return resolvedItems.stream()
+                .map(resolved -> {
+                    UUID orderItemId = resolved.purchaseOrderItem().getId();
+                    GoodsReceiptItem existing = existingByOrderItem.get(orderItemId);
+                    return existing != null ? existing : inserted.get(orderItemId);
+                })
+                .toList();
+    }
+
+    private boolean sameReceivedValues(GoodsReceiptItem stored, ResolvedItem resolved) {
+        return stored.getReceivedQuantity().compareTo(resolved.receivedQuantity()) == 0
+                && Objects.equals(stored.getLocationId(), resolved.locationId())
+                && sameTrackingDetails(
+                        deserializeTrackingDetails(stored.getTrackingDetails()),
+                        outboundTrackingDetails(resolved.trackingDetails()));
+    }
+
+    private static boolean sameTrackingDetails(
+            List<TrackingDetailRequest> stored, List<TrackingDetailRequest> requested) {
+        if (stored.size() != requested.size()) {
+            return false;
+        }
+        for (int i = 0; i < stored.size(); i++) {
+            TrackingDetailRequest left = stored.get(i);
+            TrackingDetailRequest right = requested.get(i);
+            boolean sameQuantity = left.baseQuantity() == null || right.baseQuantity() == null
+                    ? left.baseQuantity() == right.baseQuantity()
+                    : left.baseQuantity().compareTo(right.baseQuantity()) == 0;
+            if (!sameQuantity
+                    || !Objects.equals(left.lotNumber(), right.lotNumber())
+                    || !Objects.equals(left.expirationDate(), right.expirationDate())
+                    || !Objects.equals(
+                            left.serialNumbers() == null ? List.of() : left.serialNumbers(),
+                            right.serialNumbers() == null ? List.of() : right.serialNumbers())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isReceiptItemIncidentViolation(DataIntegrityViolationException exception) {
+        for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
+            String message = cause.getMessage();
+            if (message != null && message.contains("fk_receipt_incidents_receipt_item")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static BusinessException lineWithIncidentsCannotBeDeleted() {
+        return BusinessException.conflict(
+                "GOODS_RECEIPT_ITEM_HAS_INCIDENTS",
+                "No se puede eliminar una línea de recepción asociada a incidencias.");
     }
 
     public void delete(UUID id) {
@@ -267,6 +400,188 @@ public class GoodsReceiptService {
         return response(savedReceipt, order, storedItems, purchaseOrderItemsById(resolvedItems));
     }
 
+    /**
+     * Agrega mercancía de reposición a una línea protegida por incidencia. Es la única vía que muta
+     * cantidad/tracking de una línea con incidencias (el PUT normal sigue bloqueado). El llamador ya
+     * tiene el lock del receipt; aquí se toma el de la orden (orden global Receipt -> PurchaseOrder).
+     * No toca stock ni movimientos: eso ocurre solo en confirm().
+     */
+    public void appendIncidentReplacement(
+            UUID tenantId,
+            GoodsReceipt receipt,
+            GoodsReceiptItem item,
+            BigDecimal expectedQuantity,
+            BigDecimal replacementQuantity,
+            List<TrackingDetailRequest> replacementDetails) {
+        requireDraft(receipt);
+        PurchaseOrder order = requirePurchaseOrderForUpdate(tenantId, receipt.getPurchaseOrderId());
+        requireReceivable(order);
+        PurchaseOrderItem orderItem = purchaseOrderItemRepository
+                .findByTenantIdAndPurchaseOrderIdOrderByIdAsc(tenantId, order.getId())
+                .stream()
+                .filter(candidate -> candidate.getId().equals(item.getPurchaseOrderItemId()))
+                .findFirst()
+                .orElseThrow(GoodsReceiptService::purchaseOrderItemNotFound);
+
+        if (replacementQuantity == null || expectedQuantity == null
+                || replacementQuantity.compareTo(expectedQuantity) != 0) {
+            throw badRequest(
+                    "RECEIPT_REPLACEMENT_QUANTITY_MISMATCH",
+                    "La cantidad de reposición debe ser exactamente la cantidad afectada de la incidencia.");
+        }
+        // Cabe si ordenado - confirmado - aceptado - OTRAS incidencias abiertas >= reposición. La propia
+        // incidencia sigue abierta aquí, por eso se suma de vuelta a pendingQuantity.
+        BigDecimal remaining = pendingQuantity(tenantId, receipt, item, orderItem).add(expectedQuantity);
+        if (remaining.signum() <= 0) {
+            throw BusinessException.conflict(
+                    "RECEIPT_REPLACEMENT_NOT_ALLOWED",
+                    "La línea no tiene cantidad pendiente por recibir; resuelve la incidencia sin reposición.");
+        }
+        if (replacementQuantity.compareTo(remaining) > 0) {
+            throw BusinessException.conflict(
+                    "RECEIPT_REPLACEMENT_EXCEEDS_REMAINING",
+                    "La reposición supera la cantidad pendiente por recibir de la orden de compra.");
+        }
+
+        Product product = requireProduct(tenantId, item.getProductId());
+        Unit purchaseUnit = requireUnit(tenantId, item.getUnitId());
+        Unit baseUnit = requireUnit(tenantId, product.getBaseUnitId());
+        validateReceivedQuantity(replacementQuantity, purchaseUnit);
+        BigDecimal newTotal = item.getReceivedQuantity().add(replacementQuantity);
+        BigDecimal replacementBase = calculateBaseQuantity(replacementQuantity, item.getPurchaseToBaseFactor());
+        BigDecimal newTotalBase = calculateBaseQuantity(newTotal, item.getPurchaseToBaseFactor());
+        requireBaseQuantityShape(product, baseUnit, replacementBase);
+        requireBaseQuantityShape(product, baseUnit, newTotalBase);
+
+        List<InventoryInboundTraceDetail> newDetails = traceabilityMutationService.validateAndNormalize(
+                tenantId, product, replacementBase, inboundTrackingDetails(replacementDetails));
+        List<InventoryInboundTraceDetail> finalDetails = List.of();
+        if (!newDetails.isEmpty()) {
+            requireNewSerialsAvailable(tenantId, receipt.getId(), item, product, newDetails);
+            List<InventoryInboundTraceDetail> merged = mergeTrackingDetails(
+                    inboundTrackingDetails(deserializeTrackingDetails(item.getTrackingDetails())),
+                    newDetails);
+            // Revalida la línea completa: lotes únicos, seriales únicos y suma == nueva cantidad base.
+            finalDetails = traceabilityMutationService.validateAndNormalize(
+                    tenantId, product, newTotalBase, merged);
+        }
+
+        item.setReceivedQuantity(newTotal);
+        item.setBaseQuantity(newTotalBase);
+        item.setTrackingDetails(serializeTrackingDetails(finalDetails));
+        goodsReceiptItemRepository.saveAndFlush(item);
+    }
+
+    /**
+     * Cantidad de la línea de orden aún sin justificar:
+     * ordenado - confirmado previo - aceptado (receivedQuantity del draft) - incidencias OPEN de la línea.
+     * Una incidencia es mercancía afectada y NO aceptada: no forma parte de receivedQuantity. Las
+     * resueltas ya se sumaron a receivedQuantity, por eso no cuentan aquí. Puede ser negativa solo
+     * con datos previos inconsistentes.
+     */
+    public BigDecimal pendingQuantity(UUID tenantId, GoodsReceipt receipt, GoodsReceiptItem item) {
+        PurchaseOrderItem orderItem = purchaseOrderItemRepository
+                .findByTenantIdAndPurchaseOrderIdOrderByIdAsc(tenantId, receipt.getPurchaseOrderId())
+                .stream()
+                .filter(candidate -> candidate.getId().equals(item.getPurchaseOrderItemId()))
+                .findFirst()
+                .orElseThrow(GoodsReceiptService::purchaseOrderItemNotFound);
+        return pendingQuantity(tenantId, receipt, item, orderItem);
+    }
+
+    private BigDecimal pendingQuantity(
+            UUID tenantId, GoodsReceipt receipt, GoodsReceiptItem item, PurchaseOrderItem orderItem) {
+        // Si el receipt ya está confirmado, su línea ya está dentro de la suma confirmada.
+        BigDecimal confirmed = confirmedQuantities(tenantId, receipt.getPurchaseOrderId())
+                .getOrDefault(orderItem.getId(), BigDecimal.ZERO);
+        BigDecimal accepted = receipt.getStatus() == GoodsReceiptStatus.draft
+                ? item.getReceivedQuantity()
+                : BigDecimal.ZERO;
+        BigDecimal openIncidents = receiptIncidentRepository.sumQuantityAffectedByItemAndStatus(
+                tenantId, item.getId(), ReceiptIncidentStatus.open);
+        return orderItem.getQuantity().subtract(confirmed).subtract(accepted).subtract(openIncidents);
+    }
+
+    private void requireBaseQuantityShape(Product product, Unit baseUnit, BigDecimal baseQuantity) {
+        if ((!baseUnit.getAllowsDecimals() || Boolean.TRUE.equals(product.getTrackingSerial()))
+                && !isInteger(baseQuantity)) {
+            throw badRequest(
+                    "GOODS_RECEIPT_INVALID_BASE_QUANTITY",
+                    "La cantidad convertida a la unidad base debe ser entera.");
+        }
+    }
+
+    private void requireNewSerialsAvailable(
+            UUID tenantId,
+            UUID receiptId,
+            GoodsReceiptItem item,
+            Product product,
+            List<InventoryInboundTraceDetail> newDetails) {
+        List<String> newSerials = newDetails.stream()
+                .flatMap(detail -> detail.serialNumbers().stream())
+                .toList();
+        if (newSerials.isEmpty()) {
+            return;
+        }
+        // Una sola consulta batch; la unicidad al confirmar sigue siendo la garantía definitiva.
+        if (!inventorySerialRepository
+                .findExistingSerialNumbers(tenantId, product.getId(), newSerials)
+                .isEmpty()) {
+            throw duplicateSerialConflict();
+        }
+        Set<String> requested = new HashSet<>(newSerials);
+        for (GoodsReceiptItem other : goodsReceiptItemRepository
+                .findByTenantIdAndGoodsReceiptIdOrderByIdAsc(tenantId, receiptId)) {
+            if (other.getId().equals(item.getId())) {
+                continue;
+            }
+            for (TrackingDetailRequest detail : deserializeTrackingDetails(other.getTrackingDetails())) {
+                if (detail.serialNumbers() != null
+                        && detail.serialNumbers().stream().anyMatch(requested::contains)) {
+                    throw duplicateSerialConflict();
+                }
+            }
+        }
+    }
+
+    /** Agrega los detalles nuevos a los existentes; un lote ya presente acumula, nunca se sobrescribe. */
+    private static List<InventoryInboundTraceDetail> mergeTrackingDetails(
+            List<InventoryInboundTraceDetail> existing, List<InventoryInboundTraceDetail> added) {
+        List<InventoryInboundTraceDetail> merged = new ArrayList<>(existing);
+        for (InventoryInboundTraceDetail detail : added) {
+            int index = -1;
+            for (int i = 0; i < merged.size() && detail.lotNumber() != null; i++) {
+                if (detail.lotNumber().equals(merged.get(i).lotNumber())) {
+                    index = i;
+                    break;
+                }
+            }
+            if (index < 0) {
+                merged.add(detail);
+                continue;
+            }
+            InventoryInboundTraceDetail current = merged.get(index);
+            if (!Objects.equals(current.expirationDate(), detail.expirationDate())) {
+                throw BusinessException.conflict(
+                        "LOT_EXPIRATION_MISMATCH",
+                        "El lote ya existe en la línea con otra fecha de vencimiento.");
+            }
+            List<String> serials = new ArrayList<>(current.serialNumbers());
+            serials.addAll(detail.serialNumbers());
+            merged.set(index, new InventoryInboundTraceDetail(
+                    current.baseQuantity().add(detail.baseQuantity()),
+                    current.lotNumber(),
+                    current.expirationDate(),
+                    serials));
+        }
+        return merged;
+    }
+
+    private static BusinessException duplicateSerialConflict() {
+        return BusinessException.conflict(
+                "DUPLICATE_SERIAL", "Uno o mas numeros de serie ya existen o estan repetidos.");
+    }
+
     private List<ResolvedItem> resolveItems(
             UUID tenantId, PurchaseOrder order, List<GoodsReceiptItemRequest> requests) {
         if (requests == null || requests.isEmpty()) {
@@ -336,22 +651,26 @@ public class GoodsReceiptService {
     private List<GoodsReceiptItem> saveResolvedItems(
             UUID tenantId, UUID receiptId, List<ResolvedItem> resolvedItems) {
         List<GoodsReceiptItem> items = resolvedItems.stream()
-                .map(resolved -> GoodsReceiptItem.builder()
-                        .tenantId(tenantId)
-                        .goodsReceiptId(receiptId)
-                        .purchaseOrderItemId(resolved.purchaseOrderItem().getId())
-                        .productId(resolved.purchaseOrderItem().getProductId())
-                        .locationId(resolved.locationId())
-                        .receivedQuantity(resolved.receivedQuantity())
-                        .unitId(resolved.purchaseOrderItem().getUnitId())
-                        .unitSymbolSnapshot(resolved.purchaseOrderItem().getUnitSymbolSnapshot())
-                        .purchaseToBaseFactor(resolved.purchaseOrderItem().getPurchaseToBaseFactor())
-                        .baseQuantity(resolved.baseQuantity())
-                        .unitCost(resolved.purchaseOrderItem().getUnitCost())
-                        .trackingDetails(serializeTrackingDetails(resolved.trackingDetails()))
-                        .build())
+                .map(resolved -> newItem(tenantId, receiptId, resolved))
                 .toList();
         return goodsReceiptItemRepository.saveAllAndFlush(items);
+    }
+
+    private GoodsReceiptItem newItem(UUID tenantId, UUID receiptId, ResolvedItem resolved) {
+        return GoodsReceiptItem.builder()
+                .tenantId(tenantId)
+                .goodsReceiptId(receiptId)
+                .purchaseOrderItemId(resolved.purchaseOrderItem().getId())
+                .productId(resolved.purchaseOrderItem().getProductId())
+                .locationId(resolved.locationId())
+                .receivedQuantity(resolved.receivedQuantity())
+                .unitId(resolved.purchaseOrderItem().getUnitId())
+                .unitSymbolSnapshot(resolved.purchaseOrderItem().getUnitSymbolSnapshot())
+                .purchaseToBaseFactor(resolved.purchaseOrderItem().getPurchaseToBaseFactor())
+                .baseQuantity(resolved.baseQuantity())
+                .unitCost(resolved.purchaseOrderItem().getUnitCost())
+                .trackingDetails(serializeTrackingDetails(resolved.trackingDetails()))
+                .build();
     }
 
     private void validateDraftLocations(
@@ -384,19 +703,22 @@ public class GoodsReceiptService {
         Map<UUID, ResolvedItem> resolvedByOrderItem = resolvedItems.stream().collect(
                 Collectors.toMap(item -> item.purchaseOrderItem().getId(), Function.identity()));
         for (GoodsReceiptItem stored : storedItems) {
-            ResolvedItem resolved = resolvedByOrderItem.get(stored.getPurchaseOrderItemId());
-            PurchaseOrderItem orderItem = resolved.purchaseOrderItem();
-            stored.setProductId(orderItem.getProductId());
-            stored.setLocationId(resolved.locationId());
-            stored.setReceivedQuantity(resolved.receivedQuantity());
-            stored.setUnitId(orderItem.getUnitId());
-            stored.setUnitSymbolSnapshot(orderItem.getUnitSymbolSnapshot());
-            stored.setPurchaseToBaseFactor(orderItem.getPurchaseToBaseFactor());
-            stored.setBaseQuantity(resolved.baseQuantity());
-            stored.setUnitCost(orderItem.getUnitCost());
-            stored.setTrackingDetails(serializeTrackingDetails(resolved.trackingDetails()));
+            applyResolved(stored, resolvedByOrderItem.get(stored.getPurchaseOrderItemId()));
         }
         goodsReceiptItemRepository.saveAll(storedItems);
+    }
+
+    private void applyResolved(GoodsReceiptItem stored, ResolvedItem resolved) {
+        PurchaseOrderItem orderItem = resolved.purchaseOrderItem();
+        stored.setProductId(orderItem.getProductId());
+        stored.setLocationId(resolved.locationId());
+        stored.setReceivedQuantity(resolved.receivedQuantity());
+        stored.setUnitId(orderItem.getUnitId());
+        stored.setUnitSymbolSnapshot(orderItem.getUnitSymbolSnapshot());
+        stored.setPurchaseToBaseFactor(orderItem.getPurchaseToBaseFactor());
+        stored.setBaseQuantity(resolved.baseQuantity());
+        stored.setUnitCost(orderItem.getUnitCost());
+        stored.setTrackingDetails(serializeTrackingDetails(resolved.trackingDetails()));
     }
 
     private void validateNoOverReceiving(

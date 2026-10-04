@@ -156,9 +156,10 @@ class ReceiptIncidentControllerIntegrationTest {
         mvc.perform(post(BASE + "/" + fixture.receipt() + "/incidents")
                         .header("Authorization", token)
                         .contentType(APPLICATION_JSON)
-                        .content(itemBody(fixture.receiptItem(), "10.001")))
+                        // ordenado 10 - aceptado 6 = 4 pendientes; la incidencia no es parte de lo recibido.
+                        .content(itemBody(fixture.receiptItem(), "4.001")))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.code").value("RECEIPT_INCIDENT_QUANTITY_EXCEEDS_ITEM"));
+                .andExpect(jsonPath("$.code").value("RECEIPT_INCIDENT_QUANTITY_EXCEEDS_PENDING"));
         mvc.perform(post(BASE + "/" + fixture.receipt() + "/incidents")
                         .header("Authorization", token)
                         .contentType(APPLICATION_JSON)
@@ -363,7 +364,7 @@ class ReceiptIncidentControllerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("confirmed"));
 
-        assertThat(balance(fixture)).isEqualByComparingTo("10");
+        assertThat(balance(fixture)).isEqualByComparingTo("6");
         assertThat(movementCount(fixture.tenant())).isOne();
     }
 
@@ -469,7 +470,7 @@ class ReceiptIncidentControllerIntegrationTest {
                     (id, tenant_id, goods_receipt_id, purchase_order_item_id, product_id,
                      location_id, received_quantity, unit_id, unit_symbol_snapshot,
                      purchase_to_base_factor, base_quantity, unit_cost)
-                VALUES (?, ?, ?, ?, ?, ?, 10, ?, 'u', 1, 10, 1)
+                VALUES (?, ?, ?, ?, ?, ?, 6, ?, 'u', 1, 6, 1)
                 """, receiptItem, tenant, receipt, orderItem, product, location, unit);
         return new Fixture(
                 tenant,

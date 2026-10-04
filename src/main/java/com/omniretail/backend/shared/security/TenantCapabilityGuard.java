@@ -1,6 +1,8 @@
 package com.omniretail.backend.shared.security;
 
 import com.omniretail.backend.shared.exception.BusinessException;
+import java.util.Collection;
+import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -31,6 +33,12 @@ public class TenantCapabilityGuard {
      * CAPABILITY_REQUIRED propio del caso de uso.
      */
     public void ensureTenantCapability(UUID tenantId, SaasCapability capability, String capabilityRequiredMessage) {
+        ensureAnyTenantCapability(tenantId, List.of(capability), capabilityRequiredMessage);
+    }
+
+    /** Igual que {@link #ensureTenantCapability}, pero basta con que el plan incluya UNA de las capacidades. */
+    public void ensureAnyTenantCapability(
+            UUID tenantId, Collection<SaasCapability> capabilities, String capabilityRequiredMessage) {
         TenantEntitlements entitlements = entitlementResolver.resolve(tenantId);
         if (!entitlements.subscriptionActive()) {
             throw BusinessException.forbidden("SUBSCRIPTION_INACTIVE", "La suscripción del negocio no está activa.");
@@ -38,7 +46,7 @@ public class TenantCapabilityGuard {
         if (!entitlements.planActive()) {
             throw BusinessException.forbidden("PLAN_INACTIVE", "El plan del negocio no está activo.");
         }
-        if (!entitlements.capabilities().contains(capability)) {
+        if (capabilities.stream().noneMatch(entitlements.capabilities()::contains)) {
             throw BusinessException.forbidden("CAPABILITY_REQUIRED", capabilityRequiredMessage);
         }
     }

@@ -55,6 +55,10 @@ app:
   jwt:
     secret: ${JWT_SECRET:}
     issuer: omniretail-backend
+  mfa:
+    # Clave maestra de la verificacion en dos pasos (secreto TOTP cifrado y HMAC de los codigos de
+    # recuperacion). Minimo 32 bytes. Mismo patron que app.jwt.secret: valor de dev en application-dev.
+    encryption-key: ${MFA_ENCRYPTION_KEY:}
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
   mail:

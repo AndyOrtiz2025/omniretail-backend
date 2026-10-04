@@ -16,7 +16,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Cambio de contrasena de un cliente o empleado autenticado (MockAuthRepository.changePassword, sin MFA).
+ * Cambio de contrasena de un cliente o empleado autenticado (MockAuthRepository.changePassword). Con el MFA
+ * activo exige ademas un codigo de la app o de recuperacion ({@code mfaCode}).
  * Como el usuario ya inicio sesion con esta cuenta, decirle que su contrasena actual no es correcta no
  * revela nada que no sepa.
  */
@@ -31,6 +32,7 @@ public class PasswordChangeService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final SessionService sessionService;
+    private final MfaService mfaService;
 
     /**
      * Valida todo antes de escribir: cualquier error deja la contrasena y las sesiones como estaban. Al
@@ -57,6 +59,8 @@ public class PasswordChangeService {
                 .ifPresent(message -> {
                     throw FieldValidationException.of("newPassword", message);
                 });
+        // Al final: un codigo de recuperacion solo se gasta si el resto del cambio es valido.
+        mfaService.requireCodeIfEnabled(user, account, request.mfaCode());
 
         account.setPasswordHash(passwordEncoder.encode(request.newPassword()));
         account.setPasswordChangedAt(Instant.now());

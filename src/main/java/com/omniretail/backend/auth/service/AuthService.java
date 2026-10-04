@@ -7,6 +7,7 @@ import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.administration.repository.UserRepository;
 import com.omniretail.backend.auth.dto.LoginRequest;
+import com.omniretail.backend.auth.dto.LoginOutcome;
 import com.omniretail.backend.auth.dto.LoginResponse;
 import com.omniretail.backend.auth.entity.AccountStatus;
 import com.omniretail.backend.auth.entity.AuthAccount;
@@ -35,12 +36,14 @@ public class AuthService {
     private final LoginAttemptService loginAttemptService;
     private final SessionService sessionService;
     private final JwtService jwtService;
+    private final MfaLoginService mfaLoginService;
     /** Hash ficticio: sin candidatos igual se compara una contrasena, para no revelar si el email existe. */
     private final String dummyPasswordHash;
 
     public AuthService(AuthAccountRepository authAccountRepository, UserRepository userRepository,
             TenantRepository tenantRepository, PasswordEncoder passwordEncoder,
-            LoginAttemptService loginAttemptService, SessionService sessionService, JwtService jwtService) {
+            LoginAttemptService loginAttemptService, SessionService sessionService, JwtService jwtService,
+            MfaLoginService mfaLoginService) {
         this.authAccountRepository = authAccountRepository;
         this.userRepository = userRepository;
         this.tenantRepository = tenantRepository;
@@ -48,14 +51,19 @@ public class AuthService {
         this.loginAttemptService = loginAttemptService;
         this.sessionService = sessionService;
         this.jwtService = jwtService;
+        this.mfaLoginService = mfaLoginService;
         this.dummyPasswordHash = passwordEncoder.encode(UUID.randomUUID().toString());
     }
 
     private record Candidate(AuthAccount account, User user) {
     }
 
+    /**
+     * Sin MFA devuelve la sesion, exactamente como antes. Con MFA activo la contrasena correcta no crea
+     * sesion (R-A16): abre un desafio y los contadores de bloqueo no se reinician hasta el codigo correcto.
+     */
     @Transactional
-    public LoginResponse login(LoginRequest request) {
+    public LoginOutcome login(LoginRequest request) {
         Instant now = Instant.now();
         UUID customerTenantId = resolveCustomerTenant(request.tenantSlug());
         // Solo quedan cuentas que pueden entrar: si todas se descartan, la lista queda vacia.
@@ -86,6 +94,9 @@ public class AuthService {
         // Defensa en profundidad: toCandidate ya filtra por tipo; nunca se muta una cuenta de otro tipo.
         if (request.expectedUserType() != null && match.user().getType() != request.expectedUserType()) {
             throw invalidCredentials();
+        }
+        if (mfaLoginService.isEnabled(match.user())) {
+            return mfaLoginService.openChallenge(match.user(), request.rememberMe(), request.deviceLabel(), now);
         }
         AuthAccount account = match.account();
         account.setStatus(AccountStatus.active);
@@ -129,7 +140,7 @@ public class AuthService {
     }
 
     /** Activa, o bloqueada temporalmente con el bloqueo ya vencido. */
-    private static boolean canAuthenticate(AuthAccount account, Instant now) {
+    static boolean canAuthenticate(AuthAccount account, Instant now) {
         return account.getStatus() == AccountStatus.active
                 || (account.getStatus() == AccountStatus.temporarily_locked
                         && account.getLockedUntil() != null
