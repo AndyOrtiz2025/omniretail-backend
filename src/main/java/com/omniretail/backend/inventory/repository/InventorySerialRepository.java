@@ -22,6 +22,18 @@ public interface InventorySerialRepository extends JpaRepository<InventorySerial
     List<InventorySerial> findByTenantIdAndProductIdAndSerialNumberIn(
             UUID tenantId, UUID productId, List<String> serialNumbers);
 
+    @Query("""
+            select serial.serialNumber from InventorySerial serial
+            where serial.tenantId = :tenantId
+              and serial.productId = :productId
+              and serial.serialNumber in :serialNumbers
+            order by serial.serialNumber
+            """)
+    List<String> findExistingSerialNumbers(
+            @Param("tenantId") UUID tenantId,
+            @Param("productId") UUID productId,
+            @Param("serialNumbers") Collection<String> serialNumbers);
+
     List<InventorySerial> findByTenantIdAndIdIn(UUID tenantId, Collection<UUID> ids);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)

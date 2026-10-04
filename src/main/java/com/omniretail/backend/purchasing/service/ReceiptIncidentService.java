@@ -6,6 +6,7 @@ import com.omniretail.backend.catalog.entity.Unit;
 import com.omniretail.backend.catalog.repository.UnitRepository;
 import com.omniretail.backend.purchasing.dto.CreateReceiptIncidentRequest;
 import com.omniretail.backend.purchasing.dto.ReceiptIncidentResponse;
+import com.omniretail.backend.purchasing.dto.ResolveReceiptIncidentWithReplacementRequest;
 import com.omniretail.backend.purchasing.entity.GoodsReceipt;
 import com.omniretail.backend.purchasing.entity.GoodsReceiptItem;
 import com.omniretail.backend.purchasing.entity.ReceiptIncident;
@@ -48,6 +49,7 @@ public class ReceiptIncidentService {
     private final GoodsReceiptRepository goodsReceiptRepository;
     private final GoodsReceiptItemRepository goodsReceiptItemRepository;
     private final UnitRepository unitRepository;
+    private final GoodsReceiptService goodsReceiptService;
     private final BranchAccessResolver branchAccessResolver;
     private final TenantCapabilityGuard tenantCapabilityGuard;
     private final PermissionResolver permissionResolver;
@@ -70,7 +72,7 @@ public class ReceiptIncidentService {
         // Compartir el lock de la recepcion serializa create/resolve con confirm.
         GoodsReceipt receipt = requireReceiptForUpdate(tenantId, receiptId);
         requireBranchAccess(branchAccessResolver.resolve(actor), receipt.getBranchId());
-        ValidatedRequest validated = validateRequest(tenantId, receipt.getId(), request);
+        ValidatedRequest validated = validateRequest(tenantId, receipt, request);
 
         ReceiptIncident incident = ReceiptIncident.builder()
                 .branchId(receipt.getBranchId())
@@ -105,6 +107,56 @@ public class ReceiptIncidentService {
                     "RECEIPT_INCIDENT_ALREADY_RESOLVED", "La incidencia ya fue resuelta.");
         }
 
+        return markResolved(incident, actor);
+    }
+
+    /** Resolución TOTAL con reposición: suma mercancía a la línea (mismo id) y resuelve la incidencia. */
+    public ReceiptIncidentResponse resolveWithReplacement(
+            UUID incidentId, ResolveReceiptIncidentWithReplacementRequest request) {
+        AuthenticatedUser actor = requireManagingActor();
+        UUID tenantId = actor.tenantId();
+        if (request == null || request.replacementQuantity() == null) {
+            throw badRequest(
+                    "RECEIPT_INCIDENT_INVALID_REQUEST", "La cantidad de reposición es requerida.");
+        }
+        ReceiptIncident current = requireIncident(tenantId, incidentId);
+
+        // Mismo orden de locks que resolve/confirm: Receipt -> Incident (-> PurchaseOrder en el servicio).
+        GoodsReceipt receipt = requireReceiptForUpdate(tenantId, current.getGoodsReceiptId());
+        requireBranchAccess(branchAccessResolver.resolve(actor), receipt.getBranchId());
+        ReceiptIncident incident = receiptIncidentRepository
+                .findForUpdateByTenantIdAndId(tenantId, incidentId)
+                .orElseThrow(ReceiptIncidentService::incidentNotFound);
+        if (!incident.getGoodsReceiptId().equals(receipt.getId())) {
+            throw incidentNotFound();
+        }
+        if (incident.getStatus() == ReceiptIncidentStatus.resolved) {
+            throw BusinessException.conflict(
+                    "RECEIPT_INCIDENT_ALREADY_RESOLVED", "La incidencia ya fue resuelta.");
+        }
+        if (incident.getGoodsReceiptItemId() == null || incident.getQuantityAffected() == null) {
+            throw badRequest(
+                    "RECEIPT_INCIDENT_REPLACEMENT_NOT_APPLICABLE",
+                    "Solo las incidencias asociadas a un producto admiten reposición.");
+        }
+        GoodsReceiptItem item = goodsReceiptItemRepository
+                .findByTenantIdAndId(tenantId, incident.getGoodsReceiptItemId())
+                .orElseThrow(ReceiptIncidentService::receiptItemNotFound);
+        if (!item.getGoodsReceiptId().equals(receipt.getId())) {
+            throw incidentNotFound();
+        }
+
+        goodsReceiptService.appendIncidentReplacement(
+                tenantId,
+                receipt,
+                item,
+                incident.getQuantityAffected(),
+                request.replacementQuantity(),
+                request.trackingDetails());
+        return markResolved(incident, actor);
+    }
+
+    private ReceiptIncidentResponse markResolved(ReceiptIncident incident, AuthenticatedUser actor) {
         incident.setStatus(ReceiptIncidentStatus.resolved);
         incident.setResolvedByUserId(actor.userId());
         incident.setResolvedAt(Instant.now());
@@ -112,7 +164,8 @@ public class ReceiptIncidentService {
     }
 
     private ValidatedRequest validateRequest(
-            UUID tenantId, UUID receiptId, CreateReceiptIncidentRequest request) {
+            UUID tenantId, GoodsReceipt receipt, CreateReceiptIncidentRequest request) {
+        UUID receiptId = receipt.getId();
         if (request == null || request.incidentType() == null) {
             throw badRequest("RECEIPT_INCIDENT_INVALID_REQUEST", "Los datos de la incidencia son requeridos.");
         }
@@ -145,10 +198,12 @@ public class ReceiptIncidentService {
             throw badRequest(
                     "RECEIPT_INCIDENT_INVALID_QUANTITY", "La cantidad afectada no es valida.");
         }
-        if (quantity.compareTo(item.getReceivedQuantity()) > 0) {
+        // La incidencia es mercancía afectada y NO aceptada: se valida contra lo aún justificable de la
+        // línea de orden, no contra receivedQuantity.
+        if (quantity.compareTo(goodsReceiptService.pendingQuantity(tenantId, receipt, item)) > 0) {
             throw badRequest(
-                    "RECEIPT_INCIDENT_QUANTITY_EXCEEDS_ITEM",
-                    "La cantidad afectada no puede superar la cantidad recibida.");
+                    "RECEIPT_INCIDENT_QUANTITY_EXCEEDS_PENDING",
+                    "La cantidad afectada supera la cantidad pendiente de la línea de la orden de compra.");
         }
         Unit unit = unitRepository.findByTenantIdAndId(tenantId, item.getUnitId())
                 .orElseThrow(() -> new BusinessException(
