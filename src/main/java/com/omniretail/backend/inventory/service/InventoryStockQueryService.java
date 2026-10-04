@@ -2,10 +2,15 @@ package com.omniretail.backend.inventory.service;
 
 import com.omniretail.backend.administration.repository.BranchRepository;
 import com.omniretail.backend.administration.service.BranchAccessResolver;
+import com.omniretail.backend.administration.service.BranchAccessResolver.BranchAccess;
+import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.inventory.dto.CrossBranchStockDto;
 import com.omniretail.backend.inventory.dto.InventoryAlertStatus;
 import com.omniretail.backend.inventory.dto.InventoryStockItemDto;
 import com.omniretail.backend.inventory.dto.InventoryStockPageResponse;
 import com.omniretail.backend.inventory.dto.InventoryStockSummaryDto;
+import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
+import com.omniretail.backend.inventory.repository.InventoryBalanceRepository.CrossBranchStockProjection;
 import com.omniretail.backend.inventory.repository.ProductInventorySettingsRepository;
 import com.omniretail.backend.inventory.repository.ProductInventorySettingsRepository.InventoryStockProjection;
 import com.omniretail.backend.inventory.repository.ProductInventorySettingsRepository.InventoryStockSummaryProjection;
@@ -15,6 +20,7 @@ import com.omniretail.backend.shared.security.CurrentUser;
 import com.omniretail.backend.shared.security.SaasCapability;
 import com.omniretail.backend.shared.security.TenantCapabilityGuard;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
@@ -38,6 +44,8 @@ public class InventoryStockQueryService {
     private final TenantCapabilityGuard tenantCapabilityGuard;
     private final BranchAccessResolver branchAccessResolver;
     private final BranchRepository branchRepository;
+    private final ProductRepository productRepository;
+    private final InventoryBalanceRepository inventoryBalanceRepository;
     private final ProductInventorySettingsRepository settingsRepository;
     private final TenantBusinessDateService businessDateService;
 
@@ -76,16 +84,38 @@ public class InventoryStockQueryService {
                         summary.getOutOfStock()));
     }
 
-    private void requireBranchAndAccess(AuthenticatedUser actor, UUID branchId) {
+    public List<CrossBranchStockDto> listBranches(UUID productId, UUID branchId) {
+        AuthenticatedUser actor = currentUser.require();
+        UUID tenantId = actor.tenantId();
+        tenantCapabilityGuard.ensureTenantCapability(tenantId, SaasCapability.inventory);
+        BranchAccess access = requireBranchAndAccess(actor, branchId);
+        if (!productRepository.existsByTenantIdAndId(tenantId, productId)) {
+            throw new BusinessException(
+                    HttpStatus.NOT_FOUND, "PRODUCT_NOT_FOUND", "Producto no encontrado.");
+        }
+
+        List<CrossBranchStockProjection> rows = access.allBranches()
+                ? inventoryBalanceRepository.findCrossBranchStock(tenantId, productId, branchId)
+                : inventoryBalanceRepository.findCrossBranchStockIn(
+                        tenantId, productId, branchId, access.branchIds());
+        return rows.stream()
+                .map(row -> new CrossBranchStockDto(
+                        row.getBranchId(), row.getBranchName(), row.getAvailableQuantity()))
+                .toList();
+    }
+
+    private BranchAccess requireBranchAndAccess(AuthenticatedUser actor, UUID branchId) {
         if (branchId == null) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "BRANCH_REQUIRED", "La sucursal es requerida.");
         }
         branchRepository.findByTenantIdAndId(actor.tenantId(), branchId)
                 .orElseThrow(() -> new BusinessException(
                         HttpStatus.NOT_FOUND, "BRANCH_NOT_FOUND", "Sucursal no encontrada."));
-        if (!branchAccessResolver.resolve(actor).allows(branchId)) {
+        BranchAccess access = branchAccessResolver.resolve(actor);
+        if (!access.allows(branchId)) {
             throw BusinessException.forbidden("BRANCH_ACCESS_DENIED", "No tienes acceso a esta sucursal.");
         }
+        return access;
     }
 
     private static SortSelection sort(Pageable pageable) {
