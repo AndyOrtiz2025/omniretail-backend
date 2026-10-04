@@ -90,6 +90,21 @@ class PickingServiceTest {
     }
 
     @Test
+    void createsPickingForPosHomeDeliveryOrder() {
+        Fixture fixture = fixture("home_delivery", false);
+        jdbc.update("UPDATE orders SET source = 'pos' WHERE id = ?", fixture.orderId());
+        entityManager.flush();
+        entityManager.clear();
+
+        PickingOrder picking = service.ensureForOrder(
+                fixture.tenantId(), fixture.orderId()).orElseThrow();
+
+        assertThat(picking.getSourceType()).isEqualTo(PickingSourceType.order);
+        assertThat(picking.getSourceId()).isEqualTo(fixture.orderId());
+        assertThat(picking.getBranchId()).isEqualTo(fixture.branchId());
+    }
+
+    @Test
     void rejectsStorePickupOrders() {
         Fixture storePickup = fixture("store_pickup", false);
         assertCode(

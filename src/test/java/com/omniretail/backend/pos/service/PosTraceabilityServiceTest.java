@@ -5,12 +5,22 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.doThrow;
 
 import com.omniretail.backend.TestcontainersConfiguration;
 import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.administration.service.BranchAccessResolver;
 import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
 import com.omniretail.backend.catalog.service.ProductPriceResolver;
+import com.omniretail.backend.ecommerce.entity.DeliveryMethod;
+import com.omniretail.backend.ecommerce.entity.TransportMode;
+import com.omniretail.backend.logistics.dto.ConfirmDispatchRequest;
+import com.omniretail.backend.logistics.dto.PackingChecklistRequest;
+import com.omniretail.backend.logistics.dto.SavePackingPreparationRequest;
+import com.omniretail.backend.logistics.dto.UpdatePickingItemRequest;
+import com.omniretail.backend.logistics.service.DispatchService;
+import com.omniretail.backend.logistics.service.PackingService;
+import com.omniretail.backend.logistics.service.PickingService;
 import com.omniretail.backend.pos.dto.CreateSaleRequest;
 import com.omniretail.backend.pos.dto.CreateSaleReturnRequest;
 import com.omniretail.backend.pos.dto.InventoryTrackingSelectionRequest;
@@ -38,6 +48,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
 @SpringBootTest
 @ActiveProfiles("test")
@@ -46,6 +57,9 @@ class PosTraceabilityServiceTest {
 
     @Autowired private SaleService sales;
     @Autowired private SaleReturnService returns;
+    @MockitoSpyBean private PickingService picking;
+    @Autowired private PackingService packing;
+    @Autowired private DispatchService dispatch;
     @Autowired private JdbcTemplate jdbc;
     @MockitoBean private CurrentUser currentUser;
     @MockitoBean private TenantCapabilityGuard capabilityGuard;
@@ -165,6 +179,216 @@ class PosTraceabilityServiceTest {
                         sale.id(),
                         fixture.lotId()))
                 .isEqualByComparingTo("24.000");
+    }
+
+    @Test
+    void deferredHomeDeliveryReservesConvertedQuantityAndVoidReleasesWithoutPhysicalMovement() {
+        Fixture fixture = fixture(false, false, new BigDecimal("24.000"), List.of());
+        jdbc.update(
+                "UPDATE inventory_balances SET location_id = NULL WHERE tenant_id = ? AND product_id = ?",
+                fixture.tenantId(), fixture.productId());
+        configureSaleUnitConversion(fixture, "12.000000");
+        UUID confirmationId = UUID.randomUUID();
+        CreateSaleRequest request = deferredSaleRequest(fixture, confirmationId);
+
+        SaleConfirmationResponse created = sales.create(request);
+
+        assertThat(created.sourceOrderId()).isNotNull();
+        assertThat(created.order().id()).isEqualTo(created.sourceOrderId());
+        assertThat(created.order().source()).isEqualTo(com.omniretail.backend.ecommerce.entity.OrderSource.pos);
+        assertThat(created.order().deliveryMethod()).isEqualTo(DeliveryMethod.home_delivery);
+        assertThat(created.items()).singleElement().satisfies(item ->
+                assertThat(item.quantity()).isEqualByComparingTo("2.000"));
+        assertThat(created.order().items()).singleElement().satisfies(item -> {
+            assertThat(item.quantity()).isEqualByComparingTo("2.000");
+            assertThat(item.inventoryQuantity()).isEqualByComparingTo("24.000");
+        });
+        assertThat(created.pickingOrder().orderId()).isEqualTo(created.sourceOrderId());
+        assertThat(created.payments()).singleElement().satisfies(payment -> {
+            assertThat(payment.saleId()).isEqualTo(created.id());
+            assertThat(payment.orderId()).isEqualTo(created.sourceOrderId());
+        });
+        assertThat(defaultBalance(fixture, "quantity")).isEqualByComparingTo("24.000");
+        assertThat(defaultBalance(fixture, "reserved_quantity")).isEqualByComparingTo("24.000");
+        assertThat(jdbc.queryForObject(
+                "SELECT quantity FROM inventory_reservations WHERE tenant_id = ? AND order_id = ?",
+                BigDecimal.class, fixture.tenantId(), created.sourceOrderId()))
+                .isEqualByComparingTo("24.000");
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM inventory_movements WHERE reference_id = ?",
+                Long.class, created.id())).isZero();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM cash_movements WHERE reference_type = 'sale' AND reference_id = ?",
+                Long.class, created.id())).isOne();
+
+        SaleConfirmationResponse replay = sales.create(request);
+        assertThat(replay.id()).isEqualTo(created.id());
+        assertThat(replay.order().id()).isEqualTo(created.order().id());
+        assertThat(replay.pickingOrder().id()).isEqualTo(created.pickingOrder().id());
+        assertThat(replay.idempotent()).isTrue();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM orders WHERE tenant_id = ? AND idempotency_key = ?",
+                Long.class, fixture.tenantId(), "deferred-" + confirmationId)).isOne();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM inventory_reservations WHERE tenant_id = ? AND order_id = ?",
+                Long.class, fixture.tenantId(), created.sourceOrderId())).isOne();
+
+        UUID saleItemId = jdbc.queryForObject(
+                "SELECT id FROM sale_items WHERE sale_id = ?", UUID.class, created.id());
+        assertBusinessCode(
+                () -> returns.create(
+                        created.id(),
+                        new CreateSaleReturnRequest(
+                                "Devolucion diferida no soportada",
+                                List.of(new CreateSaleReturnRequest.Line(
+                                        saleItemId, BigDecimal.ONE)))),
+                "DEFERRED_SALE_RETURN_NOT_SUPPORTED");
+        assertThat(defaultBalance(fixture, "quantity")).isEqualByComparingTo("24.000");
+        assertThat(defaultBalance(fixture, "reserved_quantity")).isEqualByComparingTo("24.000");
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM sale_returns WHERE sale_id = ?",
+                Long.class, created.id())).isZero();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM inventory_movements WHERE reference_id = ?",
+                Long.class, created.id())).isZero();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM cash_movements WHERE reference_type = 'sale' AND reference_id = ?",
+                Long.class, created.id())).isOne();
+
+        CreateSaleRequest changedDeferred = new CreateSaleRequest(
+                request.branchId(), request.cashShiftId(), request.customerId(), request.taxTotal(),
+                request.items(), request.payments(), request.confirmationId(), request.document(),
+                null,
+                new CreateSaleRequest.DeferredOrder(
+                        "changed-" + confirmationId,
+                        request.deferredOrder().deliveryMethod(),
+                        request.deferredOrder().transportMode(),
+                        request.deferredOrder().deliveryAddress(),
+                        request.deferredOrder().notificationContact()));
+        assertThatThrownBy(() -> sales.create(changedDeferred))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("IDEMPOTENCY_KEY_REUSED"));
+
+        sales.voidSale(created.id());
+
+        assertThat(defaultBalance(fixture, "quantity")).isEqualByComparingTo("24.000");
+        assertThat(defaultBalance(fixture, "reserved_quantity")).isEqualByComparingTo("0.000");
+        assertThat(jdbc.queryForObject(
+                "SELECT status FROM orders WHERE id = ?", String.class, created.sourceOrderId()))
+                .isEqualTo("cancelled");
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM inventory_movements WHERE reference_id = ?",
+                Long.class, created.id())).isZero();
+
+        UUID pickingId = created.pickingOrder().id();
+        UUID pickingItemId = jdbc.queryForObject(
+                "SELECT id FROM picking_items WHERE picking_order_id = ?",
+                UUID.class, pickingId);
+        assertBusinessCode(
+                () -> picking.assign(fixture.branchId(), pickingId),
+                "INVALID_ORDER_STATUS_TRANSITION");
+
+        jdbc.update(
+                "UPDATE picking_orders SET assigned_user_id = ?, status = 'assigned' WHERE id = ?",
+                fixture.userId(), pickingId);
+        assertBusinessCode(
+                () -> picking.updateItem(
+                        fixture.branchId(),
+                        pickingId,
+                        pickingItemId,
+                        new UpdatePickingItemRequest(
+                                new BigDecimal("24.000"), null, "void-progress")),
+                "INVALID_ORDER_STATUS_TRANSITION");
+
+        jdbc.update(
+                "UPDATE picking_orders SET status = 'in_progress', started_at = now() WHERE id = ?",
+                pickingId);
+        jdbc.update(
+                "UPDATE picking_items SET picked_quantity = requested_quantity, status = 'completed' WHERE id = ?",
+                pickingItemId);
+        assertBusinessCode(
+                () -> picking.complete(fixture.branchId(), pickingId),
+                "INVALID_ORDER_STATUS_TRANSITION");
+
+        jdbc.update(
+                "UPDATE picking_orders SET status = 'completed', completed_at = now() WHERE id = ?",
+                pickingId);
+        UUID packingId = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO packings
+                    (id, tenant_id, branch_id, source_type, source_id, order_id,
+                     picking_order_id, started_by_user_id, started_at)
+                VALUES (?, ?, ?, 'order', ?, ?, ?, ?, now())
+                """, packingId, fixture.tenantId(), fixture.branchId(), created.sourceOrderId(),
+                created.sourceOrderId(), pickingId, fixture.userId());
+        assertBusinessCode(
+                () -> packing.savePreparation(
+                        fixture.branchId(),
+                        packingId,
+                        new SavePackingPreparationRequest(
+                                0L,
+                                "void-packing",
+                                new PackingChecklistRequest(true, true, true),
+                                BigDecimal.ONE,
+                                1)),
+                "INVALID_ORDER_STATUS_TRANSITION");
+
+        jdbc.update("""
+                UPDATE packings
+                SET status = 'finalized', package_protection_checked = true,
+                    document_included_checked = true, recipient_verified_checked = true,
+                    total_weight = 1.000, package_count = 1,
+                    finalized_by_user_id = ?, finalized_at = now()
+                WHERE id = ?
+                """, fixture.userId(), packingId);
+        assertBusinessCode(
+                () -> dispatch.confirm(
+                        fixture.branchId(),
+                        created.sourceOrderId(),
+                        new ConfirmDispatchRequest(
+                                "void-dispatch",
+                                "Transportista",
+                                "GUIA-VOID",
+                                List.of(new ConfirmDispatchRequest.PackageRequest(
+                                        "PKG-1", BigDecimal.ONE, "Caja")))),
+                "INVALID_ORDER_STATUS_TRANSITION");
+    }
+
+    @Test
+    void deferredConfirmationRollsBackOrderItemsReservationAndPickingWhenPickingFails() {
+        Fixture fixture = fixture(false, false, new BigDecimal("24.000"), List.of());
+        jdbc.update(
+                "UPDATE inventory_balances SET location_id = NULL WHERE tenant_id = ? AND product_id = ?",
+                fixture.tenantId(), fixture.productId());
+        configureSaleUnitConversion(fixture, "12.000000");
+        UUID confirmationId = UUID.randomUUID();
+        doThrow(BusinessException.conflict("PICKING_FAILED", "Picking fallo"))
+                .when(picking)
+                .ensureForOrder(eq(fixture.tenantId()), any(UUID.class));
+
+        assertBusinessCode(
+                () -> sales.create(deferredSaleRequest(fixture, confirmationId)),
+                "PICKING_FAILED");
+
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM orders WHERE tenant_id = ? AND idempotency_key = ?",
+                Long.class, fixture.tenantId(), "deferred-" + confirmationId)).isZero();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM order_items item JOIN orders o ON o.id = item.order_id"
+                        + " WHERE o.tenant_id = ?",
+                Long.class, fixture.tenantId())).isZero();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM inventory_reservations WHERE tenant_id = ?",
+                Long.class, fixture.tenantId())).isZero();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM picking_orders WHERE tenant_id = ?",
+                Long.class, fixture.tenantId())).isZero();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM sales WHERE tenant_id = ?",
+                Long.class, fixture.tenantId())).isZero();
+        assertThat(defaultBalance(fixture, "quantity")).isEqualByComparingTo("24.000");
+        assertThat(defaultBalance(fixture, "reserved_quantity")).isEqualByComparingTo("0.000");
     }
 
     @Test
@@ -721,6 +945,30 @@ class PosTraceabilityServiceTest {
                 confirmationId);
     }
 
+    private CreateSaleRequest deferredSaleRequest(Fixture fixture, UUID confirmationId) {
+        return new CreateSaleRequest(
+                fixture.branchId(),
+                fixture.shiftId(),
+                null,
+                BigDecimal.ZERO,
+                List.of(new CreateSaleRequest.Item(
+                        fixture.productId(), new BigDecimal("2.000"), BigDecimal.ZERO)),
+                List.of(new CreateSaleRequest.PaymentLine(
+                        PaymentMethod.cash, new BigDecimal("20.00"), null)),
+                confirmationId,
+                null,
+                null,
+                new CreateSaleRequest.DeferredOrder(
+                        "deferred-" + confirmationId,
+                        DeliveryMethod.home_delivery,
+                        TransportMode.own_fleet,
+                        new CreateSaleRequest.DeliveryAddress(
+                                "Cliente", "5555-5555", "Zona 1", null,
+                                "Guatemala", "Guatemala", null, "Guatemala", "Porton negro"),
+                        new CreateSaleRequest.NotificationContact(
+                                "send", "cliente@example.com")));
+    }
+
     private static InventoryTrackingSelectionRequest selection(
             Fixture fixture,
             UUID lotId,
@@ -875,6 +1123,34 @@ class PosTraceabilityServiceTest {
                 fixture.tenantId(),
                 fixture.productId(),
                 fixture.locationId());
+    }
+
+    private BigDecimal reservedBalance(Fixture fixture) {
+        return jdbc.queryForObject(
+                "SELECT reserved_quantity FROM inventory_balances WHERE tenant_id = ? AND product_id = ? AND location_id = ?",
+                BigDecimal.class,
+                fixture.tenantId(),
+                fixture.productId(),
+                fixture.locationId());
+    }
+
+    private BigDecimal defaultBalance(Fixture fixture, String column) {
+        String sql = switch (column) {
+            case "quantity" -> "SELECT quantity FROM inventory_balances"
+                    + " WHERE tenant_id = ? AND product_id = ? AND location_id IS NULL";
+            case "reserved_quantity" -> "SELECT reserved_quantity FROM inventory_balances"
+                    + " WHERE tenant_id = ? AND product_id = ? AND location_id IS NULL";
+            default -> throw new IllegalArgumentException("Columna de balance no soportada.");
+        };
+        return jdbc.queryForObject(
+                sql, BigDecimal.class, fixture.tenantId(), fixture.productId());
+    }
+
+    private static void assertBusinessCode(Runnable action, String code) {
+        assertThatThrownBy(action::run)
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode()).isEqualTo(code));
     }
 
     private String serialStatus(Fixture fixture, String serial) {

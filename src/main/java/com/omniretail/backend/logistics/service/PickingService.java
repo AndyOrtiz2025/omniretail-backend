@@ -687,18 +687,20 @@ public class PickingService {
     }
 
     private static void requireEligibleOrderSource(Order order) {
-        if (order.getSource() != OrderSource.ecommerce
+        if ((order.getSource() != OrderSource.ecommerce
+                        && order.getSource() != OrderSource.pos)
                 || order.getDeliveryMethod() != DeliveryMethod.home_delivery) {
             throw conflict(
                     "PICKING_ORDER_NOT_ELIGIBLE",
-                    "Solo los pedidos ecommerce con entrega a domicilio admiten Picking.");
+                    "Solo los pedidos ecommerce o POS con entrega a domicilio admiten Picking.");
         }
     }
 
     private static void requireMutablePicking(PickingOrder picking, SourceContext source) {
         requireNonTerminal(picking);
         if (source.order() != null
-                && (source.order().getSource() != OrderSource.ecommerce
+                && ((source.order().getSource() != OrderSource.ecommerce
+                                && source.order().getSource() != OrderSource.pos)
                         || source.order().getDeliveryMethod() != DeliveryMethod.home_delivery)) {
             throw conflict("PICKING_ORDER_NOT_ELIGIBLE", "El pedido no admite Picking.");
         }
