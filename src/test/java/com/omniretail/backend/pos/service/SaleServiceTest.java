@@ -18,13 +18,26 @@ import com.omniretail.backend.catalog.service.ProductPriceResolver;
 import com.omniretail.backend.catalog.service.ProductKitService;
 import com.omniretail.backend.catalog.service.ProductUnitConversionResolver;
 import com.omniretail.backend.catalog.entity.ProductType;
+import com.omniretail.backend.ecommerce.entity.DeliveryMethod;
+import com.omniretail.backend.ecommerce.entity.InventoryReservation;
+import com.omniretail.backend.ecommerce.entity.InventoryReservationStatus;
+import com.omniretail.backend.ecommerce.entity.Order;
+import com.omniretail.backend.ecommerce.entity.OrderItem;
+import com.omniretail.backend.ecommerce.entity.OrderSource;
+import com.omniretail.backend.ecommerce.entity.OrderStatus;
+import com.omniretail.backend.ecommerce.entity.TransportMode;
+import com.omniretail.backend.ecommerce.repository.InventoryReservationRepository;
+import com.omniretail.backend.ecommerce.repository.OrderItemRepository;
+import com.omniretail.backend.ecommerce.repository.OrderRepository;
 import com.omniretail.backend.ecommerce.repository.CustomerRepository;
+import com.omniretail.backend.inventory.dto.ReserveInventoryCommand;
 import com.omniretail.backend.inventory.dto.DeductStockCommand;
 import com.omniretail.backend.inventory.dto.InventoryOutboundCommand;
 import com.omniretail.backend.inventory.entity.InventoryMovement;
 import com.omniretail.backend.inventory.entity.InventoryMovementType;
 import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
 import com.omniretail.backend.inventory.service.InventoryStockService;
+import com.omniretail.backend.inventory.service.InventoryReservationLifecycleService;
 import com.omniretail.backend.inventory.service.InventoryTraceabilityHistoryService;
 import com.omniretail.backend.inventory.service.InventoryTraceabilityMutationService;
 import com.omniretail.backend.pos.dto.CreateSaleRequest;
@@ -44,6 +57,10 @@ import com.omniretail.backend.pos.repository.CashShiftRepository;
 import com.omniretail.backend.pos.repository.PaymentRepository;
 import com.omniretail.backend.pos.repository.SaleItemRepository;
 import com.omniretail.backend.pos.repository.SaleRepository;
+import com.omniretail.backend.logistics.entity.PickingOrder;
+import com.omniretail.backend.logistics.entity.PickingSourceType;
+import com.omniretail.backend.logistics.repository.PickingOrderRepository;
+import com.omniretail.backend.logistics.service.PickingService;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
@@ -66,6 +83,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
+import tools.jackson.databind.json.JsonMapper;
 
 @ExtendWith(MockitoExtension.class)
 class SaleServiceTest {
@@ -90,6 +108,13 @@ class SaleServiceTest {
     @Mock ProductPriceResolver productPriceResolver;
     @Mock ProductKitService productKitService;
     @Mock ProductUnitConversionResolver unitConversionResolver;
+    @Mock OrderRepository orders;
+    @Mock OrderItemRepository orderItems;
+    @Mock InventoryReservationRepository reservations;
+    @Mock InventoryReservationLifecycleService reservationLifecycle;
+    @Mock PickingService pickingService;
+    @Mock PickingOrderRepository pickingOrders;
+    @Mock JsonMapper jsonMapper;
     @InjectMocks SaleService service;
 
     private final UUID tenant = UUID.randomUUID();
@@ -125,6 +150,14 @@ class SaleServiceTest {
             if (value.getId() == null) ReflectionTestUtils.setField(value, "id", UUID.randomUUID());
             return value;
         });
+        lenient().when(orderItems.saveAndFlush(any())).thenAnswer(invocation -> {
+            OrderItem value = invocation.getArgument(0);
+            if (value.getId() == null) ReflectionTestUtils.setField(value, "id", UUID.randomUUID());
+            return value;
+        });
+        lenient().when(jsonMapper.writeValueAsString(any())).thenReturn("{}");
+        lenient().when(orders.findByTenantIdAndSourceAndIdempotencyKey(
+                eq(tenant), eq(OrderSource.pos), any())).thenReturn(Optional.empty());
         lenient().when(inventory.deductStock(any())).thenAnswer(invocation -> {
             DeductStockCommand command = invocation.getArgument(0);
             InventoryMovement movement = InventoryMovement.builder()
@@ -825,6 +858,222 @@ class SaleServiceTest {
     }
 
     @Test
+    void createsDeferredHomeDeliveryWithPhysicalReservationAndPickingWithoutStockOut() {
+        Product product = product();
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product));
+        when(unitConversionResolver.toBaseQuantity(tenant, product, new BigDecimal("2")))
+                .thenReturn(new BigDecimal("24.000"));
+        stubSalePersistence();
+        Order order = stubDeferredOrderPersistence();
+        PickingOrder picking = picking(order);
+        when(pickingService.ensureForOrder(tenant, order.getId())).thenReturn(Optional.of(picking));
+
+        var result = service.create(deferredRequest(
+                new BigDecimal("40.00"), new BigDecimal("2"), UUID.randomUUID()));
+
+        assertThat(result.sourceOrderId()).isEqualTo(order.getId());
+        assertThat(result.order().id()).isEqualTo(order.getId());
+        assertThat(result.pickingOrder().id()).isEqualTo(picking.getId());
+        verify(orderItems).saveAndFlush(argThat(item ->
+                item.getQuantity().compareTo(new BigDecimal("2")) == 0
+                        && item.getInventoryQuantity().compareTo(new BigDecimal("24.000")) == 0
+                        && item.getUnitPrice().compareTo(new BigDecimal("20.00")) == 0));
+        verify(reservationLifecycle).reserve(argThat(command ->
+                command.sourceType() == com.omniretail.backend.ecommerce.entity.InventoryReservationSourceType.order
+                        && command.sourceId().equals(order.getId())
+                        && command.sourceLineId().equals(command.orderItemId())
+                        && command.orderId().equals(order.getId())
+                        && command.quantity().compareTo(new BigDecimal("24.000")) == 0));
+        verify(payments).save(argThat(payment ->
+                payment.getSaleId() != null && order.getId().equals(payment.getOrderId())));
+        verify(cashMovements, times(1)).save(argThat(movement ->
+                movement.getType() == CashMovementType.in));
+        verifyNoInteractions(inventory, traceabilityMutation);
+    }
+
+    @Test
+    void rejectsUnsupportedDeferredDeliveryAndConflictingSourceOrderInput() {
+        reset(branchAccess);
+        CreateSaleRequest valid = deferredRequest(
+                new BigDecimal("20.00"), BigDecimal.ONE, UUID.randomUUID());
+        CreateSaleRequest storePickup = new CreateSaleRequest(
+                valid.branchId(), valid.cashShiftId(), valid.customerId(), valid.taxTotal(),
+                valid.items(), valid.payments(), valid.confirmationId(), valid.document(), null,
+                new CreateSaleRequest.DeferredOrder(
+                        valid.deferredOrder().idempotencyKey(),
+                        DeliveryMethod.store_pickup,
+                        TransportMode.customer,
+                        valid.deferredOrder().deliveryAddress(),
+                        valid.deferredOrder().notificationContact()));
+        assertThatThrownBy(() -> service.create(storePickup))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("DEFERRED_DELIVERY_METHOD_NOT_SUPPORTED"));
+
+        CreateSaleRequest conflicting = new CreateSaleRequest(
+                valid.branchId(), valid.cashShiftId(), valid.customerId(), valid.taxTotal(),
+                valid.items(), valid.payments(), valid.confirmationId(), valid.document(),
+                UUID.randomUUID(), valid.deferredOrder());
+        assertThatThrownBy(() -> service.create(conflicting))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("SALE_ORDER_INPUT_CONFLICT"));
+        verifyNoInteractions(products, orders, sales, reservationLifecycle, pickingService);
+    }
+
+    @Test
+    void replayOfDeferredConfirmationReturnsSameOrderAndPickingWithoutNewEffects() {
+        Product product = product();
+        UUID confirmationId = UUID.randomUUID();
+        CreateSaleRequest request = deferredRequest(
+                new BigDecimal("20.00"), BigDecimal.ONE, confirmationId);
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product));
+        stubSalePersistence();
+        Order order = stubDeferredOrderPersistence();
+        PickingOrder picking = picking(order);
+        when(pickingService.ensureForOrder(tenant, order.getId())).thenReturn(Optional.of(picking));
+
+        var first = service.create(request);
+        ArgumentCaptor<Sale> saleCaptor = ArgumentCaptor.forClass(Sale.class);
+        verify(sales).saveAndFlush(saleCaptor.capture());
+        Sale savedSale = saleCaptor.getValue();
+        ArgumentCaptor<SaleItem> itemCaptor = ArgumentCaptor.forClass(SaleItem.class);
+        verify(items).saveAndFlush(itemCaptor.capture());
+        SaleItem savedItem = itemCaptor.getValue();
+        ArgumentCaptor<Payment> paymentCaptor = ArgumentCaptor.forClass(Payment.class);
+        verify(payments).save(paymentCaptor.capture());
+        Payment savedPayment = paymentCaptor.getValue();
+        when(sales.findByTenantIdAndConfirmationId(tenant, confirmationId))
+                .thenReturn(Optional.of(savedSale));
+        when(items.findByTenantIdAndSaleId(tenant, savedSale.getId()))
+                .thenReturn(List.of(savedItem));
+        when(payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(tenant, savedSale.getId()))
+                .thenReturn(List.of(savedPayment));
+        when(inventoryMovements.findByTenantIdAndReferenceTypeInAndReferenceIdOrderByCreatedAtAscIdAsc(
+                tenant, List.of("POS_SALE", "POS_KIT_SALE"), savedSale.getId()))
+                .thenReturn(List.of());
+        when(orders.findByTenantIdAndId(tenant, order.getId())).thenReturn(Optional.of(order));
+        when(orderItems.findByOrderId(order.getId())).thenReturn(first.order().items().stream()
+                .map(ignored -> savedOrderItem(order.getId(), product, BigDecimal.ONE, BigDecimal.ONE))
+                .toList());
+        when(pickingOrders.findByTenantIdAndSourceTypeAndSourceId(
+                tenant, PickingSourceType.order, order.getId())).thenReturn(Optional.of(picking));
+
+        var replay = service.create(request);
+
+        assertThat(replay.id()).isEqualTo(first.id());
+        assertThat(replay.order().id()).isEqualTo(first.order().id());
+        assertThat(replay.pickingOrder().id()).isEqualTo(first.pickingOrder().id());
+        assertThat(replay.idempotent()).isTrue();
+        verify(orders, times(1)).saveAndFlush(any());
+        verify(reservationLifecycle, times(1)).reserve(any());
+        verify(pickingService, times(1)).ensureForOrder(any(), any());
+        verify(payments, times(1)).save(any());
+        verify(cashMovements, times(1)).save(any());
+    }
+
+    @Test
+    void rejectsDeferredKitsAndTraceableProductsBeforePersistentEffects() {
+        Product kit = product();
+        kit.setProductType(ProductType.kit);
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(kit));
+        assertThatThrownBy(() -> service.create(deferredRequest(
+                new BigDecimal("20.00"), BigDecimal.ONE, UUID.randomUUID())))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("KIT_FULFILLMENT_NOT_SUPPORTED"));
+        verifyNoInteractions(orders, orderItems, reservationLifecycle, pickingService);
+        verify(sales, never()).save(any());
+        verify(sales, never()).saveAndFlush(any());
+
+        clearInvocations(products);
+        Product traceable = product();
+        traceable.setTrackingLot(true);
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(traceable));
+        assertThatThrownBy(() -> service.create(deferredRequest(
+                new BigDecimal("20.00"), BigDecimal.ONE, UUID.randomUUID())))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("TRACEABILITY_NOT_SUPPORTED"));
+        verifyNoInteractions(orders, orderItems, reservationLifecycle, pickingService);
+        verify(sales, never()).save(any());
+        verify(sales, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void doesNotCreateSalePaymentOrCashMovementWhenDeferredFulfillmentFails() {
+        Product product = product();
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product));
+        Order order = stubDeferredOrderPersistence();
+        doThrow(BusinessException.conflict("INSUFFICIENT_STOCK", "Sin stock"))
+                .when(reservationLifecycle).reserve(any());
+
+        assertThatThrownBy(() -> service.create(deferredRequest(
+                new BigDecimal("20.00"), BigDecimal.ONE, UUID.randomUUID())))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getCode()).isEqualTo("INSUFFICIENT_STOCK"));
+        verify(sales, never()).save(any());
+        verify(sales, never()).saveAndFlush(any());
+        verifyNoInteractions(payments, cashMovements, pickingService);
+
+        reset(reservationLifecycle);
+        when(pickingService.ensureForOrder(tenant, order.getId()))
+                .thenThrow(BusinessException.conflict("PICKING_FAILED", "Picking fallo"));
+        assertThatThrownBy(() -> service.create(deferredRequest(
+                new BigDecimal("20.00"), BigDecimal.ONE, UUID.randomUUID())))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getCode()).isEqualTo("PICKING_FAILED"));
+        verify(sales, never()).save(any());
+        verify(sales, never()).saveAndFlush(any());
+        verifyNoInteractions(payments, cashMovements);
+    }
+
+    @Test
+    void voidDeferredSaleReleasesReservationAndDoesNotRestorePhysicalStock() {
+        Sale sale = sale(SaleStatus.completed);
+        UUID orderId = UUID.randomUUID();
+        sale.setSourceOrderId(orderId);
+        Order order = deferredOrder(orderId);
+        InventoryReservation reservation = InventoryReservation.builder()
+                .status(InventoryReservationStatus.active).build();
+        ReflectionTestUtils.setField(reservation, "id", UUID.randomUUID());
+        when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
+        when(orders.findByTenantIdAndIdForUpdate(tenant, orderId)).thenReturn(Optional.of(order));
+        when(reservations.findByTenantIdAndOrderId(tenant, orderId)).thenReturn(List.of(reservation));
+        when(shifts.findByTenantIdAndId(tenant, shiftId)).thenReturn(Optional.empty());
+        when(sales.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.voidSale(sale.getId());
+
+        verify(reservationLifecycle).release(tenant, reservation.getId());
+        verify(orders).save(argThat(value -> value.getStatus() == OrderStatus.cancelled));
+        verifyNoInteractions(inventory, traceabilityMutation);
+        verifyNoInteractions(inventoryMovements);
+        assertThat(sale.getStatus()).isEqualTo(SaleStatus.cancelled);
+    }
+
+    @Test
+    void rejectsDeferredVoidAfterReservationWasConsumed() {
+        Sale sale = sale(SaleStatus.completed);
+        UUID orderId = UUID.randomUUID();
+        sale.setSourceOrderId(orderId);
+        Order order = deferredOrder(orderId);
+        InventoryReservation reservation = InventoryReservation.builder()
+                .status(InventoryReservationStatus.consumed).build();
+        when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
+        when(orders.findByTenantIdAndIdForUpdate(tenant, orderId)).thenReturn(Optional.of(order));
+        when(reservations.findByTenantIdAndOrderId(tenant, orderId)).thenReturn(List.of(reservation));
+
+        assertThatThrownBy(() -> service.voidSale(sale.getId()))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("DEFERRED_SALE_ALREADY_FULFILLED"));
+        verify(reservationLifecycle, never()).release(any(), any());
+        verify(orders, never()).save(any());
+        verifyNoInteractions(inventory);
+    }
+
+    @Test
     void voidSaleRevertsStockAndRegistersCashOutWhenShiftIsOpen() {
         Sale sale = sale(SaleStatus.completed);
         when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
@@ -941,6 +1190,87 @@ class SaleServiceTest {
         return new CreateSaleRequest(branch, shiftId, null, BigDecimal.ZERO,
                 List.of(new CreateSaleRequest.Item(productId, quantity, manualDiscount)),
                 List.of(new CreateSaleRequest.PaymentLine(PaymentMethod.cash, payment, null)), UUID.randomUUID());
+    }
+
+    private CreateSaleRequest deferredRequest(
+            BigDecimal payment, BigDecimal quantity, UUID confirmationId) {
+        return new CreateSaleRequest(
+                branch,
+                shiftId,
+                null,
+                BigDecimal.ZERO,
+                List.of(new CreateSaleRequest.Item(productId, quantity, BigDecimal.ZERO)),
+                List.of(new CreateSaleRequest.PaymentLine(PaymentMethod.cash, payment, null)),
+                confirmationId,
+                null,
+                null,
+                new CreateSaleRequest.DeferredOrder(
+                        "deferred-" + confirmationId,
+                        DeliveryMethod.home_delivery,
+                        TransportMode.own_fleet,
+                        new CreateSaleRequest.DeliveryAddress(
+                                "Cliente", "5555-5555", "Zona 1", null,
+                                "Guatemala", "Guatemala", null, "Guatemala", "Porton negro"),
+                        new CreateSaleRequest.NotificationContact(
+                                "send", "cliente@example.com")));
+    }
+
+    private Order stubDeferredOrderPersistence() {
+        Order order = deferredOrder(UUID.randomUUID());
+        when(orders.saveAndFlush(any())).thenAnswer(invocation -> {
+            Order value = invocation.getArgument(0);
+            ReflectionTestUtils.setField(value, "id", order.getId());
+            return value;
+        });
+        return order;
+    }
+
+    private Order deferredOrder(UUID id) {
+        Order order = Order.builder()
+                .branchId(branch)
+                .orderNumber("POS-001")
+                .source(OrderSource.pos)
+                .status(OrderStatus.confirmed)
+                .deliveryMethod(DeliveryMethod.home_delivery)
+                .transportMode(TransportMode.own_fleet)
+                .subtotal(new BigDecimal("20.00"))
+                .discountTotal(BigDecimal.ZERO)
+                .shippingTotal(BigDecimal.ZERO)
+                .total(new BigDecimal("20.00"))
+                .trackingToken("pos-test")
+                .build();
+        order.setTenantId(tenant);
+        ReflectionTestUtils.setField(order, "id", id);
+        return order;
+    }
+
+    private PickingOrder picking(Order order) {
+        PickingOrder picking = PickingOrder.builder()
+                .branchId(branch)
+                .sourceType(PickingSourceType.order)
+                .sourceId(order.getId())
+                .orderId(order.getId())
+                .build();
+        picking.setTenantId(tenant);
+        ReflectionTestUtils.setField(picking, "id", UUID.randomUUID());
+        return picking;
+    }
+
+    private OrderItem savedOrderItem(
+            UUID orderId, Product product, BigDecimal quantity, BigDecimal inventoryQuantity) {
+        OrderItem item = OrderItem.builder()
+                .orderId(orderId)
+                .productId(product.getId())
+                .skuSnapshot(product.getSku())
+                .nameSnapshot(product.getName())
+                .quantity(quantity)
+                .inventoryQuantity(inventoryQuantity)
+                .unitPrice(product.getSalePrice())
+                .discount(BigDecimal.ZERO)
+                .subtotal(product.getSalePrice().multiply(quantity))
+                .build();
+        ReflectionTestUtils.setField(item, "id", UUID.randomUUID());
+        return item;
     }
 
     private void stubSalePersistence() {

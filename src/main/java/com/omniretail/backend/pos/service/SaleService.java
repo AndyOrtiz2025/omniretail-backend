@@ -15,6 +15,17 @@ import com.omniretail.backend.catalog.service.ProductPriceResolver;
 import com.omniretail.backend.catalog.service.ProductKitService;
 import com.omniretail.backend.catalog.service.KitFulfillmentSnapshot;
 import com.omniretail.backend.catalog.service.ProductUnitConversionResolver;
+import com.omniretail.backend.ecommerce.entity.DeliveryMethod;
+import com.omniretail.backend.ecommerce.entity.InventoryReservation;
+import com.omniretail.backend.ecommerce.entity.InventoryReservationSourceType;
+import com.omniretail.backend.ecommerce.entity.InventoryReservationStatus;
+import com.omniretail.backend.ecommerce.entity.Order;
+import com.omniretail.backend.ecommerce.entity.OrderItem;
+import com.omniretail.backend.ecommerce.entity.OrderSource;
+import com.omniretail.backend.ecommerce.entity.OrderStatus;
+import com.omniretail.backend.ecommerce.repository.InventoryReservationRepository;
+import com.omniretail.backend.ecommerce.repository.OrderItemRepository;
+import com.omniretail.backend.ecommerce.repository.OrderRepository;
 import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.inventory.dto.AddStockCommand;
 import com.omniretail.backend.inventory.dto.DeductStockCommand;
@@ -22,10 +33,12 @@ import com.omniretail.backend.inventory.dto.InventoryHistoricalTraceDetail;
 import com.omniretail.backend.inventory.dto.InventoryOutboundCommand;
 import com.omniretail.backend.inventory.dto.InventoryRestoreCommand;
 import com.omniretail.backend.inventory.dto.InventoryTraceabilitySelection;
+import com.omniretail.backend.inventory.dto.ReserveInventoryCommand;
 import com.omniretail.backend.inventory.entity.InventoryMovement;
 import com.omniretail.backend.inventory.dto.InventoryMovementResponse;
 import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
 import com.omniretail.backend.inventory.service.InventoryStockService;
+import com.omniretail.backend.inventory.service.InventoryReservationLifecycleService;
 import com.omniretail.backend.inventory.service.InventoryTraceabilityHistoryService;
 import com.omniretail.backend.inventory.service.InventoryTraceabilityMutationService;
 import com.omniretail.backend.pos.dto.CashMovementResponse;
@@ -33,6 +46,8 @@ import com.omniretail.backend.pos.dto.CreateSaleRequest;
 import com.omniretail.backend.pos.dto.InventoryTrackingDetailResponse;
 import com.omniretail.backend.pos.dto.InventoryTrackingSelectionRequest;
 import com.omniretail.backend.pos.dto.PaymentResponse;
+import com.omniretail.backend.pos.dto.PosDeferredOrderResponse;
+import com.omniretail.backend.pos.dto.PosPickingOrderResponse;
 import com.omniretail.backend.pos.dto.SaleConfirmationResponse;
 import com.omniretail.backend.pos.dto.SaleDetailResponse;
 import com.omniretail.backend.pos.dto.SaleItemResponse;
@@ -52,11 +67,15 @@ import com.omniretail.backend.pos.repository.CashShiftRepository;
 import com.omniretail.backend.pos.repository.PaymentRepository;
 import com.omniretail.backend.pos.repository.SaleItemRepository;
 import com.omniretail.backend.pos.repository.SaleRepository;
+import com.omniretail.backend.logistics.entity.PickingOrder;
+import com.omniretail.backend.logistics.repository.PickingOrderRepository;
+import com.omniretail.backend.logistics.service.PickingService;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
 import com.omniretail.backend.shared.security.SaasCapability;
 import com.omniretail.backend.shared.security.TenantCapabilityGuard;
+import com.omniretail.backend.shared.validation.PhoneNormalizer;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
@@ -64,6 +83,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -76,6 +96,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.databind.json.JsonMapper;
 
 @Service
 @Transactional
@@ -102,6 +123,13 @@ public class SaleService {
     private final ProductPriceResolver productPriceResolver;
     private final ProductKitService productKitService;
     private final ProductUnitConversionResolver unitConversionResolver;
+    private final OrderRepository orders;
+    private final OrderItemRepository orderItems;
+    private final InventoryReservationRepository reservations;
+    private final InventoryReservationLifecycleService reservationLifecycle;
+    private final PickingService pickingService;
+    private final PickingOrderRepository pickingOrders;
+    private final JsonMapper jsonMapper;
 
     public SaleConfirmationResponse create(CreateSaleRequest request) {
         AuthenticatedUser actor = currentUser.require();
@@ -113,6 +141,19 @@ public class SaleService {
                     "La confirmación de la venta es obligatoria.");
         }
         NormalizedDocument document = normalizeDocument(request.document());
+        if (request.sourceOrderId() != null && request.deferredOrder() != null) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "SALE_ORDER_INPUT_CONFLICT",
+                    "La venta no puede recibir sourceOrderId y deferredOrder simultaneamente.");
+        }
+        if (request.sourceOrderId() != null) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "SOURCE_ORDER_SALE_NOT_SUPPORTED",
+                    "La confirmacion de una Order existente no forma parte de este incremento.");
+        }
+        NormalizedDeferredOrder deferredOrder = normalizeDeferredOrder(request.deferredOrder());
         if (!branchAccess.resolve(actor).allows(request.branchId())) {
             throw notFound("BRANCH_NOT_FOUND", "Sucursal no encontrada.");
         }
@@ -156,6 +197,9 @@ public class SaleService {
                     .filter(found -> found.getStatus() == ProductStatus.published
                             && Boolean.TRUE.equals(found.getChannelPos()))
                     .orElseThrow(() -> notFound("PRODUCT_NOT_FOUND", "Producto no encontrado o no disponible para POS."));
+            if (deferredOrder != null) {
+                validateDeferredProduct(product, line);
+            }
             ResolvedProductPrice resolved = productPriceResolver.resolveEffectivePrice(
                     actor.tenantId(), product, pricingAt, "pos", request.branchId(), line.quantity());
             BigDecimal gross = money(resolved.basePrice().multiply(line.quantity()));
@@ -188,10 +232,18 @@ public class SaleService {
         if (paid.compareTo(total) != 0) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "PAYMENT_TOTAL_MISMATCH", "Los pagos deben coincidir con el total.");
         }
+        String saleNumber = counter.nextPosSaleNumber(actor.tenantId());
+        DeferredFulfillment deferredFulfillment = deferredOrder == null
+                ? null
+                : createDeferredFulfillment(
+                        actor, request, deferredOrder, catalog, saleNumber,
+                        subtotal, discount, total, fingerprint(request, document));
         Sale newSale = Sale.builder().branchId(request.branchId()).cashShiftId(shift.getId())
-                .createdByUserId(actor.userId()).number(counter.nextPosSaleNumber(actor.tenantId()))
+                .createdByUserId(actor.userId()).number(saleNumber)
                 .customerId(request.customerId()).confirmationId(request.confirmationId())
                 .confirmationFingerprint(fingerprint(request, document))
+                .sourceOrderId(deferredFulfillment == null
+                        ? null : deferredFulfillment.order().getId())
                 .documentType(document.type()).documentTaxId(document.taxId())
                 .documentLegalName(document.legalName()).documentFiscalAddress(document.fiscalAddress())
                 .subtotal(subtotal)
@@ -213,9 +265,11 @@ public class SaleService {
                     .promotionId(pricing.promotionId())
                     .fulfillmentComponents(KitFulfillmentSnapshot.encode(fulfillment)).build());
             savedItems.add(saleItem);
-            inventoryPlans.addAll(saleInventoryPlans(
-                    actor.tenantId(), saleItem, product, pricing.inventoryQuantity(), fulfillment,
-                    line.trackingSelections()));
+            if (deferredFulfillment == null) {
+                inventoryPlans.addAll(saleInventoryPlans(
+                        actor.tenantId(), saleItem, product, pricing.inventoryQuantity(), fulfillment,
+                        line.trackingSelections()));
+            }
         }
         List<InventoryMovement> createdInventoryMovements = inventoryPlans.stream()
                 .sorted(Comparator.comparing((SaleInventoryPlan plan) -> plan.product().getId())
@@ -233,7 +287,10 @@ public class SaleService {
             Boolean externallyVerified = paymentRequest.method() == PaymentMethod.transfer
                     ? paymentRequest.externallyVerified()
                     : null;
-            Payment payment = Payment.builder().saleId(sale.getId()).method(paymentRequest.method())
+            Payment payment = Payment.builder().saleId(sale.getId())
+                    .orderId(deferredFulfillment == null
+                            ? null : deferredFulfillment.order().getId())
+                    .method(paymentRequest.method())
                     .status(PaymentStatus.approved).amount(paymentRequest.amount().setScale(2, RoundingMode.HALF_UP))
                     .currency(tenant.getDefaultCurrency()).bankAccountId(bankAccountId)
                     .reference(paymentRequest.reference()).externallyVerified(externallyVerified)
@@ -256,7 +313,118 @@ public class SaleService {
             cashMovements.save(cashMovement);
         }
         return confirmationResponse(
-                sale, savedItems, savedPayments, createdInventoryMovements, cashMovement, false);
+                sale, savedItems, savedPayments, createdInventoryMovements, cashMovement,
+                deferredFulfillment, false);
+    }
+
+    private DeferredFulfillment createDeferredFulfillment(
+            AuthenticatedUser actor,
+            CreateSaleRequest request,
+            NormalizedDeferredOrder deferred,
+            List<LinePricing> catalog,
+            String saleNumber,
+            BigDecimal subtotal,
+            BigDecimal discount,
+            BigDecimal total,
+            String confirmationFingerprint) {
+        if (orders.findByTenantIdAndSourceAndIdempotencyKey(
+                        actor.tenantId(), OrderSource.pos, deferred.idempotencyKey())
+                .isPresent()) {
+            throw BusinessException.conflict(
+                    "ORDER_IDEMPOTENCY_KEY_REUSED",
+                    "La llave de idempotencia del pedido ya fue utilizada.");
+        }
+
+        Order order = Order.builder()
+                .branchId(request.branchId())
+                .orderNumber(saleNumber)
+                .source(OrderSource.pos)
+                .customerId(request.customerId())
+                .status(OrderStatus.confirmed)
+                .deliveryMethod(DeliveryMethod.home_delivery)
+                .transportMode(deferred.transportMode())
+                .deliveryAddress(json(deferred.deliveryAddress()))
+                .notificationContact(json(deferred.notificationContact()))
+                .subtotal(subtotal)
+                .discountTotal(discount)
+                .shippingTotal(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP))
+                .total(total)
+                .trackingToken("pos-" + deferred.idempotencyKey())
+                .idempotencyKey(deferred.idempotencyKey())
+                .idempotencyFingerprint(confirmationFingerprint)
+                .build();
+        order.setTenantId(actor.tenantId());
+        Order savedOrder = orders.saveAndFlush(order);
+
+        List<OrderItem> savedOrderItems = new ArrayList<>();
+        List<DeferredReservationPlan> reservationPlans = new ArrayList<>();
+        for (int index = 0; index < request.items().size(); index++) {
+            CreateSaleRequest.Item line = request.items().get(index);
+            LinePricing pricing = catalog.get(index);
+            Product product = pricing.product();
+            OrderItem orderItem = OrderItem.builder()
+                    .orderId(savedOrder.getId())
+                    .productId(product.getId())
+                    .promotionId(pricing.promotionId())
+                    .skuSnapshot(product.getSku())
+                    .nameSnapshot(product.getName())
+                    .quantity(line.quantity())
+                    .inventoryQuantity(pricing.inventoryQuantity())
+                    .unitPrice(pricing.unitPrice())
+                    .discount(pricing.discount())
+                    .subtotal(pricing.subtotal())
+                    .fulfillmentComponents(null)
+                    .build();
+            OrderItem savedItem = orderItems.saveAndFlush(orderItem);
+            savedOrderItems.add(savedItem);
+            if (pricing.inventoryQuantity() != null) {
+                reservationPlans.add(new DeferredReservationPlan(
+                        product, savedItem, pricing.inventoryQuantity()));
+            }
+        }
+        reservationPlans.stream()
+                .sorted(Comparator.comparing((DeferredReservationPlan plan) ->
+                                plan.product().getId())
+                        .thenComparing(plan -> plan.orderItem().getId()))
+                .forEach(plan -> reservationLifecycle.reserve(new ReserveInventoryCommand(
+                        actor.tenantId(),
+                        request.branchId(),
+                        plan.product().getId(),
+                        InventoryReservationSourceType.order,
+                        savedOrder.getId(),
+                        plan.orderItem().getId(),
+                        savedOrder.getId(),
+                        plan.orderItem().getId(),
+                        plan.quantity())));
+
+        PickingOrder picking = pickingService.ensureForOrder(actor.tenantId(), savedOrder.getId())
+                .orElseThrow(() -> BusinessException.conflict(
+                        "DEFERRED_ORDER_REQUIRES_PICKING",
+                        "La venta diferida requiere al menos una linea fisica para Picking."));
+        return new DeferredFulfillment(savedOrder, List.copyOf(savedOrderItems), picking);
+    }
+
+    private String json(Object value) {
+        return value == null ? null : jsonMapper.writeValueAsString(value);
+    }
+
+    private static void validateDeferredProduct(Product product, CreateSaleRequest.Item line) {
+        if (product.getProductType() == ProductType.kit) {
+            throw BusinessException.conflict(
+                    "KIT_FULFILLMENT_NOT_SUPPORTED",
+                    "Los kits aun no admiten fulfillment POS diferido.");
+        }
+        if (Boolean.TRUE.equals(product.getTrackingLot())
+                || Boolean.TRUE.equals(product.getTrackingSerial())
+                || Boolean.TRUE.equals(product.getTrackingExpiration())) {
+            throw BusinessException.conflict(
+                    "TRACEABILITY_NOT_SUPPORTED",
+                    "El fulfillment POS diferido aun no admite productos trazables.");
+        }
+        if (line.trackingSelections() != null && !line.trackingSelections().isEmpty()) {
+            throw invalidTrackingSelection(
+                    "La seleccion fisica de una venta diferida corresponde a Picking.");
+        }
     }
 
     private List<SaleInventoryPlan> saleInventoryPlans(
@@ -474,23 +642,27 @@ public class SaleService {
             throw new BusinessException(HttpStatus.CONFLICT, "SALE_NOT_VOIDABLE",
                     "Una venta con devoluciones no puede anularse.");
         }
-        List<SaleItem> saleItems = items.findByTenantIdAndSaleId(actor.tenantId(), id);
-        List<InventoryMovement> originalMovements = inventoryMovements
-                .findByTenantIdAndReferenceTypeInAndReferenceIdOrderByCreatedAtAscIdAsc(
-                        actor.tenantId(), Set.of("POS_SALE", "POS_KIT_SALE"), sale.getId());
-        Map<UUID, List<InventoryHistoricalTraceDetail>> originalHistory =
-                traceabilityHistory.expand(actor.tenantId(), originalMovements);
-        List<SaleRestorePlan> restorePlans = new ArrayList<>();
-        for (SaleItem item : saleItems) {
-            restorePlans.addAll(voidPlans(
-                    actor.tenantId(), item, originalMovements, originalHistory));
+        if (sale.getSourceOrderId() != null) {
+            cancelDeferredOrder(actor.tenantId(), sale);
+        } else {
+            List<SaleItem> saleItems = items.findByTenantIdAndSaleId(actor.tenantId(), id);
+            List<InventoryMovement> originalMovements = inventoryMovements
+                    .findByTenantIdAndReferenceTypeInAndReferenceIdOrderByCreatedAtAscIdAsc(
+                            actor.tenantId(), Set.of("POS_SALE", "POS_KIT_SALE"), sale.getId());
+            Map<UUID, List<InventoryHistoricalTraceDetail>> originalHistory =
+                    traceabilityHistory.expand(actor.tenantId(), originalMovements);
+            List<SaleRestorePlan> restorePlans = new ArrayList<>();
+            for (SaleItem item : saleItems) {
+                restorePlans.addAll(voidPlans(
+                        actor.tenantId(), item, originalMovements, originalHistory));
+            }
+            restorePlans.stream()
+                    .sorted(Comparator.comparing((SaleRestorePlan plan) -> plan.product().getId())
+                            .thenComparing(SaleRestorePlan::locationId,
+                                    Comparator.nullsFirst(Comparator.naturalOrder()))
+                            .thenComparing(plan -> plan.saleItem().getId()))
+                    .forEach(plan -> restoreVoidedInventory(actor, sale, plan));
         }
-        restorePlans.stream()
-                .sorted(Comparator.comparing((SaleRestorePlan plan) -> plan.product().getId())
-                        .thenComparing(SaleRestorePlan::locationId,
-                                Comparator.nullsFirst(Comparator.naturalOrder()))
-                        .thenComparing(plan -> plan.saleItem().getId()))
-                .forEach(plan -> restoreVoidedInventory(actor, sale, plan));
         var shift = shifts.findByTenantIdAndId(actor.tenantId(), sale.getCashShiftId())
                 .filter(found -> found.getStatus() == CashShiftStatus.open);
         if (shift.isPresent()) {
@@ -503,6 +675,35 @@ public class SaleService {
         }
         sale.setStatus(SaleStatus.cancelled);
         return SaleResponse.from(sales.save(sale));
+    }
+
+    private void cancelDeferredOrder(UUID tenantId, Sale sale) {
+        Order order = orders.findByTenantIdAndIdForUpdate(tenantId, sale.getSourceOrderId())
+                .filter(found -> found.getBranchId().equals(sale.getBranchId())
+                        && found.getSource() == OrderSource.pos
+                        && found.getDeliveryMethod() == DeliveryMethod.home_delivery)
+                .orElseThrow(SaleService::incompleteDeferredConfirmation);
+        if (order.getStatus() == OrderStatus.dispatched
+                || order.getStatus() == OrderStatus.delivered) {
+            throw BusinessException.conflict(
+                    "DEFERRED_SALE_ALREADY_FULFILLED",
+                    "La venta diferida ya consumio inventario y no puede anularse de forma segura.");
+        }
+        List<InventoryReservation> orderReservations =
+                reservations.findByTenantIdAndOrderId(tenantId, order.getId());
+        if (orderReservations.stream().anyMatch(reservation ->
+                reservation.getStatus() == InventoryReservationStatus.consumed)) {
+            throw BusinessException.conflict(
+                    "DEFERRED_SALE_ALREADY_FULFILLED",
+                    "La venta diferida ya consumio inventario y no puede anularse de forma segura.");
+        }
+        for (InventoryReservation reservation : orderReservations) {
+            if (reservation.getStatus() == InventoryReservationStatus.active) {
+                reservationLifecycle.release(tenantId, reservation.getId());
+            }
+        }
+        order.setStatus(OrderStatus.cancelled);
+        orders.save(order);
     }
 
     private List<SaleRestorePlan> voidPlans(
@@ -739,7 +940,23 @@ public class SaleService {
                 .findFirstByTenantIdAndReferenceTypeAndReferenceIdOrderByCreatedAtAscIdAsc(
                         tenantId, "sale", sale.getId())
                 .orElse(null);
-        return confirmationResponse(sale, saleItems, salePayments, movements, cashMovement, idempotent);
+        DeferredFulfillment deferred = null;
+        if (sale.getSourceOrderId() != null) {
+            Order order = orders.findByTenantIdAndId(tenantId, sale.getSourceOrderId())
+                    .filter(found -> found.getBranchId().equals(sale.getBranchId())
+                            && found.getSource() == OrderSource.pos
+                            && found.getDeliveryMethod() == DeliveryMethod.home_delivery)
+                    .orElseThrow(SaleService::incompleteDeferredConfirmation);
+            PickingOrder picking = pickingOrders.findByTenantIdAndSourceTypeAndSourceId(
+                            tenantId,
+                            com.omniretail.backend.logistics.entity.PickingSourceType.order,
+                            order.getId())
+                    .orElseThrow(SaleService::incompleteDeferredConfirmation);
+            deferred = new DeferredFulfillment(
+                    order, orderItems.findByOrderId(order.getId()), picking);
+        }
+        return confirmationResponse(
+                sale, saleItems, salePayments, movements, cashMovement, deferred, idempotent);
     }
 
     private SaleConfirmationResponse confirmationResponse(
@@ -748,6 +965,18 @@ public class SaleService {
             List<Payment> salePayments,
             List<InventoryMovement> movements,
             CashMovement cashMovement,
+            boolean idempotent) {
+        return confirmationResponse(
+                sale, saleItems, salePayments, movements, cashMovement, null, idempotent);
+    }
+
+    private SaleConfirmationResponse confirmationResponse(
+            Sale sale,
+            List<SaleItem> saleItems,
+            List<Payment> salePayments,
+            List<InventoryMovement> movements,
+            CashMovement cashMovement,
+            DeferredFulfillment deferred,
             boolean idempotent) {
         Map<UUID, List<InventoryHistoricalTraceDetail>> byMovement =
                 traceabilityHistory.expand(sale.getTenantId(), movements);
@@ -763,6 +992,11 @@ public class SaleService {
                 movements.stream().filter(java.util.Objects::nonNull)
                         .map(InventoryMovementResponse::from).toList(),
                 cashMovement == null ? null : CashMovementResponse.from(cashMovement),
+                deferred == null
+                        ? null
+                        : PosDeferredOrderResponse.from(
+                                deferred.order(), deferred.orderItems(), jsonMapper),
+                deferred == null ? null : PosPickingOrderResponse.from(deferred.picking()),
                 idempotent);
     }
 
@@ -794,6 +1028,91 @@ public class SaleService {
         return new NormalizedDocument(type, taxId, legalName, fiscalAddress);
     }
 
+    private static NormalizedDeferredOrder normalizeDeferredOrder(
+            CreateSaleRequest.DeferredOrder input) {
+        if (input == null) return null;
+        if (input.deliveryMethod() != DeliveryMethod.home_delivery) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "DEFERRED_DELIVERY_METHOD_NOT_SUPPORTED",
+                    "Este incremento solo admite entrega a domicilio.");
+        }
+        String idempotencyKey = trimToNull(input.idempotencyKey());
+        if (idempotencyKey == null || idempotencyKey.length() > 124) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "ORDER_IDEMPOTENCY_KEY_INVALID",
+                    "La llave de idempotencia del pedido es invalida.");
+        }
+        if (input.transportMode() == null) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "TRANSPORT_MODE_REQUIRED",
+                    "El modo de transporte es requerido.");
+        }
+        CreateSaleRequest.DeliveryAddress address = input.deliveryAddress();
+        if (address == null
+                || trimToNull(address.recipientName()) == null
+                || trimToNull(address.recipientPhone()) == null
+                || trimToNull(address.line1()) == null
+                || trimToNull(address.city()) == null
+                || trimToNull(address.country()) == null) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "DELIVERY_ADDRESS_REQUIRED",
+                    "La entrega a domicilio requiere una direccion completa.");
+        }
+        String phone;
+        try {
+            phone = PhoneNormalizer.normalize(address.recipientPhone());
+        } catch (IllegalArgumentException exception) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "DELIVERY_PHONE_INVALID",
+                    "El telefono de entrega no es valido.");
+        }
+        Map<String, Object> normalizedAddress = new LinkedHashMap<>();
+        normalizedAddress.put("recipientName", address.recipientName().trim());
+        normalizedAddress.put("recipientPhone", phone);
+        normalizedAddress.put("line1", address.line1().trim());
+        putIfNotNull(normalizedAddress, "line2", trimToNull(address.line2()));
+        normalizedAddress.put("city", address.city().trim());
+        putIfNotNull(normalizedAddress, "stateOrDepartment", trimToNull(address.stateOrDepartment()));
+        putIfNotNull(normalizedAddress, "postalCode", trimToNull(address.postalCode()));
+        normalizedAddress.put("country", address.country().trim());
+        putIfNotNull(normalizedAddress, "references", trimToNull(address.references()));
+
+        Map<String, Object> notification = null;
+        if (input.notificationContact() != null) {
+            String mode = trimToNull(input.notificationContact().emailMode());
+            String email = trimToNull(input.notificationContact().email());
+            if ("send".equals(mode)) {
+                if (email == null) {
+                    throw new BusinessException(
+                            HttpStatus.BAD_REQUEST,
+                            "NOTIFICATION_EMAIL_REQUIRED",
+                            "El correo de notificacion es requerido.");
+                }
+                notification = new LinkedHashMap<>();
+                notification.put("emailMode", "send");
+                notification.put("email", email.toLowerCase(java.util.Locale.ROOT));
+            } else if ("not_applicable".equals(mode) && email == null) {
+                notification = Map.of("emailMode", "not_applicable");
+            } else {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "NOTIFICATION_CONTACT_INVALID",
+                        "El contacto de notificacion es invalido.");
+            }
+        }
+        return new NormalizedDeferredOrder(
+                idempotencyKey, input.transportMode(), normalizedAddress, notification);
+    }
+
+    private static void putIfNotNull(Map<String, Object> values, String key, Object value) {
+        if (value != null) values.put(key, value);
+    }
+
     private static String trimToNull(String value) {
         if (value == null) {
             return null;
@@ -810,6 +1129,7 @@ public class SaleService {
                 + ":" + document.taxId()
                 + ":" + document.legalName()
                 + ":" + document.fiscalAddress()
+                + "|" + request.sourceOrderId()
                 + "|" + request.items().stream()
                         .map(item -> {
                             String base = item.productId() + ":"
@@ -829,13 +1149,25 @@ public class SaleService {
                                 + ":" + payment.reference()
                                 + ":" + payment.externallyVerified())
                         .sorted()
-                        .collect(Collectors.joining(","));
+                        .collect(Collectors.joining(","))
+                + "|" + deferredFingerprint(normalizeDeferredOrder(request.deferredOrder()));
         return sha256(payload);
+    }
+
+    private static String deferredFingerprint(NormalizedDeferredOrder deferred) {
+        if (deferred == null) return "immediate";
+        return deferred.idempotencyKey()
+                + ":" + DeliveryMethod.home_delivery
+                + ":" + deferred.transportMode()
+                + ":" + deferred.deliveryAddress()
+                + ":" + deferred.notificationContact();
     }
 
     private static boolean matchesLegacyConfirmation(
             Sale sale, CreateSaleRequest request, NormalizedDocument document) {
         return sale.getDocumentType() == null
+                && request.sourceOrderId() == null
+                && request.deferredOrder() == null
                 && document.type() == SaleDocumentType.ticket
                 && java.util.Objects.equals(sale.getCashShiftId(), request.cashShiftId())
                 && java.util.Objects.equals(sale.getCustomerId(), request.customerId())
@@ -928,6 +1260,12 @@ public class SaleService {
                 "El historial de inventario de la venta es inconsistente.");
     }
 
+    private static BusinessException incompleteDeferredConfirmation() {
+        return BusinessException.conflict(
+                "DEFERRED_CONFIRMATION_INCOMPLETE",
+                "La venta diferida no conserva su Order y Picking relacionados.");
+    }
+
     private record LinePricing(
             Product product,
             BigDecimal unitPrice,
@@ -941,6 +1279,18 @@ public class SaleService {
             String taxId,
             String legalName,
             String fiscalAddress) {}
+
+    private record NormalizedDeferredOrder(
+            String idempotencyKey,
+            com.omniretail.backend.ecommerce.entity.TransportMode transportMode,
+            Map<String, Object> deliveryAddress,
+            Map<String, Object> notificationContact) {}
+
+    private record DeferredFulfillment(
+            Order order, List<OrderItem> orderItems, PickingOrder picking) {}
+
+    private record DeferredReservationPlan(
+            Product product, OrderItem orderItem, BigDecimal quantity) {}
 
     private record SaleInventoryPlan(
             SaleItem saleItem,

@@ -502,11 +502,12 @@ public class PackingService {
                 || !packing.getBranchId().equals(order.getBranchId())) {
             throw conflict("PACKING_SOURCE_CONFLICT", "Packing no coincide con su pedido.");
         }
-        if (order.getSource() != OrderSource.ecommerce
+        if ((order.getSource() != OrderSource.ecommerce
+                        && order.getSource() != OrderSource.pos)
                 || order.getDeliveryMethod() != DeliveryMethod.home_delivery) {
             throw conflict(
                     "PACKING_ORDER_NOT_ELIGIBLE",
-                    "Solo pedidos ecommerce con entrega a domicilio admiten Packing.");
+                    "Solo pedidos ecommerce o POS con entrega a domicilio admiten Packing.");
         }
     }
 

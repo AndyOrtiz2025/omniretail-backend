@@ -92,6 +92,11 @@ public class SaleReturnService {
         if (!branches.resolve(actor).allows(sale.getBranchId())) {
             throw notFound("SALE_NOT_FOUND", "Venta no encontrada.");
         }
+        if (sale.getSourceOrderId() != null) {
+            throw BusinessException.conflict(
+                    "DEFERRED_SALE_RETURN_NOT_SUPPORTED",
+                    "Las devoluciones de ventas POS diferidas aun no estan soportadas.");
+        }
         if (sale.getStatus() != SaleStatus.completed
                 && sale.getStatus() != SaleStatus.partially_returned) {
             throw new BusinessException(HttpStatus.CONFLICT, "SALE_NOT_RETURNABLE",

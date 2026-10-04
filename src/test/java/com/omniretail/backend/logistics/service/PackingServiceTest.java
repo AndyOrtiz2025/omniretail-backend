@@ -83,6 +83,16 @@ class PackingServiceTest {
     }
 
     @Test
+    void readsPackingForPosHomeDeliveryOrder() {
+        Fixture fixture = fixture();
+        jdbc.update("UPDATE orders SET source = 'pos' WHERE id = ?", fixture.orderId());
+        actor(fixture);
+
+        assertThat(service.getDetail(fixture.branchId(), fixture.packingId()).orderId())
+                .isEqualTo(fixture.orderId());
+    }
+
+    @Test
     void executesPreparationLabelAndFinalizeWithoutTouchingInventory() {
         Fixture fixture = fixture();
         actor(fixture);

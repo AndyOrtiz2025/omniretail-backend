@@ -9,6 +9,8 @@ import java.util.UUID;
 
 public record PaymentResponse(
         UUID id,
+        UUID saleId,
+        UUID orderId,
         PaymentMethod method,
         BigDecimal amount,
         String reference,
@@ -22,6 +24,8 @@ public record PaymentResponse(
     public static PaymentResponse from(Payment payment) {
         return new PaymentResponse(
                 payment.getId(),
+                payment.getSaleId(),
+                payment.getOrderId(),
                 payment.getMethod(),
                 payment.getAmount(),
                 payment.getReference(),
