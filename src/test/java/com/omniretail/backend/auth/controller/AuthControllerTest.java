@@ -19,12 +19,15 @@ import com.omniretail.backend.auth.entity.AccountStatus;
 import com.omniretail.backend.auth.entity.AuthAccount;
 import com.omniretail.backend.auth.entity.Session;
 import com.omniretail.backend.auth.repository.AuthAccountRepository;
+import com.omniretail.backend.auth.repository.MfaChallengeRepository;
 import com.omniretail.backend.auth.repository.SessionRepository;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -67,6 +70,9 @@ class AuthControllerTest {
 
     @Autowired
     private SessionRepository sessionRepository;
+
+    @Autowired
+    private MfaChallengeRepository mfaChallengeRepository;
 
     @Autowired
     private PasswordEncoder passwordEncoder;
@@ -330,6 +336,34 @@ class AuthControllerTest {
         login(employee.getEmail(), PASSWORD, null, null, null)
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.user.id").value(employee.getId().toString()));
+    }
+
+    /**
+     * Contrato con la ruta /api/auth/login del frontend y con la app movil: un usuario sin MFA recibe
+     * exactamente la misma respuesta que antes de existir el MFA (ni un campo de mas ni de menos), y no
+     * se abre ningun desafio.
+     */
+    @Test
+    void loginWithoutMfaKeepsExactlyTheSameResponse() throws Exception {
+        Tenant tenant = tenant();
+        User customer = account(tenant, UserType.customer, uniqueEmail());
+        User employee = account(tenant(), UserType.employee, uniqueEmail());
+
+        for (String response : List.of(
+                login(customer.getEmail(), PASSWORD, true, tenant.getSlug()).andExpect(status().isOk())
+                        .andReturn().getResponse().getContentAsString(),
+                login(employee.getEmail(), PASSWORD, null, null).andExpect(status().isOk())
+                        .andReturn().getResponse().getContentAsString())) {
+            Map<String, Object> body = JsonPath.read(response, "$");
+            assertThat(body).containsOnlyKeys("token", "expiresAt", "user");
+            Map<String, Object> user = JsonPath.read(response, "$.user");
+            assertThat(user).containsOnlyKeys("id", "name", "email", "type", "tenantId", "roleId", "branchId");
+            assertThat((String) JsonPath.read(response, "$.token")).isNotBlank();
+        }
+        assertThat(mfaChallengeRepository.findByUserIdAndConsumedAtIsNullAndInvalidatedAtIsNull(customer.getId()))
+                .isEmpty();
+        assertThat(mfaChallengeRepository.findByUserIdAndConsumedAtIsNullAndInvalidatedAtIsNull(employee.getId()))
+                .isEmpty();
     }
 
     private ResultActions login(String email, String password, Boolean rememberMe, String tenantSlug) throws Exception {

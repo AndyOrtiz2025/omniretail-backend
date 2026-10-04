@@ -6,6 +6,8 @@ spring:
 app:
   jwt:
     secret: ${JWT_SECRET} # Obligatoria: la app no arranca sin ella.
+  mfa:
+    encryption-key: ${MFA_ENCRYPTION_KEY} # Obligatoria: la app no arranca sin ella.
 
 springdoc:
   api-docs:
