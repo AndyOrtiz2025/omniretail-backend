@@ -19,6 +19,7 @@ import com.omniretail.backend.auth.repository.MfaChallengeRepository;
 import com.omniretail.backend.auth.repository.MfaEnrollmentRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.validation.UnknownFields;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -58,6 +59,7 @@ public class MfaLoginService {
     private final SessionService sessionService;
     private final JwtService jwtService;
     private final AuthAuditService auditService;
+    private final Clock authClock;
 
     public boolean isEnabled(User user) {
         return enrollmentRepository.existsByUserIdAndEnabledTrue(user.getId());
@@ -88,7 +90,7 @@ public class MfaLoginService {
     @Transactional(noRollbackFor = BusinessException.class)
     public LoginResponse verify(VerifyMfaChallengeRequest request) {
         UnknownFields.reject(request.unknownFields());
-        Instant now = Instant.now();
+        Instant now = authClock.instant();
         String token = request.challengeToken();
         if (token == null || token.isBlank()) {
             throw challengeUnavailable();
@@ -119,9 +121,9 @@ public class MfaLoginService {
             if (exhausted) {
                 challenge.setInvalidatedAt(now);
             }
-            auditService.record(user.getTenantId(), user.getId(), account.getId(), AuthAuditService.MFA_FAILED,
-                    Map.of("context", "login", "attempt", attempts));
-            loginAttemptService.recordFailure(account.getId(), now);
+            // recordFailure registra mfa_failed (o account_locked si este fallo bloquea la cuenta).
+            loginAttemptService.recordFailure(account.getId(), user.getId(), user.getTenantId(),
+                    AuthAuditService.MFA_FAILED, Map.of("context", "login", "attempt", attempts));
             throw exhausted ? challengeUnavailable() : codeInvalid();
         }
 
@@ -135,6 +137,7 @@ public class MfaLoginService {
         account.setFailedLoginAttempts(0);
         account.setLockedUntil(null);
         account.setLastLoginAt(now);
+        auditService.record(user.getTenantId(), user.getId(), account.getId(), AuthAuditService.LOGIN_SUCCESS, null);
 
         Session session = sessionService.open(user, challenge.getRememberMe(), challenge.getDeviceLabel(), now);
         String jwt = jwtService.generateToken(user, session);

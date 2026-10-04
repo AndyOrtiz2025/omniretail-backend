@@ -16,7 +16,6 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
-import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -55,7 +54,8 @@ public class AuthAuditLog {
     @Column(name = "metadata", columnDefinition = "jsonb", updatable = false)
     private Map<String, Object> metadata;
 
-    @CreationTimestamp
+    /** Hora del reloj de auth (authClock), no de la base: el bloqueo por intentos se calcula con estas fechas. */
+    @NotNull
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 }
