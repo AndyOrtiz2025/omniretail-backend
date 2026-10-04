@@ -24,6 +24,8 @@ public interface ReceiptIncidentRepository extends JpaRepository<ReceiptIncident
     Page<ReceiptIncident> findByTenantIdAndGoodsReceiptId(
             UUID tenantId, UUID goodsReceiptId, Pageable pageable);
 
+    boolean existsByTenantIdAndGoodsReceiptItemId(UUID tenantId, UUID goodsReceiptItemId);
+
     boolean existsByTenantIdAndGoodsReceiptIdAndStatus(
             UUID tenantId, UUID goodsReceiptId, ReceiptIncidentStatus status);
 }

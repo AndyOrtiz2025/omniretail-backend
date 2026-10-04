@@ -715,6 +715,230 @@ class GoodsReceiptServiceTest {
         assertThat(orderStatus(fixture.order())).isEqualTo("approved");
     }
 
+    @Test
+    void updateKeepsIdsOfExistingItemsAndInsertsNewOnes() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        UUID itemB = secondOrderItem(fixture);
+        GoodsReceiptResponse draft = create(fixture, fixture.orderItem(), "2", fixture.location());
+        UUID idA = receiptItemId(draft, fixture.orderItem());
+
+        GoodsReceiptResponse updated = service.update(
+                draft.id(),
+                updateOf(line(fixture.orderItem(), "5", fixture.location()),
+                        line(itemB, "3", fixture.location())));
+
+        assertThat(receiptItemId(updated, fixture.orderItem())).isEqualTo(idA);
+        assertThat(receiptItemId(updated, itemB)).isNotNull().isNotEqualTo(idA);
+        assertThat(updated.items()).hasSize(2);
+        assertThat(jdbc.queryForObject(
+                        "SELECT received_quantity FROM goods_receipt_items WHERE id = ?",
+                        BigDecimal.class,
+                        idA))
+                .isEqualByComparingTo("5");
+    }
+
+    @Test
+    void updatingOtherLineKeepsIncidentLineAndBothIds() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        UUID itemB = secondOrderItem(fixture);
+        GoodsReceiptResponse draft = createTwoLines(fixture, itemB);
+        UUID idA = receiptItemId(draft, fixture.orderItem());
+        UUID idB = receiptItemId(draft, itemB);
+        addIncident(fixture, draft.id(), idA, "open");
+
+        GoodsReceiptResponse updated = service.update(
+                draft.id(),
+                updateOf(line(fixture.orderItem(), "2", fixture.location()),
+                        line(itemB, "7", fixture.location())));
+
+        assertThat(receiptItemId(updated, fixture.orderItem())).isEqualTo(idA);
+        assertThat(receiptItemId(updated, itemB)).isEqualTo(idB);
+        assertThat(jdbc.queryForObject(
+                        "SELECT received_quantity FROM goods_receipt_items WHERE id = ?",
+                        BigDecimal.class,
+                        idB))
+                .isEqualByComparingTo("7");
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM receipt_incidents WHERE goods_receipt_item_id = ?",
+                        Long.class,
+                        idA))
+                .isOne();
+    }
+
+    @Test
+    void omittingLineWithOpenOrResolvedIncidentIsRejectedAndNothingChanges() {
+        for (String incidentStatus : List.of("open", "resolved")) {
+            Fixture fixture = fixture(true, false, true, "approved", "1");
+            UUID itemB = secondOrderItem(fixture);
+            GoodsReceiptResponse draft = createTwoLines(fixture, itemB);
+            addIncident(fixture, draft.id(), receiptItemId(draft, fixture.orderItem()), incidentStatus);
+
+            assertThatThrownBy(() -> service.update(
+                            draft.id(), updateOf(line(itemB, "9", fixture.location()))))
+                    .isInstanceOfSatisfying(BusinessException.class, exception ->
+                            assertThat(exception.getCode()).isEqualTo("GOODS_RECEIPT_ITEM_HAS_INCIDENTS"));
+            assertThat(jdbc.queryForObject(
+                            "SELECT count(*) FROM goods_receipt_items WHERE goods_receipt_id = ?",
+                            Long.class,
+                            draft.id()))
+                    .isEqualTo(2);
+            assertThat(jdbc.queryForObject(
+                            "SELECT received_quantity FROM goods_receipt_items WHERE id = ?",
+                            BigDecimal.class,
+                            receiptItemId(draft, itemB)))
+                    .isEqualByComparingTo("3");
+        }
+    }
+
+    @Test
+    void changingQuantityLocationOrTrackingOfLineWithIncidentIsRejected() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        jdbc.update("UPDATE products SET tracking_lot = true WHERE id = ?", fixture.product());
+        UUID itemB = secondOrderItem(fixture);
+        useActor(fixture);
+        GoodsReceiptResponse draft = service.create(new CreateGoodsReceiptRequest(
+                fixture.order(),
+                null,
+                List.of(
+                        new GoodsReceiptItemRequest(
+                                fixture.orderItem(),
+                                new BigDecimal("2"),
+                                fixture.location(),
+                                List.of(detail("2.000", "LOT-A", null, List.of()))),
+                        line(itemB, "3", fixture.location()))));
+        addIncident(fixture, draft.id(), receiptItemId(draft, fixture.orderItem()), "resolved");
+        UUID otherLocation = addLocation(fixture.tenant(), fixture.branch(), "active");
+        List<TrackingDetailRequest> sameTracking = List.of(detail("2.000", "LOT-A", null, List.of()));
+
+        List<GoodsReceiptItemRequest> changedLines = List.of(
+                new GoodsReceiptItemRequest(
+                        fixture.orderItem(), new BigDecimal("3"), fixture.location(),
+                        List.of(detail("3.000", "LOT-A", null, List.of()))),
+                new GoodsReceiptItemRequest(
+                        fixture.orderItem(), new BigDecimal("2"), otherLocation, sameTracking),
+                new GoodsReceiptItemRequest(
+                        fixture.orderItem(), new BigDecimal("2"), fixture.location(),
+                        List.of(detail("2.000", "LOT-OTHER", null, List.of()))));
+        for (GoodsReceiptItemRequest changed : changedLines) {
+            assertThatThrownBy(() -> service.update(
+                            draft.id(), new UpdateGoodsReceiptRequest(null, List.of(changed))))
+                    .isInstanceOfSatisfying(BusinessException.class, exception ->
+                            assertThat(exception.getCode())
+                                    .isEqualTo("GOODS_RECEIPT_ITEM_LOCKED_BY_INCIDENT"));
+        }
+        assertThat(jdbc.queryForObject(
+                        "SELECT tracking_details::text FROM goods_receipt_items WHERE id = ?",
+                        String.class,
+                        receiptItemId(draft, fixture.orderItem())))
+                .contains("LOT-A");
+    }
+
+    @Test
+    void resubmittingUnchangedIncidentLineIsAllowedWhileOtherLinesChange() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        jdbc.update("UPDATE products SET tracking_lot = true WHERE id = ?", fixture.product());
+        UUID itemB = secondOrderItem(fixture);
+        useActor(fixture);
+        GoodsReceiptItemRequest lineA = new GoodsReceiptItemRequest(
+                fixture.orderItem(),
+                new BigDecimal("2.000"),
+                fixture.location(),
+                List.of(detail("2.000", "LOT-A", null, List.of())));
+        GoodsReceiptResponse draft = service.create(new CreateGoodsReceiptRequest(
+                fixture.order(), null, List.of(lineA, line(itemB, "3", fixture.location()))));
+        UUID idA = receiptItemId(draft, fixture.orderItem());
+        addIncident(fixture, draft.id(), idA, "open");
+
+        GoodsReceiptResponse updated = service.update(
+                draft.id(),
+                new UpdateGoodsReceiptRequest(
+                        "nota", List.of(lineA, line(itemB, "8", fixture.location()))));
+
+        assertThat(receiptItemId(updated, fixture.orderItem())).isEqualTo(idA);
+        assertThat(updated.items()).extracting(item -> item.receivedQuantity())
+                .anySatisfy(quantity -> assertThat(quantity).isEqualByComparingTo("8"));
+        assertThat(service.get(draft.id()).items().stream()
+                        .filter(item -> item.id().equals(idA))
+                        .findFirst()
+                        .orElseThrow()
+                        .trackingDetails())
+                .extracting(TrackingDetailRequest::lotNumber)
+                .containsExactly("LOT-A");
+    }
+
+    @Test
+    void omittingLineWithoutIncidentsDeletesIt() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        UUID itemB = secondOrderItem(fixture);
+        GoodsReceiptResponse draft = createTwoLines(fixture, itemB);
+        UUID idA = receiptItemId(draft, fixture.orderItem());
+        UUID idB = receiptItemId(draft, itemB);
+        addIncident(fixture, draft.id(), idA, "open");
+
+        GoodsReceiptResponse updated = service.update(
+                draft.id(), updateOf(line(fixture.orderItem(), "2", fixture.location())));
+
+        assertThat(updated.items()).singleElement().satisfies(item ->
+                assertThat(item.id()).isEqualTo(idA));
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM goods_receipt_items WHERE id = ?", Long.class, idB))
+                .isZero();
+    }
+
+    private GoodsReceiptItemRequest line(UUID orderItem, String quantity, UUID location) {
+        return new GoodsReceiptItemRequest(orderItem, new BigDecimal(quantity), location);
+    }
+
+    private static UpdateGoodsReceiptRequest updateOf(GoodsReceiptItemRequest... lines) {
+        return new UpdateGoodsReceiptRequest(null, List.of(lines));
+    }
+
+    private UUID secondOrderItem(Fixture fixture) {
+        UUID product = addProductAndOrderItem(fixture, true);
+        return jdbc.queryForObject(
+                "SELECT id FROM purchase_order_items WHERE purchase_order_id = ? AND product_id = ?",
+                UUID.class,
+                fixture.order(),
+                product);
+    }
+
+    private GoodsReceiptResponse createTwoLines(Fixture fixture, UUID secondItem) {
+        useActor(fixture);
+        return service.create(new CreateGoodsReceiptRequest(
+                fixture.order(),
+                null,
+                List.of(
+                        line(fixture.orderItem(), "2", fixture.location()),
+                        line(secondItem, "3", fixture.location()))));
+    }
+
+    private static UUID receiptItemId(GoodsReceiptResponse receipt, UUID orderItem) {
+        return receipt.items().stream()
+                .filter(item -> item.purchaseOrderItemId().equals(orderItem))
+                .map(item -> item.id())
+                .findFirst()
+                .orElse(null);
+    }
+
+    private void addIncident(Fixture fixture, UUID receipt, UUID receiptItem, String status) {
+        boolean resolved = status.equals("resolved");
+        jdbc.update("""
+                INSERT INTO receipt_incidents
+                    (id, tenant_id, branch_id, goods_receipt_id, goods_receipt_item_id, incident_type,
+                     status, quantity_affected, notes, created_by_user_id, resolved_by_user_id, resolved_at)
+                VALUES (?, ?, ?, ?, ?, 'damaged', ?, 1, 'Incidencia test', ?, ?, CASE WHEN ? THEN now() END)
+                """,
+                UUID.randomUUID(),
+                fixture.tenant(),
+                fixture.branch(),
+                receipt,
+                receiptItem,
+                status,
+                fixture.user(),
+                resolved ? fixture.user() : null,
+                resolved);
+    }
+
     private GoodsReceiptResponse create(Fixture fixture, UUID orderItem, String quantity, UUID location) {
         useActor(fixture);
         return service.create(new CreateGoodsReceiptRequest(
