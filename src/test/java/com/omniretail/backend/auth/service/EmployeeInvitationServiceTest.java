@@ -19,6 +19,7 @@ import com.omniretail.backend.auth.entity.AuthAccount;
 import com.omniretail.backend.auth.entity.EmployeeInvitation;
 import com.omniretail.backend.auth.repository.AuthAccountRepository;
 import com.omniretail.backend.auth.repository.EmployeeInvitationRepository;
+import com.omniretail.backend.auth.repository.MfaEnrollmentRepository;
 import com.omniretail.backend.shared.config.FrontendProperties;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.exception.FieldValidationException;
@@ -69,6 +70,8 @@ class EmployeeInvitationServiceTest {
     private ApplicationEventPublisher eventPublisher;
     @Mock
     private SessionRevoker sessionRevoker;
+    @Mock
+    private MfaEnrollmentRepository mfaEnrollmentRepository;
 
     private BCryptPasswordEncoder passwordEncoder;
     private FrontendProperties frontendProperties;
@@ -79,7 +82,7 @@ class EmployeeInvitationServiceTest {
         passwordEncoder = spy(new BCryptPasswordEncoder());
         frontendProperties = new FrontendProperties("https://app.example.com/");
         service = new EmployeeInvitationService(userRepository, invitationRepository, accountRepository,
-                passwordEncoder, eventPublisher, frontendProperties, sessionRevoker);
+                passwordEncoder, eventPublisher, frontendProperties, sessionRevoker, mfaEnrollmentRepository);
     }
 
     @Test
@@ -482,7 +485,7 @@ class EmployeeInvitationServiceTest {
         stubActivation(invitation, account, employee());
         EmployeeInvitationService secondRequest = new EmployeeInvitationService(userRepository,
                 invitationRepository, accountRepository, passwordEncoder, eventPublisher,
-                frontendProperties, sessionRevoker);
+                frontendProperties, sessionRevoker, mfaEnrollmentRepository);
 
         service.activateEmployeeAccount("activation-token", "NuevaSegura123!");
         BusinessException error = assertThrows(BusinessException.class,
@@ -542,6 +545,21 @@ class EmployeeInvitationServiceTest {
         });
         verify(userRepository).findAllByTenantIdAndTypeAndIdIn(TENANT_ID, UserType.employee, List.of(USER_ID));
         verify(accountRepository).findAllByUserIdIn(List.of(USER_ID));
+    }
+
+    @Test
+    void summariesReportMfaEnabledFromOneBatchQuery() {
+        User employee = employee();
+        AuthAccount account = pendingAccount();
+        when(userRepository.findAllByTenantIdAndTypeAndIdIn(
+                TENANT_ID, UserType.employee, List.of(USER_ID))).thenReturn(List.of(employee));
+        when(accountRepository.findAllByUserIdIn(List.of(USER_ID))).thenReturn(List.of(account));
+        when(mfaEnrollmentRepository.findEnabledUserIds(List.of(USER_ID))).thenReturn(List.of(USER_ID));
+
+        List<EmployeeAuthSummary> summaries = service.getAuthSummaries(TENANT_ID, List.of(USER_ID));
+
+        assertThat(summaries).singleElement().satisfies(summary -> assertThat(summary.mfaEnabled()).isTrue());
+        verify(mfaEnrollmentRepository).findEnabledUserIds(List.of(USER_ID));
     }
 
     private void assertInvalidActivationError() {

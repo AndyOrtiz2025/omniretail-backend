@@ -6,3 +6,5 @@ spring:
 app:
   jwt:
     secret: omniretail-test-secret-only-for-tests-32b
+  mfa:
+    encryption-key: omniretail-test-mfa-key-only-for-tests-32b

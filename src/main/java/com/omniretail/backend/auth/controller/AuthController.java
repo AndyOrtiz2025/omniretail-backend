@@ -3,8 +3,10 @@ package com.omniretail.backend.auth.controller;
 import com.omniretail.backend.auth.dto.ChangeActiveBranchRequest;
 import com.omniretail.backend.auth.dto.ChangePasswordRequest;
 import com.omniretail.backend.auth.dto.CurrentSessionResponse;
+import com.omniretail.backend.auth.dto.LoginOutcome;
 import com.omniretail.backend.auth.dto.LoginRequest;
 import com.omniretail.backend.auth.dto.LoginResponse;
+import com.omniretail.backend.auth.dto.MfaChallengeResponse;
 import com.omniretail.backend.auth.service.ActiveBranchService;
 import com.omniretail.backend.auth.service.AuthService;
 import com.omniretail.backend.auth.service.CurrentSessionService;
@@ -52,13 +54,18 @@ public class AuthController {
                     - Empleados: sesión de 8 horas; `rememberMe` se ignora.
                     - Clientes: requieren el `tenantSlug` de la tienda. La sesión dura 2 horas, o 30 días con `rememberMe`.
                     - Tras 5 intentos fallidos la cuenta se bloquea 15 minutos.
+                    - Con la verificación en dos pasos activa, la contraseña correcta no crea sesión: responde
+                      `{ mfaRequired: true, challengeToken, method, expiresAt }` sin token, y la sesión se obtiene en
+                      `POST /auth/mfa/verify`. Sin MFA, la respuesta es la de siempre.
 
                     El mensaje de error es siempre genérico: no revela si el correo existe ni si la cuenta está bloqueada.""")
     @ApiResponses({
         @ApiResponse(
                 responseCode = "200",
-                description = "Sesión iniciada.",
-                content = @Content(mediaType = "application/json", schema = @Schema(implementation = LoginResponse.class))),
+                description = "Sesión iniciada (`LoginResponse`), o desafío de segundo factor si el usuario tiene MFA "
+                        + "activo (`MfaChallengeResponse`).",
+                content = @Content(mediaType = "application/json", schema = @Schema(
+                        oneOf = {LoginResponse.class, MfaChallengeResponse.class}))),
         @ApiResponse(
                 responseCode = "400",
                 description = "Datos inválidos (`VALIDATION_ERROR`) o cuerpo de la solicitud ilegible (`REQUEST_ERROR`).",
@@ -69,7 +76,7 @@ public class AuthController {
                         + "inexistente, contraseña incorrecta o cuenta bloqueada o inactiva.",
                 content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
     })
-    public LoginResponse login(@Valid @RequestBody LoginRequest request) {
+    public LoginOutcome login(@Valid @RequestBody LoginRequest request) {
         return authService.login(request);
     }
 
@@ -98,13 +105,16 @@ public class AuthController {
 
                     - Exige la contraseña actual; la nueva debe ser distinta y cumplir la política del tipo de cuenta
                       (clientes: 8 a 24 caracteres; empleados: 12 a 24; con mayúscula, minúscula, número y carácter especial).
+                    - Con la verificación en dos pasos activa, `mfaCode` (código de la app o de recuperación) es
+                      obligatorio.
                     - Al cambiarla se revocan todas las demás sesiones del usuario; la sesión actual sigue activa.""")
     @ApiResponses({
         @ApiResponse(responseCode = "204", description = "Contraseña cambiada."),
         @ApiResponse(
                 responseCode = "400",
-                description = "`VALIDATION_ERROR` con `fields.currentPassword` (la contraseña actual no es correcta) o "
-                        + "`fields.newPassword` (igual a la actual o no cumple la política); o cuerpo ilegible "
+                description = "`VALIDATION_ERROR` con `fields.currentPassword` (la contraseña actual no es correcta), "
+                        + "`fields.newPassword` (igual a la actual o no cumple la política) o `fields.mfaCode` "
+                        + "(falta o no es válido con MFA activo); o cuerpo ilegible "
                         + "(`REQUEST_ERROR`).",
                 content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
         @ApiResponse(

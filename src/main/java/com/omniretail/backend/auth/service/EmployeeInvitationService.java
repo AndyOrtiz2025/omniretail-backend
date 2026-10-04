@@ -9,6 +9,7 @@ import com.omniretail.backend.auth.entity.AuthAccount;
 import com.omniretail.backend.auth.entity.EmployeeInvitation;
 import com.omniretail.backend.auth.repository.AuthAccountRepository;
 import com.omniretail.backend.auth.repository.EmployeeInvitationRepository;
+import com.omniretail.backend.auth.repository.MfaEnrollmentRepository;
 import com.omniretail.backend.shared.config.FrontendProperties;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.exception.FieldValidationException;
@@ -21,10 +22,12 @@ import com.omniretail.backend.shared.security.SessionRevoker;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
@@ -47,6 +50,7 @@ public class EmployeeInvitationService implements EmployeeInvitationPort {
     private final ApplicationEventPublisher eventPublisher;
     private final FrontendProperties frontendProperties;
     private final SessionRevoker sessionRevoker;
+    private final MfaEnrollmentRepository mfaEnrollmentRepository;
 
     @Override
     @Transactional
@@ -154,16 +158,18 @@ public class EmployeeInvitationService implements EmployeeInvitationPort {
         List<AuthAccount> accounts = accountRepository.findAllByUserIdIn(orderedIds);
         Map<UUID, AuthAccount> accountsByUserId = new LinkedHashMap<>();
         accounts.forEach(account -> accountsByUserId.put(account.getUserId(), account));
+        // mfaEnabled sale solo de un MFA activo, nunca de una activacion pendiente (EmployeeAuthSummary.ts).
+        Set<UUID> mfaEnabledUserIds = new HashSet<>(mfaEnrollmentRepository.findEnabledUserIds(orderedIds));
         return requestedIds.stream()
-                .map(userId -> summary(userId, accountsByUserId.get(userId)))
+                .map(userId -> summary(userId, accountsByUserId.get(userId), mfaEnabledUserIds.contains(userId)))
                 .toList();
     }
 
-    private static EmployeeAuthSummary summary(UUID userId, AuthAccount account) {
+    private static EmployeeAuthSummary summary(UUID userId, AuthAccount account, boolean mfaEnabled) {
         if (account == null) {
             return new EmployeeAuthSummary(userId, null, false, null);
         }
-        return new EmployeeAuthSummary(userId, account.getStatus().name(), false, account.getLastLoginAt());
+        return new EmployeeAuthSummary(userId, account.getStatus().name(), mfaEnabled, account.getLastLoginAt());
     }
 
     private AuthAccount createPendingAccount(User user) {

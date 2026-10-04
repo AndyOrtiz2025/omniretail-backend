@@ -5,7 +5,8 @@ import com.omniretail.backend.administration.entity.UserType;
 import java.time.Instant;
 import java.util.UUID;
 
-public record LoginResponse(String token, Instant expiresAt, UserSummary user) {
+/** Sesion iniciada. Su forma JSON no cambia con el MFA: un usuario sin MFA recibe exactamente esto. */
+public record LoginResponse(String token, Instant expiresAt, UserSummary user) implements LoginOutcome {
 
     /** Datos publicos del usuario autenticado. Nunca incluye el hash de la contrasena. */
     public record UserSummary(
