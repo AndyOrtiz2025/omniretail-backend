@@ -9,6 +9,7 @@ public enum EmailPurpose {
     EMAIL_VERIFICATION(Scope.PLATFORM),
     PASSWORD_RESET(Scope.PLATFORM),
     EMPLOYEE_INVITATION(Scope.PLATFORM),
+    MFA_CODE(Scope.PLATFORM),
     // Operativos: cuenta Gmail del tenant. Nunca caen al remitente de plataforma.
     ORDER_CONFIRMATION(Scope.TENANT),
     ORDER_STATUS_CHANGED(Scope.TENANT),

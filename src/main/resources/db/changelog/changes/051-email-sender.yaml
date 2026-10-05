@@ -1,6 +1,6 @@
 databaseChangeLog:
   - changeSet:
-      id: 048-email-sender-tables
+      id: 051-email-sender-tables
       author: joga17000
       changes:
         # Cuenta Gmail (correo + contrasena de aplicacion cifrada) de cada tenant para sus correos operativos.
@@ -172,7 +172,7 @@ databaseChangeLog:
             tableName: tenant_email_sender_config
 
   - changeSet:
-      id: 048-email-sender-permissions
+      id: 051-email-sender-permissions
       author: joga17000
       changes:
         - sql:

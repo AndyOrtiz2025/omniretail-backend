@@ -1,6 +1,6 @@
 databaseChangeLog:
   - changeSet:
-      id: 999-07-seed-email-sender-permissions
+      id: 999-08-seed-email-sender-permissions
       author: joga17000
       context: dev
       changes:
