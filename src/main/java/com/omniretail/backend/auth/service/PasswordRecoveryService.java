@@ -16,10 +16,12 @@ import com.omniretail.backend.shared.config.FrontendProperties;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.exception.FieldValidationException;
 import com.omniretail.backend.shared.notification.EmailMessage;
+import com.omniretail.backend.shared.notification.EmailPurpose;
 import com.omniretail.backend.shared.notification.EmailRequestedEvent;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
@@ -150,10 +152,11 @@ public class PasswordRecoveryService {
                 ? "/tienda/" + customerTenant.orElseThrow().getSlug() + "/restablecer-contrasena/" + token
                 : "/restablecer-contrasena/" + token;
         eventPublisher.publishEvent(new EmailRequestedEvent(
-                resetEmail(candidate.account().getEmail(), user.getName(), frontendProperties.link(path))));
+                resetEmail(user.getTenantId(), candidate.account().getEmail(), user.getName(),
+                        frontendProperties.link(path))));
     }
 
-    private static EmailMessage resetEmail(String to, String name, String link) {
+    private static EmailMessage resetEmail(UUID tenantId, String to, String name, String link) {
         String body = """
                 Hola %s:
 
@@ -164,7 +167,7 @@ public class PasswordRecoveryService {
                 El enlace vence en %d minutos y solo se puede usar una vez. Si no pediste este cambio, ignora
                 este mensaje: tu contraseña actual sigue siendo válida.
                 """.formatted(name, link, PASSWORD_RESET_TTL.toMinutes());
-        return new EmailMessage(to, "Restablece tu contraseña", body);
+        return EmailMessage.text(tenantId, EmailPurpose.PASSWORD_RESET, to, "Restablece tu contraseña", body);
     }
 
     private static BusinessException invalidToken() {

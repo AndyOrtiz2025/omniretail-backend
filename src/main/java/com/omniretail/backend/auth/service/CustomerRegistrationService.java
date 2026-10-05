@@ -25,6 +25,7 @@ import com.omniretail.backend.shared.config.FrontendProperties;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.exception.FieldValidationException;
 import com.omniretail.backend.shared.notification.EmailMessage;
+import com.omniretail.backend.shared.notification.EmailPurpose;
 import com.omniretail.backend.shared.notification.EmailRequestedEvent;
 import jakarta.validation.Validator;
 import java.sql.SQLException;
@@ -249,7 +250,8 @@ public class CustomerRegistrationService {
 
                 El enlace vence en %d minutos. Si no creaste esta cuenta, ignora este mensaje.
                 """.formatted(user.getName(), link, EMAIL_VERIFICATION_TTL.toMinutes());
-        return new EmailMessage(user.getEmail(), "Verifica tu correo", body);
+        return EmailMessage.text(
+                user.getTenantId(), EmailPurpose.EMAIL_VERIFICATION, user.getEmail(), "Verifica tu correo", body);
     }
 
     private static <T extends Throwable> Optional<T> findCause(Throwable ex, Class<T> type) {

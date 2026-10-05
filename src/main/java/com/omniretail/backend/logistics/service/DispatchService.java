@@ -9,6 +9,7 @@ import com.omniretail.backend.ecommerce.entity.InventoryReservation;
 import com.omniretail.backend.ecommerce.entity.InventoryReservationSourceType;
 import com.omniretail.backend.ecommerce.entity.InventoryReservationStatus;
 import com.omniretail.backend.ecommerce.entity.Order;
+import com.omniretail.backend.ecommerce.service.OrderEmailNotifier;
 import com.omniretail.backend.ecommerce.entity.OrderStatus;
 import com.omniretail.backend.ecommerce.entity.TransportMode;
 import com.omniretail.backend.ecommerce.repository.InventoryReservationRepository;
@@ -105,6 +106,7 @@ public class DispatchService {
     private final CurrentUser currentUser;
     private final TenantCapabilityGuard tenantCapabilityGuard;
     private final JsonMapper jsonMapper;
+    private final OrderEmailNotifier orderEmailNotifier;
 
     public List<DispatchQueueResponse> getQueue(UUID branchId) {
         AuthenticatedUser actor = actorForBranch(branchId);
@@ -332,6 +334,7 @@ public class DispatchService {
                 .toList());
         order.setStatus(OrderStatus.dispatched);
         orders.save(order);
+        orderEmailNotifier.orderDispatched(order);
         DispatchResponse result = response(dispatch, saved, false);
         operations.saveAndFlush(DispatchOperation.builder()
                 .tenantId(actor.tenantId())

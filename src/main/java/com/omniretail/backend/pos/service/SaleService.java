@@ -20,6 +20,7 @@ import com.omniretail.backend.ecommerce.entity.InventoryReservation;
 import com.omniretail.backend.ecommerce.entity.InventoryReservationSourceType;
 import com.omniretail.backend.ecommerce.entity.InventoryReservationStatus;
 import com.omniretail.backend.ecommerce.entity.Order;
+import com.omniretail.backend.ecommerce.service.OrderEmailNotifier;
 import com.omniretail.backend.ecommerce.entity.OrderItem;
 import com.omniretail.backend.ecommerce.entity.OrderSource;
 import com.omniretail.backend.ecommerce.entity.OrderStatus;
@@ -130,6 +131,7 @@ public class SaleService {
     private final PickingService pickingService;
     private final PickingOrderRepository pickingOrders;
     private final JsonMapper jsonMapper;
+    private final OrderEmailNotifier orderEmailNotifier;
 
     public SaleConfirmationResponse create(CreateSaleRequest request) {
         AuthenticatedUser actor = currentUser.require();
@@ -355,6 +357,7 @@ public class SaleService {
                 .build();
         order.setTenantId(actor.tenantId());
         Order savedOrder = orders.saveAndFlush(order);
+        orderEmailNotifier.orderConfirmed(savedOrder);
 
         List<OrderItem> savedOrderItems = new ArrayList<>();
         List<DeferredReservationPlan> reservationPlans = new ArrayList<>();

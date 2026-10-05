@@ -115,6 +115,7 @@ class SaleServiceTest {
     @Mock PickingService pickingService;
     @Mock PickingOrderRepository pickingOrders;
     @Mock JsonMapper jsonMapper;
+    @Mock com.omniretail.backend.ecommerce.service.OrderEmailNotifier orderEmailNotifier;
     @InjectMocks SaleService service;
 
     private final UUID tenant = UUID.randomUUID();

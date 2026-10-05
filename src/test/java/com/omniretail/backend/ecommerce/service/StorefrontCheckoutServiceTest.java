@@ -80,6 +80,7 @@ class StorefrontCheckoutServiceTest {
     @Mock private UnitConversionRepository unitConversionRepository;
     @Mock private ProductPriceResolver productPriceResolver;
     @Mock private ProductKitService productKitService;
+    @Mock private OrderEmailNotifier orderEmailNotifier;
 
     private StorefrontCheckoutService service;
     private UUID tenantId;
@@ -95,7 +96,8 @@ class StorefrontCheckoutServiceTest {
                 unitConversionRepository,
                 productPriceResolver,
                 productKitService,
-                JsonMapper.builder().build());
+                JsonMapper.builder().build(),
+                orderEmailNotifier);
         tenantId = UUID.randomUUID();
         branchId = UUID.randomUUID();
         productId = UUID.randomUUID();

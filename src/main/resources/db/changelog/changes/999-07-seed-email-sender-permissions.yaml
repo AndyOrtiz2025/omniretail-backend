@@ -1,0 +1,19 @@
+databaseChangeLog:
+  - changeSet:
+      id: 999-07-seed-email-sender-permissions
+      author: joga17000
+      context: dev
+      changes:
+        # En una BD nueva 048 corre antes que 999-01 (que crea el rol Administrador), asi que la semilla
+        # vuelve a otorgar los permisos. 999-05 ya esta aplicada y no se edita (regla del master).
+        - sql:
+            sql: |
+              UPDATE roles
+              SET permissions = (
+                SELECT ARRAY(
+                  SELECT DISTINCT permission
+                  FROM unnest(permissions || ARRAY['admin.email_config.read', 'admin.email_config.manage']::text[]) AS permission
+                  ORDER BY permission
+                )
+              )
+              WHERE name = 'Administrador' AND is_system = TRUE;
