@@ -1,0 +1,21 @@
+databaseChangeLog:
+  - changeSet:
+      id: 049-saas-basic-plan-catalog-kits
+      author: melbyn
+      changes:
+        - sql:
+            # Agrega la capability catalog.kits al plan base sembrado en 028 (code 'basic', mismo id).
+            # No reasigna suscripciones. Idempotente: solo actua si el plan aun no la incluye.
+            sql: |
+              UPDATE saas_plans
+              SET capabilities = array_append(capabilities, 'catalog.kits'),
+                  updated_at = now()
+              WHERE code = 'basic'
+                AND NOT ('catalog.kits' = ANY (capabilities));
+      # saas_plans.capabilities es NOT NULL, por eso array_append no necesita COALESCE. El plan lo crea 028
+      # (corre antes), asi que tambien existe en una BD nueva.
+      rollback:
+        # Intencionalmente sin efecto: no se puede saber, sin estado adicional, si catalog.kits ya estaba
+        # en el plan antes de esta migracion; quitarlo dejaria a los tenants sin Kits.
+        - sql:
+            sql: SELECT 1
