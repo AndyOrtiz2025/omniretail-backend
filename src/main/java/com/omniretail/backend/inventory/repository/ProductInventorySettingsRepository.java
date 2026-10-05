@@ -3,6 +3,7 @@ package com.omniretail.backend.inventory.repository;
 import com.omniretail.backend.inventory.entity.ProductInventorySettings;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
@@ -161,6 +162,13 @@ public interface ProductInventorySettingsRepository
             @Param("status") String status,
             Pageable pageable);
 
+    /**
+     * Listado de stock del tenant/sucursal sobre un conjunto mezclado de filas:
+     * physical (stock real, alertas), service (informativo, sin stock) y kit (disponibilidad DERIVADA de sus
+     * componentes físicos). Solo las filas physical tienen balances y estado físico; service/kit nunca generan
+     * balances ni alertas. Disponibilidad del kit = MIN(FLOOR(GREATEST(disponible_componente, 0) / quantity_per_kit));
+     * un kit sin componentes, o con algún componente que ya no es physical + published + tracking_stock, vale 0.
+     */
     @Query(
             value = """
                     WITH product_stock AS (
@@ -187,6 +195,7 @@ public interface ProductInventorySettingsRepository
                         LEFT JOIN inventory_balances b
                           ON b.tenant_id = p.tenant_id AND b.product_id = p.id AND b.branch_id = :branchId
                         WHERE p.tenant_id = :tenantId
+                          AND :includePhysical = TRUE
                           AND p.status = 'published'
                           AND p.product_type = 'physical'
                           AND p.tracking_stock = TRUE
@@ -232,16 +241,106 @@ public interface ProductInventorySettingsRepository
                         FROM product_stock
                         LEFT JOIN expiration_summary
                           ON expiration_summary.product_id = product_stock.product_id
+                    ), service_rows AS (
+                        SELECT p.id AS product_id, p.sku, p.name AS product_name, p.category_id,
+                               c.name AS category_name, p.base_unit_id
+                        FROM products p
+                        LEFT JOIN categories c ON c.tenant_id = p.tenant_id AND c.id = p.category_id
+                        WHERE p.tenant_id = :tenantId
+                          AND :includeService = TRUE
+                          AND CAST(:status AS text) IS NULL
+                          AND p.status = 'published'
+                          AND p.product_type = 'service'
+                          AND (:categoryId IS NULL OR p.category_id = :categoryId)
+                          AND (CAST(:search AS text) IS NULL
+                               OR LOWER(p.name) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%')
+                               OR LOWER(p.sku) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%')
+                               OR LOWER(COALESCE(c.name, '')) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%'))
+                    ), kit_component_availability AS (
+                        SELECT kc.id AS kit_component_id,
+                               kc.kit_product_id,
+                               CASE
+                                   WHEN cp.id IS NOT NULL
+                                    AND cp.product_type = 'physical'
+                                    AND cp.status = 'published'
+                                    AND cp.tracking_stock = TRUE
+                                   THEN FLOOR(GREATEST(COALESCE(SUM(b.quantity - b.reserved_quantity), CAST(0 AS numeric)),
+                                                       CAST(0 AS numeric)) / kc.quantity_per_kit)
+                                   ELSE CAST(0 AS numeric)
+                               END AS kits_available
+                        FROM product_kit_components kc
+                        LEFT JOIN products cp
+                          ON cp.tenant_id = kc.tenant_id AND cp.id = kc.component_product_id
+                        LEFT JOIN inventory_balances b
+                          ON b.tenant_id = kc.tenant_id
+                         AND b.product_id = kc.component_product_id
+                         AND b.branch_id = :branchId
+                        WHERE kc.tenant_id = :tenantId
+                          AND :includeKit = TRUE
+                        GROUP BY kc.id, kc.kit_product_id, kc.quantity_per_kit,
+                                 cp.id, cp.product_type, cp.status, cp.tracking_stock
+                    ), kit_availability AS (
+                        SELECT kit_product_id, MIN(kits_available) AS available_quantity
+                        FROM kit_component_availability
+                        GROUP BY kit_product_id
+                    ), kit_rows AS (
+                        SELECT p.id AS product_id, p.sku, p.name AS product_name, p.category_id,
+                               c.name AS category_name, p.base_unit_id,
+                               COALESCE(ka.available_quantity, CAST(0 AS numeric)) AS available_quantity
+                        FROM products p
+                        LEFT JOIN categories c ON c.tenant_id = p.tenant_id AND c.id = p.category_id
+                        LEFT JOIN kit_availability ka ON ka.kit_product_id = p.id
+                        WHERE p.tenant_id = :tenantId
+                          AND :includeKit = TRUE
+                          AND CAST(:status AS text) IS NULL
+                          AND p.status = 'published'
+                          AND p.product_type = 'kit'
+                          AND (:categoryId IS NULL OR p.category_id = :categoryId)
+                          AND (CAST(:search AS text) IS NULL
+                               OR LOWER(p.name) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%')
+                               OR LOWER(p.sku) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%')
+                               OR LOWER(COALESCE(c.name, '')) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%'))
+                    ), all_rows AS (
+                        SELECT product_id, sku, product_name, category_id, category_name, base_unit_id,
+                               'physical' AS product_type, 'TRACKED' AS inventory_mode,
+                               quantity, reserved_quantity, available_quantity, min_stock, reorder_point,
+                               default_location_id, default_location_name, next_expiration_date,
+                               stock_status, suggested_reorder,
+                               UPPER(stock_status) AS display_status,
+                               stock_status AS status_sort_key
+                        FROM classified
+                        WHERE stock_status = COALESCE(CAST(:status AS text), stock_status)
+                        UNION ALL
+                        SELECT product_id, sku, product_name, category_id, category_name, base_unit_id,
+                               'service', 'NONE',
+                               CAST(NULL AS numeric), CAST(NULL AS numeric), CAST(NULL AS numeric),
+                               CAST(NULL AS numeric), CAST(NULL AS numeric),
+                               CAST(NULL AS uuid), CAST(NULL AS text), CAST(NULL AS date),
+                               CAST(NULL AS text), CAST(NULL AS numeric),
+                               'NOT_CONTROLLED',
+                               'zzz_not_controlled'
+                        FROM service_rows
+                        UNION ALL
+                        SELECT product_id, sku, product_name, category_id, category_name, base_unit_id,
+                               'kit', 'DERIVED_KIT',
+                               CAST(NULL AS numeric), CAST(NULL AS numeric), available_quantity,
+                               CAST(NULL AS numeric), CAST(NULL AS numeric),
+                               CAST(NULL AS uuid), CAST(NULL AS text), CAST(NULL AS date),
+                               CAST(NULL AS text), CAST(NULL AS numeric),
+                               CASE WHEN available_quantity > 0 THEN 'KIT_AVAILABLE' ELSE 'KIT_UNAVAILABLE' END,
+                               CASE WHEN available_quantity > 0 THEN 'zz_kit_available' ELSE 'zz_kit_unavailable' END
+                        FROM kit_rows
                     )
                     SELECT product_id AS "productId", :branchId AS "branchId", sku, product_name AS "productName",
                            category_id AS "categoryId", category_name AS "categoryName", base_unit_id AS "baseUnitId",
+                           product_type AS "productType", inventory_mode AS "inventoryMode",
                            quantity, reserved_quantity AS "reservedQuantity", available_quantity AS "availableQuantity",
                            min_stock AS "minStock", reorder_point AS "reorderPoint",
                            default_location_id AS "defaultLocationId", default_location_name AS "defaultLocationName",
                            next_expiration_date AS "nextExpirationDate",
-                           stock_status AS "stockStatus", suggested_reorder AS "suggestedReorder"
-                    FROM classified
-                    WHERE stock_status = COALESCE(CAST(:status AS text), stock_status)
+                           stock_status AS "stockStatus", suggested_reorder AS "suggestedReorder",
+                           display_status AS "displayStatus"
+                    FROM all_rows
                     ORDER BY
                       CASE WHEN :sortField = 'productName' AND :sortDirection = 'asc' THEN LOWER(product_name) END ASC,
                       CASE WHEN :sortField = 'productName' AND :sortDirection = 'desc' THEN LOWER(product_name) END DESC,
@@ -249,10 +348,10 @@ public interface ProductInventorySettingsRepository
                       CASE WHEN :sortField = 'sku' AND :sortDirection = 'desc' THEN LOWER(sku) END DESC,
                       CASE WHEN :sortField = 'categoryName' AND :sortDirection = 'asc' THEN LOWER(category_name) END ASC NULLS LAST,
                       CASE WHEN :sortField = 'categoryName' AND :sortDirection = 'desc' THEN LOWER(category_name) END DESC NULLS LAST,
-                      CASE WHEN :sortField = 'availableQuantity' AND :sortDirection = 'asc' THEN available_quantity END ASC,
-                      CASE WHEN :sortField = 'availableQuantity' AND :sortDirection = 'desc' THEN available_quantity END DESC,
-                      CASE WHEN :sortField = 'status' AND :sortDirection = 'asc' THEN stock_status END ASC,
-                      CASE WHEN :sortField = 'status' AND :sortDirection = 'desc' THEN stock_status END DESC,
+                      CASE WHEN :sortField = 'availableQuantity' AND :sortDirection = 'asc' THEN available_quantity END ASC NULLS LAST,
+                      CASE WHEN :sortField = 'availableQuantity' AND :sortDirection = 'desc' THEN available_quantity END DESC NULLS LAST,
+                      CASE WHEN :sortField = 'status' AND :sortDirection = 'asc' THEN status_sort_key END ASC,
+                      CASE WHEN :sortField = 'status' AND :sortDirection = 'desc' THEN status_sort_key END DESC,
                       product_id ASC
                     """,
             countQuery = """
@@ -268,7 +367,7 @@ public interface ProductInventorySettingsRepository
                           ON l.tenant_id = p.tenant_id AND l.id = s.default_location_id AND l.branch_id = :branchId
                         LEFT JOIN inventory_balances b
                           ON b.tenant_id = p.tenant_id AND b.product_id = p.id AND b.branch_id = :branchId
-                        WHERE p.tenant_id = :tenantId AND p.status = 'published'
+                        WHERE p.tenant_id = :tenantId AND :includePhysical = TRUE AND p.status = 'published'
                           AND p.product_type = 'physical' AND p.tracking_stock = TRUE
                           AND (:categoryId IS NULL OR p.category_id = :categoryId)
                           AND (CAST(:search AS text) IS NULL
@@ -283,10 +382,25 @@ public interface ProductInventorySettingsRepository
                                     WHEN min_stock > 0 AND available_quantity <= min_stock * 1.25 THEN 'near_minimum'
                                     ELSE 'normal' END AS stock_status
                         FROM product_stock
+                    ), non_physical AS (
+                        SELECT p.id AS product_id
+                        FROM products p
+                        LEFT JOIN categories c ON c.tenant_id = p.tenant_id AND c.id = p.category_id
+                        WHERE p.tenant_id = :tenantId
+                          AND CAST(:status AS text) IS NULL
+                          AND p.status = 'published'
+                          AND ((:includeService = TRUE AND p.product_type = 'service')
+                               OR (:includeKit = TRUE AND p.product_type = 'kit'))
+                          AND (:categoryId IS NULL OR p.category_id = :categoryId)
+                          AND (CAST(:search AS text) IS NULL
+                               OR LOWER(p.name) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%')
+                               OR LOWER(p.sku) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%')
+                               OR LOWER(COALESCE(c.name, '')) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%'))
                     )
-                    SELECT COUNT(*) FROM classified
-                    WHERE stock_status = COALESCE(CAST(:status AS text), stock_status)
-                      AND CAST(:sortField AS text) IS NOT NULL AND CAST(:sortDirection AS text) IS NOT NULL
+                    SELECT (SELECT COUNT(*) FROM classified
+                             WHERE stock_status = COALESCE(CAST(:status AS text), stock_status))
+                           + (SELECT COUNT(*) FROM non_physical)
+                    WHERE CAST(:sortField AS text) IS NOT NULL AND CAST(:sortDirection AS text) IS NOT NULL
                       AND CAST(:businessDate AS date) IS NOT NULL
                     """,
             nativeQuery = true)
@@ -296,6 +410,9 @@ public interface ProductInventorySettingsRepository
             @Param("search") String search,
             @Param("categoryId") UUID categoryId,
             @Param("status") String status,
+            @Param("includePhysical") boolean includePhysical,
+            @Param("includeService") boolean includeService,
+            @Param("includeKit") boolean includeKit,
             @Param("businessDate") LocalDate businessDate,
             @Param("sortField") String sortField,
             @Param("sortDirection") String sortDirection,
@@ -370,6 +487,62 @@ public interface ProductInventorySettingsRepository
             @Param("status") String status,
             @Param("businessDate") LocalDate businessDate);
 
+    /**
+     * Componentes de UN kit con su disponibilidad efectiva en la sucursal (misma semántica que el listado de
+     * stock: disponible = SUM(quantity - reserved); capacidad = FLOOR(GREATEST(disponible, 0) / quantity_per_kit);
+     * un componente que ya no es physical + published + tracking_stock vale 0). Una sola query, orden determinístico.
+     */
+    @Query(value = """
+            WITH component_availability AS (
+                SELECT kc.component_product_id AS component_product_id,
+                       cp.sku AS sku,
+                       cp.name AS product_name,
+                       kc.quantity_per_kit AS quantity_per_kit,
+                       CASE WHEN cp.id IS NOT NULL
+                             AND cp.product_type = 'physical'
+                             AND cp.status = 'published'
+                             AND cp.tracking_stock = TRUE
+                            THEN COALESCE(SUM(b.quantity - b.reserved_quantity), CAST(0 AS numeric))
+                            ELSE CAST(0 AS numeric) END AS available_quantity,
+                       CASE WHEN cp.id IS NOT NULL
+                             AND cp.product_type = 'physical'
+                             AND cp.status = 'published'
+                             AND cp.tracking_stock = TRUE
+                            THEN FLOOR(GREATEST(COALESCE(SUM(b.quantity - b.reserved_quantity), CAST(0 AS numeric)),
+                                                CAST(0 AS numeric)) / kc.quantity_per_kit)
+                            ELSE CAST(0 AS numeric) END AS kit_capacity
+                FROM product_kit_components kc
+                LEFT JOIN products cp
+                  ON cp.tenant_id = kc.tenant_id AND cp.id = kc.component_product_id
+                LEFT JOIN inventory_balances b
+                  ON b.tenant_id = kc.tenant_id
+                 AND b.product_id = kc.component_product_id
+                 AND b.branch_id = :branchId
+                WHERE kc.tenant_id = :tenantId
+                  AND kc.kit_product_id = :kitProductId
+                GROUP BY kc.id, kc.component_product_id, kc.quantity_per_kit,
+                         cp.id, cp.sku, cp.name, cp.product_type, cp.status, cp.tracking_stock
+            )
+            SELECT component_product_id AS "componentProductId", sku AS sku, product_name AS "productName",
+                   quantity_per_kit AS "quantityPerKit", available_quantity AS "availableQuantity",
+                   kit_capacity AS "kitCapacity"
+            FROM component_availability
+            ORDER BY kit_capacity ASC, LOWER(product_name) ASC NULLS LAST, component_product_id ASC
+            """, nativeQuery = true)
+    List<KitComponentAvailabilityProjection> findKitComponentAvailability(
+            @Param("tenantId") UUID tenantId,
+            @Param("branchId") UUID branchId,
+            @Param("kitProductId") UUID kitProductId);
+
+    interface KitComponentAvailabilityProjection {
+        UUID getComponentProductId();
+        String getSku();
+        String getProductName();
+        BigDecimal getQuantityPerKit();
+        BigDecimal getAvailableQuantity();
+        BigDecimal getKitCapacity();
+    }
+
     interface InventoryAlertProjection {
         UUID getProductId();
 
@@ -416,6 +589,9 @@ public interface ProductInventorySettingsRepository
         LocalDate getNextExpirationDate();
         String getStockStatus();
         BigDecimal getSuggestedReorder();
+        String getProductType();
+        String getInventoryMode();
+        String getDisplayStatus();
     }
 
     interface InventoryStockSummaryProjection {
