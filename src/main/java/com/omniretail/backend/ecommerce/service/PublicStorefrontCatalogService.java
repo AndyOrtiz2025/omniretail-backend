@@ -8,10 +8,13 @@ import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.catalog.entity.Category;
 import com.omniretail.backend.catalog.entity.CategoryStatus;
 import com.omniretail.backend.catalog.entity.Product;
+import com.omniretail.backend.catalog.entity.ProductMedia;
+import com.omniretail.backend.catalog.entity.ProductMediaType;
 import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.entity.Unit;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.catalog.repository.ProductMediaRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
 import com.omniretail.backend.catalog.service.ProductPriceResolver;
 import com.omniretail.backend.ecommerce.dto.PublicStorefrontProductResponse;
@@ -20,6 +23,7 @@ import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Function;
@@ -37,6 +41,7 @@ public class PublicStorefrontCatalogService {
 
     private final TenantRepository tenantRepository;
     private final ProductRepository productRepository;
+    private final ProductMediaRepository productMediaRepository;
     private final CategoryRepository categoryRepository;
     private final UnitRepository unitRepository;
     private final ProductPriceResolver productPriceResolver;
@@ -52,9 +57,14 @@ public class PublicStorefrontCatalogService {
                 .collect(java.util.stream.Collectors.toMap(Unit::getId, Function.identity()));
         Instant pricingAt = Instant.now();
         Map<UUID, BigDecimal> availableByProduct = availableByProduct(tenantId);
+        List<Product> products = productRepository
+                .findByTenantIdAndStatusAndChannelEcommerceTrue(tenantId, ProductStatus.published);
+        Map<UUID, ProductMedia> primaryMedia = primaryMediaByProduct(tenantId, products);
 
-        return productRepository.findByTenantIdAndStatusAndChannelEcommerceTrue(tenantId, ProductStatus.published).stream()
-                .map(product -> toResponse(product, activeCategories, units, tenantId, pricingAt, availableByProduct))
+        return products.stream()
+                .map(product -> toResponse(
+                        product, activeCategories, units, tenantId, pricingAt,
+                        availableByProduct, primaryMedia.get(product.getId())))
                 .toList();
     }
 
@@ -63,9 +73,8 @@ public class PublicStorefrontCatalogService {
         Product product = productRepository
                 .findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(tenantId, productId, ProductStatus.published)
                 .orElseThrow(() -> productNotFound());
-        String categoryName = categoryRepository.findById(product.getCategoryId())
+        Category category = categoryRepository.findById(product.getCategoryId())
                 .filter(found -> found.getTenantId().equals(tenantId) && found.getStatus() == CategoryStatus.active)
-                .map(Category::getName)
                 .orElse(null);
         UUID saleUnitId = product.getSaleUnitId() != null ? product.getSaleUnitId() : product.getBaseUnitId();
         String saleUnitName = unitRepository.findById(saleUnitId)
@@ -73,12 +82,16 @@ public class PublicStorefrontCatalogService {
                 .map(Unit::getName)
                 .orElse(null);
         StockAvailability stock = stockAvailability(product, availableByProduct(tenantId));
+        ProductMedia primaryMedia = primaryMediaByProduct(tenantId, List.of(product)).get(product.getId());
         return PublicStorefrontProductResponse.from(
                 product,
-                categoryName,
+                category != null ? category.getName() : null,
+                category != null ? category.getImageUrl() : null,
                 saleUnitId,
                 saleUnitName,
                 productPriceResolver.resolveEffectivePrice(tenantId, product, Instant.now(), "ecommerce", null),
+                primaryMedia != null ? primaryMedia.getUrl() : null,
+                primaryMedia != null ? primaryMedia.getAltText() : null,
                 stock.inStock(),
                 stock.availableQuantity());
     }
@@ -89,7 +102,8 @@ public class PublicStorefrontCatalogService {
             Map<UUID, Unit> units,
             UUID tenantId,
             Instant pricingAt,
-            Map<UUID, BigDecimal> availableByProduct) {
+            Map<UUID, BigDecimal> availableByProduct,
+            ProductMedia primaryMedia) {
         UUID saleUnitId = product.getSaleUnitId() != null ? product.getSaleUnitId() : product.getBaseUnitId();
         Unit saleUnit = units.get(saleUnitId);
         Category category = categories.get(product.getCategoryId());
@@ -97,12 +111,28 @@ public class PublicStorefrontCatalogService {
         return PublicStorefrontProductResponse.from(
                 product,
                 category != null ? category.getName() : null,
+                category != null ? category.getImageUrl() : null,
                 saleUnitId,
                 saleUnit != null ? saleUnit.getName() : null,
                 productPriceResolver.resolveEffectivePrice(
                         tenantId, product, pricingAt, "ecommerce", null),
+                primaryMedia != null ? primaryMedia.getUrl() : null,
+                primaryMedia != null ? primaryMedia.getAltText() : null,
                 stock.inStock(),
                 stock.availableQuantity());
+    }
+
+    /** Carga en lote una sola imagen principal por producto para evitar consultas N+1. */
+    private Map<UUID, ProductMedia> primaryMediaByProduct(UUID tenantId, List<Product> products) {
+        if (products.isEmpty()) return Map.of();
+        Map<UUID, ProductMedia> primaryMedia = new LinkedHashMap<>();
+        productMediaRepository
+                .findByTenantIdAndProductIdInAndPrimaryTrueAndTypeOrderByProductIdAscSortOrderAscIdAsc(
+                        tenantId,
+                        products.stream().map(Product::getId).toList(),
+                        ProductMediaType.image)
+                .forEach(media -> primaryMedia.putIfAbsent(media.getProductId(), media));
+        return primaryMedia;
     }
 
     /**
