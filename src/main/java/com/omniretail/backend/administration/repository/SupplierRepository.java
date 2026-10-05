@@ -2,6 +2,7 @@ package com.omniretail.backend.administration.repository;
 
 import com.omniretail.backend.administration.entity.Supplier;
 import com.omniretail.backend.administration.entity.SupplierStatus;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -20,6 +21,26 @@ public interface SupplierRepository extends JpaRepository<Supplier, UUID> {
     Page<Supplier> findByTenantIdAndStatus(UUID tenantId, SupplierStatus status, Pageable pageable);
 
     List<Supplier> findByTenantIdAndStatus(UUID tenantId, SupplierStatus status);
+
+    /**
+     * Búsqueda operacional paginada en DB. {@code pattern} es un LIKE ya en minúsculas y con los
+     * comodines del usuario escapados con '!' ("%" cuando no hay búsqueda).
+     */
+    @Query("""
+            select supplier from Supplier supplier
+            where supplier.tenantId = :tenantId
+              and supplier.status in :statuses
+              and (lower(supplier.name) like :pattern escape '!'
+                   or lower(supplier.legalName) like :pattern escape '!'
+                   or lower(supplier.taxId) like :pattern escape '!'
+                   or lower(supplier.email) like :pattern escape '!'
+                   or lower(supplier.phone) like :pattern escape '!')
+            """)
+    Page<Supplier> search(
+            @Param("tenantId") UUID tenantId,
+            @Param("statuses") Collection<SupplierStatus> statuses,
+            @Param("pattern") String pattern,
+            Pageable pageable);
 
     Optional<Supplier> findByTenantIdAndNameIgnoreCase(UUID tenantId, String name);
 

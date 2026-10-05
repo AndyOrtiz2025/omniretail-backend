@@ -38,6 +38,79 @@ public interface ReceiptIncidentRepository extends JpaRepository<ReceiptIncident
             @Param("goodsReceiptItemId") UUID goodsReceiptItemId,
             @Param("status") ReceiptIncidentStatus status);
 
+    /**
+     * Historial de incidencias de UN proveedor (incidencia -> recepción -> orden -> proveedor), con número
+     * de recepción/orden y producto de la línea resueltos por join. Versión para todas las sucursales.
+     */
+    @Query(
+            value = """
+                    select new com.omniretail.backend.purchasing.dto.PurchasingSupplierIncidentResponse(
+                        i.id, i.incidentType, i.status, i.quantityAffected, i.notes, i.createdAt, i.resolvedAt,
+                        r.id, r.number, o.id, o.number, i.branchId, p.id, p.name)
+                    from ReceiptIncident i
+                    join GoodsReceipt r on r.id = i.goodsReceiptId and r.tenantId = :tenantId
+                    join PurchaseOrder o on o.id = r.purchaseOrderId and o.tenantId = :tenantId
+                    left join GoodsReceiptItem gi on gi.id = i.goodsReceiptItemId and gi.tenantId = :tenantId
+                    left join Product p on p.id = gi.productId and p.tenantId = :tenantId
+                    where i.tenantId = :tenantId
+                      and o.supplierId = :supplierId
+                      and (:branchId is null or i.branchId = :branchId)
+                      and (:status is null or i.status = :status)
+                    order by i.createdAt desc, i.id desc
+                    """,
+            countQuery = """
+                    select count(i) from ReceiptIncident i
+                    join GoodsReceipt r on r.id = i.goodsReceiptId and r.tenantId = :tenantId
+                    join PurchaseOrder o on o.id = r.purchaseOrderId and o.tenantId = :tenantId
+                    where i.tenantId = :tenantId
+                      and o.supplierId = :supplierId
+                      and (:branchId is null or i.branchId = :branchId)
+                      and (:status is null or i.status = :status)
+                    """)
+    Page<com.omniretail.backend.purchasing.dto.PurchasingSupplierIncidentResponse> findSupplierHistory(
+            @Param("tenantId") UUID tenantId,
+            @Param("supplierId") UUID supplierId,
+            @Param("branchId") UUID branchId,
+            @Param("status") ReceiptIncidentStatus status,
+            Pageable pageable);
+
+    /** Igual que {@link #findSupplierHistory} pero limitado a las sucursales autorizadas del usuario. */
+    @Query(
+            value = """
+                    select new com.omniretail.backend.purchasing.dto.PurchasingSupplierIncidentResponse(
+                        i.id, i.incidentType, i.status, i.quantityAffected, i.notes, i.createdAt, i.resolvedAt,
+                        r.id, r.number, o.id, o.number, i.branchId, p.id, p.name)
+                    from ReceiptIncident i
+                    join GoodsReceipt r on r.id = i.goodsReceiptId and r.tenantId = :tenantId
+                    join PurchaseOrder o on o.id = r.purchaseOrderId and o.tenantId = :tenantId
+                    left join GoodsReceiptItem gi on gi.id = i.goodsReceiptItemId and gi.tenantId = :tenantId
+                    left join Product p on p.id = gi.productId and p.tenantId = :tenantId
+                    where i.tenantId = :tenantId
+                      and o.supplierId = :supplierId
+                      and i.branchId in :allowedBranchIds
+                      and (:branchId is null or i.branchId = :branchId)
+                      and (:status is null or i.status = :status)
+                    order by i.createdAt desc, i.id desc
+                    """,
+            countQuery = """
+                    select count(i) from ReceiptIncident i
+                    join GoodsReceipt r on r.id = i.goodsReceiptId and r.tenantId = :tenantId
+                    join PurchaseOrder o on o.id = r.purchaseOrderId and o.tenantId = :tenantId
+                    where i.tenantId = :tenantId
+                      and o.supplierId = :supplierId
+                      and i.branchId in :allowedBranchIds
+                      and (:branchId is null or i.branchId = :branchId)
+                      and (:status is null or i.status = :status)
+                    """)
+    Page<com.omniretail.backend.purchasing.dto.PurchasingSupplierIncidentResponse>
+            findSupplierHistoryForBranches(
+                    @Param("tenantId") UUID tenantId,
+                    @Param("supplierId") UUID supplierId,
+                    @Param("allowedBranchIds") java.util.Collection<UUID> allowedBranchIds,
+                    @Param("branchId") UUID branchId,
+                    @Param("status") ReceiptIncidentStatus status,
+                    Pageable pageable);
+
     boolean existsByTenantIdAndGoodsReceiptIdAndStatus(
             UUID tenantId, UUID goodsReceiptId, ReceiptIncidentStatus status);
 }
