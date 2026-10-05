@@ -69,6 +69,22 @@ public class MfaChallenge extends BaseEntity {
     @Column(name = "invalidated_at")
     private Instant invalidatedAt;
 
+    /** HMAC del codigo enviado por correo (solo metodo email). Null si aun no se pudo enviar. */
+    @Column(name = "code_hash")
+    private String codeHash;
+
+    /** Vigencia del codigo por correo vigente; {@code expiresAt} es el limite total del desafio. */
+    @Column(name = "code_expires_at")
+    private Instant codeExpiresAt;
+
+    @Column(name = "code_sent_at")
+    private Instant codeSentAt;
+
+    @NotNull
+    @Builder.Default
+    @Column(name = "resend_count", nullable = false)
+    private Integer resendCount = 0;
+
     public boolean isUsable(Instant now) {
         return consumedAt == null && invalidatedAt == null && now.isBefore(expiresAt);
     }

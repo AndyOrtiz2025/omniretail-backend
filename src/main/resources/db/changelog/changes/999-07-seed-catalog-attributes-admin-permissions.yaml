@@ -1,0 +1,25 @@
+databaseChangeLog:
+  - changeSet:
+      id: 999-07-seed-catalog-attributes-admin-permissions
+      author: melbyn
+      context: dev
+      changes:
+        - sql:
+            # En una BD nueva 048 corre antes de 999-01 y no encuentra roles; este seed (posterior) concede los
+            # permisos al Administrador de sistema que crea 999-01. Mismo patron que 999-05. Idempotente: union
+            # de conjuntos, conserva los permisos existentes y no duplica. Solo el rol de sistema "Administrador".
+            sql: |
+              UPDATE roles
+              SET permissions = (
+                SELECT ARRAY(
+                  SELECT DISTINCT permission
+                  FROM unnest(COALESCE(permissions, ARRAY[]::text[])
+                              || ARRAY['catalog.attributes.read', 'catalog.attributes.manage']::text[]) AS permission
+                  ORDER BY permission
+                )
+              )
+              WHERE name = 'Administrador' AND is_system = TRUE;
+      rollback:
+        # Seed de demo: sin efecto intencional (no se sabe si el permiso ya existia antes).
+        - sql:
+            sql: SELECT 1

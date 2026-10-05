@@ -6,6 +6,7 @@ import com.omniretail.backend.auth.dto.DisableMfaRequest;
 import com.omniretail.backend.auth.dto.LoginResponse;
 import com.omniretail.backend.auth.dto.MfaRecoveryCodesResponse;
 import com.omniretail.backend.auth.dto.MfaStatusResponse;
+import com.omniretail.backend.auth.dto.ResendMfaCodeRequest;
 import com.omniretail.backend.auth.dto.VerifyMfaChallengeRequest;
 import com.omniretail.backend.auth.dto.VerifyMfaEnrollmentRequest;
 import com.omniretail.backend.auth.service.MfaLoginService;
@@ -76,6 +77,60 @@ public class MfaController {
         return mfaLoginService.verify(request);
     }
 
+    @PostMapping("/resend")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @SecurityRequirements
+    @Operation(
+            summary = "Reenviar el código por correo del inicio de sesión",
+            description = """
+                    Solo para el método por correo. Envía un código nuevo y el anterior deja de servir. El nuevo
+                    vence a los 5 minutos, sin pasar los 15 minutos de vida del desafío. Conserva los intentos
+                    fallidos del desafío.
+
+                    Límites: 60 s entre correos, 3 reenvíos por desafío y 10 correos por usuario por hora.""")
+    @ApiResponses({
+        @ApiResponse(responseCode = "204", description = "Código reenviado."),
+        @ApiResponse(
+                responseCode = "400",
+                description = "`MFA_RESEND_NOT_AVAILABLE` (el método es la app), campos no permitidos "
+                        + "(`VALIDATION_ERROR`) o cuerpo ilegible (`REQUEST_ERROR`).",
+                content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
+        @ApiResponse(
+                responseCode = "401",
+                description = "`MFA_CHALLENGE_UNAVAILABLE`: desafío vencido, usado, reemplazado o cuenta bloqueada.",
+                content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
+        @ApiResponse(
+                responseCode = "429",
+                description = "`MFA_CODE_RESEND_LIMITED`: todavía no se puede pedir otro código.",
+                content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
+    })
+    public void resendChallengeCode(@RequestBody ResendMfaCodeRequest request) {
+        mfaLoginService.resend(request);
+    }
+
+    @PostMapping("/code")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @Operation(
+            summary = "Enviar un código por correo para el cambio de contraseña",
+            description = """
+                    Solo con el MFA por correo activo. El código vence a los 5 minutos y se usa como `mfaCode` en
+                    `POST /auth/password/change`. Pedir otro invalida el anterior. Mismos límites de envío.""")
+    @ApiResponses({
+        @ApiResponse(responseCode = "204", description = "Código enviado."),
+        @ApiResponse(
+                responseCode = "400",
+                description = "`MFA_EMAIL_CODE_NOT_AVAILABLE`: el MFA no está activo o su método es la app.",
+                content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
+        @ApiResponse(responseCode = "401", description = UNAUTHORIZED_DESCRIPTION),
+        @ApiResponse(
+                responseCode = "429",
+                description = "`MFA_CODE_RESEND_LIMITED`.",
+                content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
+    })
+    public void sendActionCode() {
+        mfaService.sendActionCode(currentUser.require());
+    }
+
     @GetMapping
     @Operation(
             summary = "Consultar mi verificación en dos pasos",
@@ -95,11 +150,14 @@ public class MfaController {
     @Operation(
             summary = "Iniciar la activación",
             description = """
-                    Genera un secreto TOTP nuevo y devuelve el `otpauthUri` (para el QR) y el secreto en Base32.
                     La activación queda pendiente hasta confirmar un código en `POST /auth/mfa/enrollment/verify`.
 
-                    - Repetirla antes de confirmar reemplaza el secreto pendiente.
-                    - Solo `method: "totp"`. `email` responde 400 `MFA_METHOD_NOT_AVAILABLE`.
+                    - `method: "totp"`: genera un secreto nuevo y devuelve el `otpauthUri` (para el QR) y el
+                      secreto en Base32.
+                    - `method: "email"`: envía un código de 6 dígitos al correo de la cuenta (vence en 5 min).
+                      `secret` y `otpauthUri` vienen en `null`.
+                    - Repetirla antes de confirmar reemplaza el secreto o el código pendiente. Con correo cuenta
+                      como un envío: 60 s entre envíos y 10 correos por hora (429 `MFA_CODE_RESEND_LIMITED`).
                     - Con el MFA ya activo responde 409: primero hay que desactivarlo (pide la contraseña).""")
     @ApiResponses({
         @ApiResponse(
@@ -109,13 +167,17 @@ public class MfaController {
                         mediaType = "application/json", schema = @Schema(implementation = BeginMfaEnrollmentResponse.class))),
         @ApiResponse(
                 responseCode = "400",
-                description = "`VALIDATION_ERROR` (`fields.method` o campos no permitidos), "
-                        + "`MFA_METHOD_NOT_AVAILABLE` o cuerpo ilegible (`REQUEST_ERROR`).",
+                description = "`VALIDATION_ERROR` (`fields.method` o campos no permitidos) o cuerpo ilegible "
+                        + "(`REQUEST_ERROR`).",
                 content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
         @ApiResponse(responseCode = "401", description = UNAUTHORIZED_DESCRIPTION),
         @ApiResponse(
                 responseCode = "409",
                 description = "`MFA_ALREADY_ENABLED`.",
+                content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
+        @ApiResponse(
+                responseCode = "429",
+                description = "`MFA_CODE_RESEND_LIMITED` (solo correo).",
                 content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
     })
     public BeginMfaEnrollmentResponse beginEnrollment(@RequestBody BeginMfaEnrollmentRequest request) {
