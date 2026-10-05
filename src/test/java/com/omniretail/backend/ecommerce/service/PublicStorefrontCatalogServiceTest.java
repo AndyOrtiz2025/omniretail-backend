@@ -16,10 +16,13 @@ import com.omniretail.backend.catalog.entity.Category;
 import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
 import com.omniretail.backend.catalog.entity.CategoryStatus;
 import com.omniretail.backend.catalog.entity.Product;
+import com.omniretail.backend.catalog.entity.ProductMedia;
+import com.omniretail.backend.catalog.entity.ProductMediaType;
 import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.entity.Unit;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.catalog.repository.ProductMediaRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
 import com.omniretail.backend.catalog.service.ProductPriceResolver;
 import com.omniretail.backend.inventory.entity.InventoryBalance;
@@ -42,6 +45,7 @@ class PublicStorefrontCatalogServiceTest {
 
     @Mock private TenantRepository tenantRepository;
     @Mock private ProductRepository productRepository;
+    @Mock private ProductMediaRepository productMediaRepository;
     @Mock private CategoryRepository categoryRepository;
     @Mock private UnitRepository unitRepository;
     @Mock private ProductPriceResolver productPriceResolver;
@@ -122,6 +126,41 @@ class PublicStorefrontCatalogServiceTest {
             assertThat(item.effectivePrice()).isEqualByComparingTo("60.00");
             assertThat(item.discountAmount()).isEqualByComparingTo("15.00");
             assertThat(item.promotionId()).isEqualTo(promotionId);
+        });
+    }
+
+    @Test
+    void exposesTheAdministrativeProductAndCategoryImagesInThePublicCatalog() {
+        UUID tenantId = UUID.randomUUID();
+        UUID productId = UUID.randomUUID();
+        UUID categoryId = UUID.randomUUID();
+        UUID unitId = UUID.randomUUID();
+        Product product = product(productId, categoryId, unitId);
+        Tenant tenant = tenant(tenantId);
+        Category category = category(categoryId);
+        Unit unit = unit(unitId);
+        ProductMedia media = mock(ProductMedia.class);
+        when(category.getImageUrl()).thenReturn("/media/tenant/categories/category/image.webp");
+        when(media.getProductId()).thenReturn(productId);
+        when(media.getUrl()).thenReturn("/media/tenant/products/product/image.webp");
+        when(media.getAltText()).thenReturn("Martillo de uña sobre fondo blanco");
+        when(tenantRepository.findBySlug("ferreteria-los-simpson")).thenReturn(Optional.of(tenant));
+        when(categoryRepository.findByTenantIdAndStatus(tenantId, CategoryStatus.active))
+                .thenReturn(List.of(category));
+        when(unitRepository.findByTenantId(tenantId)).thenReturn(List.of(unit));
+        when(productRepository.findByTenantIdAndStatusAndChannelEcommerceTrue(
+                tenantId, ProductStatus.published)).thenReturn(List.of(product));
+        when(productMediaRepository
+                .findByTenantIdAndProductIdInAndPrimaryTrueAndTypeOrderByProductIdAscSortOrderAscIdAsc(
+                        tenantId, List.of(productId), ProductMediaType.image))
+                .thenReturn(List.of(media));
+
+        var result = service.listProducts("ferreteria-los-simpson");
+
+        assertThat(result).singleElement().satisfies(item -> {
+            assertThat(item.primaryImageUrl()).isEqualTo("/media/tenant/products/product/image.webp");
+            assertThat(item.primaryImageAlt()).isEqualTo("Martillo de uña sobre fondo blanco");
+            assertThat(item.categoryImageUrl()).isEqualTo("/media/tenant/categories/category/image.webp");
         });
     }
 
