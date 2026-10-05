@@ -1,0 +1,83 @@
+databaseChangeLog:
+  - changeSet:
+      id: 050-auth-mfa-email
+      author: AndyOrtiz2025
+      changes:
+        # Codigo por correo del desafio de login. Solo se guarda su HMAC-SHA256 (ligado al desafio).
+        # code_expires_at es la vigencia del codigo vigente (5 min, renovable al reenviar); expires_at
+        # del desafio es el limite total (15 min para correo).
+        - addColumn:
+            tableName: mfa_challenges
+            columns:
+              - column:
+                  name: code_hash
+                  type: VARCHAR(64)
+              - column:
+                  name: code_expires_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: code_sent_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: resend_count
+                  type: INTEGER
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+        # Codigo por correo fuera del login (activacion pendiente y cambio de contrasena), y el control
+        # de envios por usuario: email_code_sent_at es el ultimo correo con codigo enviado (espera de 60 s)
+        # y email_code_window_* cuentan los envios de la hora en curso (tope de 10).
+        - addColumn:
+            tableName: mfa_enrollments
+            columns:
+              - column:
+                  name: email_code_hash
+                  type: VARCHAR(64)
+              - column:
+                  name: email_code_expires_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: email_code_sent_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: email_code_window_started_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: email_code_window_count
+                  type: INTEGER
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+        - sql:
+            sql: "ALTER TABLE mfa_enrollments DROP CONSTRAINT ck_mfa_enrollments_method"
+        - sql:
+            sql: "ALTER TABLE mfa_enrollments ADD CONSTRAINT ck_mfa_enrollments_method CHECK (method IN ('totp', 'email'))"
+      rollback:
+        - sql:
+            sql: "ALTER TABLE mfa_enrollments DROP CONSTRAINT ck_mfa_enrollments_method"
+        - sql:
+            sql: "ALTER TABLE mfa_enrollments ADD CONSTRAINT ck_mfa_enrollments_method CHECK (method IN ('totp'))"
+        - dropColumn:
+            tableName: mfa_enrollments
+            columns:
+              - column:
+                  name: email_code_hash
+              - column:
+                  name: email_code_expires_at
+              - column:
+                  name: email_code_sent_at
+              - column:
+                  name: email_code_window_started_at
+              - column:
+                  name: email_code_window_count
+        - dropColumn:
+            tableName: mfa_challenges
+            columns:
+              - column:
+                  name: code_hash
+              - column:
+                  name: code_expires_at
+              - column:
+                  name: code_sent_at
+              - column:
+                  name: resend_count
