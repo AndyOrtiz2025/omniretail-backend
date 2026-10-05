@@ -13,7 +13,7 @@ import org.springframework.context.annotation.Primary;
  * commit), por eso las consultas esperan un poco antes de responder.
  * Uso: {@code @Import(CapturingEmailSender.Config.class)} y {@code @Autowired CapturingEmailSender}.
  */
-public class CapturingEmailSender implements EmailSender {
+public class CapturingEmailSender implements PlatformEmailSender {
 
     private static final Duration WAIT = Duration.ofSeconds(5);
     private static final Duration QUIET_PERIOD = Duration.ofMillis(500);

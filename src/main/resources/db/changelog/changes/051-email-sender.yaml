@@ -1,0 +1,194 @@
+databaseChangeLog:
+  - changeSet:
+      id: 051-email-sender-tables
+      author: joga17000
+      changes:
+        # Cuenta Gmail (correo + contrasena de aplicacion cifrada) de cada tenant para sus correos operativos.
+        - createTable:
+            tableName: tenant_email_sender_config
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    unique: true
+                    uniqueConstraintName: uk_tenant_email_sender_config_tenant
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_tenant_email_sender_config_tenant
+              - column:
+                  name: provider
+                  type: VARCHAR(30)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: sender_email
+                  type: VARCHAR(254)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: sender_name
+                  type: VARCHAR(100)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: encrypted_credential
+                  type: TEXT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: credential_iv
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: encryption_key_version
+                  type: INT
+                  defaultValueNumeric: 1
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: last_verified_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: last_failure_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        # Registro de cada envio. El cuerpo nunca se guarda en claro (puede llevar tokens): los correos de
+        # tenant guardan asunto+cuerpo cifrados solo para poder reintentar; los de plataforma no guardan nada.
+        - createTable:
+            tableName: email_delivery
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_email_delivery_tenant
+              - column:
+                  name: purpose
+                  type: VARCHAR(40)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: recipient
+                  type: VARCHAR(254)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: subject
+                  type: VARCHAR(255)
+              - column:
+                  name: status
+                  type: VARCHAR(10)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: attempts
+                  type: INT
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: last_attempt_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: next_attempt_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: error_code
+                  type: VARCHAR(40)
+              - column:
+                  name: encrypted_payload
+                  type: TEXT
+              - column:
+                  name: payload_iv
+                  type: VARCHAR(64)
+              - column:
+                  name: encryption_key_version
+                  type: INT
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: sent_at
+                  type: TIMESTAMPTZ
+        - createIndex:
+            tableName: email_delivery
+            indexName: idx_email_delivery_retry
+            columns:
+              - column:
+                  name: status
+              - column:
+                  name: next_attempt_at
+        - createIndex:
+            tableName: email_delivery
+            indexName: idx_email_delivery_tenant_created
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: created_at
+      rollback:
+        - dropTable:
+            tableName: email_delivery
+        - dropTable:
+            tableName: tenant_email_sender_config
+
+  - changeSet:
+      id: 051-email-sender-permissions
+      author: joga17000
+      changes:
+        - sql:
+            sql: |
+              UPDATE roles
+              SET permissions = (
+                SELECT ARRAY(
+                  SELECT DISTINCT permission
+                  FROM unnest(permissions || ARRAY['admin.email_config.read', 'admin.email_config.manage']::text[]) AS permission
+                  ORDER BY permission
+                )
+              )
+              WHERE name = 'Administrador' AND is_system = TRUE;
+      rollback:
+        - sql:
+            sql: |
+              UPDATE roles
+              SET permissions = array_remove(array_remove(permissions, 'admin.email_config.read'), 'admin.email_config.manage')
+              WHERE name = 'Administrador' AND is_system = TRUE;

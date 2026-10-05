@@ -3,6 +3,7 @@ package com.omniretail.backend.auth.service;
 import com.omniretail.backend.administration.entity.User;
 import com.omniretail.backend.auth.entity.MfaEnrollment;
 import com.omniretail.backend.shared.notification.EmailMessage;
+import com.omniretail.backend.shared.notification.EmailPurpose;
 import com.omniretail.backend.shared.notification.EmailRequestedEvent;
 import java.security.SecureRandom;
 import java.time.Duration;
@@ -88,6 +89,7 @@ public class MfaEmailCodeSender {
 
                 Si no fuiste tú, cambia tu contraseña.
                 """.formatted(user.getName(), purpose.action, code, CODE_TTL.toMinutes());
-        return new EmailMessage(user.getEmail(), "Tu código de verificación", body);
+        return EmailMessage.text(
+                user.getTenantId(), EmailPurpose.MFA_CODE, user.getEmail(), "Tu código de verificación", body);
     }
 }

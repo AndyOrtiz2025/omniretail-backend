@@ -8,3 +8,8 @@ app:
     secret: omniretail-test-secret-only-for-tests-32b
   mfa:
     encryption-key: omniretail-test-mfa-key-only-for-tests-32b
+  mail:
+    credential:
+      encryption-key: omniretail-test-email-key-only-for-tests-32b
+    delivery:
+      retry-enabled: false # los tests invocan el reintento a mano

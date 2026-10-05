@@ -84,6 +84,7 @@ public class StorefrontCheckoutService {
     private final ProductPriceResolver productPriceResolver;
     private final ProductKitService productKitService;
     private final JsonMapper jsonMapper;
+    private final OrderEmailNotifier orderEmailNotifier;
 
     @Transactional
     public StorefrontCheckoutResponse checkout(
@@ -199,6 +200,7 @@ public class StorefrontCheckoutService {
                 .build();
         order.setTenantId(tenantId);
         Order savedOrder = orderRepository.save(order);
+        orderEmailNotifier.orderConfirmed(savedOrder);
         for (int i = 0; i < items.size(); i++) {
             OrderItem item = items.get(i);
             item.setOrderId(savedOrder.getId());

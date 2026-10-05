@@ -15,6 +15,11 @@ app:
     # Solo para desarrollo. Nunca usar este valor fuera de dev.
     encryption-key: ${MFA_ENCRYPTION_KEY:omniretail-dev-mfa-key-change-me-min-32-chars!!}
 
+  mail:
+    credential:
+      # Solo para desarrollo. Nunca usar este valor fuera de dev.
+      encryption-key: ${EMAIL_CREDENTIAL_ENCRYPTION_KEY:omniretail-dev-email-key-change-me-min-32-chars!!}
+
 logging:
   level:
     com.omniretail: DEBUG

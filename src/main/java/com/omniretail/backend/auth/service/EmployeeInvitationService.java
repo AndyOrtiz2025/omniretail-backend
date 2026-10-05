@@ -14,6 +14,7 @@ import com.omniretail.backend.shared.config.FrontendProperties;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.exception.FieldValidationException;
 import com.omniretail.backend.shared.notification.EmailMessage;
+import com.omniretail.backend.shared.notification.EmailPurpose;
 import com.omniretail.backend.shared.notification.EmailRequestedEvent;
 import com.omniretail.backend.shared.security.EmployeeAuthSummary;
 import com.omniretail.backend.shared.security.EmployeeInvitationPort;
@@ -86,7 +87,7 @@ public class EmployeeInvitationService implements EmployeeInvitationPort {
                 .createdAt(now)
                 .expiresAt(expiresAt)
                 .build());
-        eventPublisher.publishEvent(new EmailRequestedEvent(invitationEmail(user,
+        eventPublisher.publishEvent(new EmailRequestedEvent(invitationEmail(tenantId, user,
                 frontendProperties.link("/activar-cuenta/" + token))));
         return new EmployeeInviteResult(userId, token, expiresAt);
     }
@@ -184,7 +185,7 @@ public class EmployeeInvitationService implements EmployeeInvitationPort {
         return account;
     }
 
-    private static EmailMessage invitationEmail(User user, String link) {
+    private static EmailMessage invitationEmail(UUID tenantId, User user, String link) {
         String body = """
                 Hola %s:
 
@@ -195,6 +196,7 @@ public class EmployeeInvitationService implements EmployeeInvitationPort {
                 El enlace vence en %d horas y solo se puede usar una vez.
                 Si recibes una nueva invitación, el enlace anterior dejará de ser válido.
                 """.formatted(user.getName(), link, INVITATION_TTL.toHours());
-        return new EmailMessage(user.getEmail(), "Activa tu cuenta de empleado", body);
+        return EmailMessage.text(tenantId, EmailPurpose.EMPLOYEE_INVITATION, user.getEmail(),
+                "Activa tu cuenta de empleado", body);
     }
 }
