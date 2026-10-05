@@ -177,13 +177,9 @@ class MfaControllerTest {
     }
 
     @Test
-    void emailMethodAndInvalidBodiesAreRejected() throws Exception {
+    void invalidEnrollmentBodiesAreRejected() throws Exception {
         String token = sessionToken(employee());
 
-        beginEnrollment(token, "{\"method\": \"email\"}")
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.code").value("MFA_METHOD_NOT_AVAILABLE"))
-                .andExpect(jsonPath("$.message").value("Método no disponible todavía."));
         beginEnrollment(token, "{}")
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fields.method").value("Selecciona un método."));

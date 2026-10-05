@@ -7,6 +7,7 @@ import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.administration.repository.UserRepository;
 import com.omniretail.backend.auth.dto.LoginResponse;
 import com.omniretail.backend.auth.dto.MfaChallengeResponse;
+import com.omniretail.backend.auth.dto.ResendMfaCodeRequest;
 import com.omniretail.backend.auth.dto.VerifyMfaChallengeRequest;
 import com.omniretail.backend.auth.entity.AccountStatus;
 import com.omniretail.backend.auth.entity.AuthAccount;
@@ -46,6 +47,9 @@ public class MfaLoginService {
     static final int MAX_ATTEMPTS = 5;
     /** MFA_CHALLENGE_EXPIRATION_MINUTES de mfa-policy.ts. */
     static final Duration CHALLENGE_TTL = Duration.ofMinutes(5);
+    /** Limite total de un desafio por correo, aunque se reenvie el codigo. */
+    static final Duration EMAIL_CHALLENGE_MAX_TTL = Duration.ofMinutes(15);
+    static final int MAX_RESENDS = 3;
     static final String CODE_INVALID_MESSAGE = "El código no es correcto. Inténtalo de nuevo.";
     static final String CHALLENGE_UNAVAILABLE_MESSAGE = "El código no es válido o venció. Vuelve a iniciar sesión.";
 
@@ -60,27 +64,70 @@ public class MfaLoginService {
     private final JwtService jwtService;
     private final AuthAuditService auditService;
     private final Clock authClock;
+    private final MfaCrypto mfaCrypto;
+    private final MfaEmailCodeSender emailCodeSender;
 
     public boolean isEnabled(User user) {
         return enrollmentRepository.existsByUserIdAndEnabledTrue(user.getId());
     }
 
-    /** Un login nuevo invalida los desafios anteriores del usuario que siguieran vivos. */
+    /**
+     * Un login nuevo invalida los desafios anteriores del usuario que siguieran vivos.
+     *
+     * <p>Con el metodo email ademas genera un codigo y lo envia por correo (despues del commit). El desafio
+     * vive hasta 15 min (renovando el codigo con {@link #resend}) y {@code expiresAt} de la respuesta es la
+     * vigencia del codigo, 5 min, igual que con la app. Si la espera o el tope de envios no permiten mandar
+     * el correo, la respuesta es exactamente la misma: el usuario pide otro con "reenviar".
+     */
     @Transactional
     public MfaChallengeResponse openChallenge(User user, Boolean rememberMe, String deviceLabel, Instant now) {
         challengeRepository.findByUserIdAndConsumedAtIsNullAndInvalidatedAtIsNull(user.getId())
                 .forEach(previous -> previous.setInvalidatedAt(now));
+        MfaEnrollment enrollment = enrollmentRepository.findByUserIdForUpdate(user.getId()).orElseThrow();
+        boolean byEmail = enrollment.getMethod() == MfaMethod.email;
 
         String token = AuthTokens.generate();
-        MfaChallenge challenge = challengeRepository.save(MfaChallenge.builder()
+        Instant codeExpiresAt = now.plus(CHALLENGE_TTL).truncatedTo(ChronoUnit.SECONDS);
+        MfaChallenge challenge = challengeRepository.saveAndFlush(MfaChallenge.builder()
                 .userId(user.getId())
                 .tokenHash(AuthTokens.hash(token))
-                .method(MfaMethod.totp)
+                .method(enrollment.getMethod())
                 .rememberMe(Boolean.TRUE.equals(rememberMe))
                 .deviceLabel(deviceLabel)
-                .expiresAt(now.plus(CHALLENGE_TTL).truncatedTo(ChronoUnit.SECONDS))
+                .expiresAt(byEmail ? now.plus(EMAIL_CHALLENGE_MAX_TTL).truncatedTo(ChronoUnit.SECONDS) : codeExpiresAt)
+                .codeExpiresAt(byEmail ? codeExpiresAt : null)
                 .build());
-        return new MfaChallengeResponse(true, token, challenge.getMethod().name(), challenge.getExpiresAt());
+        if (byEmail && emailCodeSender.canSend(enrollment, now)) {
+            sendChallengeCode(challenge, enrollment, user, codeExpiresAt, now);
+        }
+        return new MfaChallengeResponse(true, token, challenge.getMethod().name(), codeExpiresAt);
+    }
+
+    /**
+     * Reenvia el codigo por correo de un desafio vivo: genera uno nuevo (el anterior deja de servir), con 5
+     * min desde ahora sin pasar el limite total del desafio. Conserva los intentos fallidos. Hasta 3 reenvios
+     * por desafio, y respeta la espera y el tope por usuario de {@link MfaEmailCodeSender}.
+     */
+    @Transactional
+    public void resend(ResendMfaCodeRequest request) {
+        UnknownFields.reject(request.unknownFields());
+        Instant now = authClock.instant();
+        LiveChallenge live = requireLiveChallenge(request.challengeToken(), now);
+        MfaChallenge challenge = live.challenge();
+        if (challenge.getMethod() != MfaMethod.email) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "MFA_RESEND_NOT_AVAILABLE",
+                    "El código se genera en tu app autenticadora.");
+        }
+        if (challenge.getResendCount() >= MAX_RESENDS || !emailCodeSender.canSend(live.enrollment(), now)) {
+            throw resendLimited();
+        }
+
+        Instant codeExpiresAt = now.plus(CHALLENGE_TTL).truncatedTo(ChronoUnit.SECONDS);
+        if (codeExpiresAt.isAfter(challenge.getExpiresAt())) {
+            codeExpiresAt = challenge.getExpiresAt();
+        }
+        challenge.setResendCount(challenge.getResendCount() + 1);
+        sendChallengeCode(challenge, live.enrollment(), live.user(), codeExpiresAt, now);
     }
 
     /**
@@ -91,29 +138,15 @@ public class MfaLoginService {
     public LoginResponse verify(VerifyMfaChallengeRequest request) {
         UnknownFields.reject(request.unknownFields());
         Instant now = authClock.instant();
-        String token = request.challengeToken();
-        if (token == null || token.isBlank()) {
-            throw challengeUnavailable();
-        }
+        LiveChallenge live = requireLiveChallenge(request.challengeToken(), now);
+        MfaChallenge challenge = live.challenge();
+        User user = live.user();
+        AuthAccount account = live.account();
+        MfaEnrollment enrollment = live.enrollment();
 
-        MfaChallenge challenge = challengeRepository.findByTokenHashForUpdate(AuthTokens.hash(token.trim()))
-                .filter(found -> found.isUsable(now))
-                .orElseThrow(MfaLoginService::challengeUnavailable);
-        // Usuario o tienda inactivos, o cuenta bloqueada: no se consume nada ni se cuenta como fallo.
-        User user = userRepository.findById(challenge.getUserId())
-                .filter(found -> found.getStatus() == UserStatus.active)
-                .filter(found -> tenantRepository.findById(found.getTenantId())
-                        .map(tenant -> tenant.getStatus() == TenantStatus.active)
-                        .orElse(false))
-                .orElseThrow(MfaLoginService::challengeUnavailable);
-        AuthAccount account = authAccountRepository.findByUserId(user.getId())
-                .filter(found -> AuthService.canAuthenticate(found, now))
-                .orElseThrow(MfaLoginService::challengeUnavailable);
-        MfaEnrollment enrollment = enrollmentRepository.findByUserIdForUpdate(user.getId())
-                .filter(found -> Boolean.TRUE.equals(found.getEnabled()))
-                .orElseThrow(MfaLoginService::challengeUnavailable);
-
-        Optional<MfaCodeVerifier.Match> match = codeVerifier.verify(enrollment, request.code(), now);
+        MfaCodeVerifier.EmailCode emailCode = new MfaCodeVerifier.EmailCode(
+                challenge.getId(), challenge.getCodeHash(), challenge.getCodeExpiresAt());
+        Optional<MfaCodeVerifier.Match> match = codeVerifier.verify(enrollment, request.code(), now, emailCode);
         if (match.isEmpty()) {
             int attempts = challenge.getFailedAttempts() + 1;
             challenge.setFailedAttempts(attempts);
@@ -128,6 +161,7 @@ public class MfaLoginService {
         }
 
         challenge.setConsumedAt(now);
+        challenge.setCodeHash(null);
         if (match.get() == MfaCodeVerifier.Match.RECOVERY_CODE) {
             auditService.record(user.getTenantId(), user.getId(), account.getId(),
                     AuthAuditService.MFA_RECOVERY_CODE_USED, Map.of("context", "login"));
@@ -142,6 +176,49 @@ public class MfaLoginService {
         Session session = sessionService.open(user, challenge.getRememberMe(), challenge.getDeviceLabel(), now);
         String jwt = jwtService.generateToken(user, session);
         return new LoginResponse(jwt, session.getExpiresAt(), LoginResponse.UserSummary.from(user));
+    }
+
+    private record LiveChallenge(MfaChallenge challenge, User user, AuthAccount account, MfaEnrollment enrollment) {
+    }
+
+    /**
+     * Desafio vivo con su usuario, cuenta y MFA activo. Desafio vencido, usado o invalidado, usuario o tienda
+     * inactivos, o cuenta bloqueada: {@code MFA_CHALLENGE_UNAVAILABLE}, sin consumir nada ni contar un fallo.
+     */
+    private LiveChallenge requireLiveChallenge(String token, Instant now) {
+        if (token == null || token.isBlank()) {
+            throw challengeUnavailable();
+        }
+        MfaChallenge challenge = challengeRepository.findByTokenHashForUpdate(AuthTokens.hash(token.trim()))
+                .filter(found -> found.isUsable(now))
+                .orElseThrow(MfaLoginService::challengeUnavailable);
+        User user = userRepository.findById(challenge.getUserId())
+                .filter(found -> found.getStatus() == UserStatus.active)
+                .filter(found -> tenantRepository.findById(found.getTenantId())
+                        .map(tenant -> tenant.getStatus() == TenantStatus.active)
+                        .orElse(false))
+                .orElseThrow(MfaLoginService::challengeUnavailable);
+        AuthAccount account = authAccountRepository.findByUserId(user.getId())
+                .filter(found -> AuthService.canAuthenticate(found, now))
+                .orElseThrow(MfaLoginService::challengeUnavailable);
+        MfaEnrollment enrollment = enrollmentRepository.findByUserIdForUpdate(user.getId())
+                .filter(found -> Boolean.TRUE.equals(found.getEnabled()))
+                .orElseThrow(MfaLoginService::challengeUnavailable);
+        return new LiveChallenge(challenge, user, account, enrollment);
+    }
+
+    private void sendChallengeCode(MfaChallenge challenge, MfaEnrollment enrollment, User user,
+            Instant codeExpiresAt, Instant now) {
+        String code = MfaEmailCodeSender.newCode();
+        challenge.setCodeHash(mfaCrypto.hashEmailCode(challenge.getId(), code));
+        challenge.setCodeExpiresAt(codeExpiresAt);
+        challenge.setCodeSentAt(now);
+        emailCodeSender.send(enrollment, user, code, MfaEmailCodeSender.Purpose.LOGIN, now);
+    }
+
+    static BusinessException resendLimited() {
+        return new BusinessException(HttpStatus.TOO_MANY_REQUESTS, "MFA_CODE_RESEND_LIMITED",
+                "Espera un momento antes de pedir otro código.");
     }
 
     private static BusinessException codeInvalid() {

@@ -69,6 +69,7 @@ public class MfaService {
     private final MfaCodeVerifier codeVerifier;
     private final AuthAuditService auditService;
     private final Clock authClock;
+    private final MfaEmailCodeSender emailCodeSender;
 
     @Transactional(readOnly = true)
     public MfaStatusResponse status(AuthenticatedUser actor) {
@@ -82,7 +83,7 @@ public class MfaService {
     @Transactional
     public BeginMfaEnrollmentResponse beginEnrollment(AuthenticatedUser actor, BeginMfaEnrollmentRequest request) {
         UnknownFields.reject(request.unknownFields());
-        requireTotp(request.method());
+        MfaMethod method = requireMethod(request.method());
         lockAccount(actor);
         User user = requireUser(actor);
 
@@ -95,17 +96,57 @@ public class MfaService {
             throw new BusinessException(HttpStatus.CONFLICT, "MFA_ALREADY_ENABLED",
                     "La verificación en dos pasos ya está activa. Desactívala primero para configurarla de nuevo.");
         }
+        Instant now = authClock.instant();
+        if (method == MfaMethod.email && !emailCodeSender.canSend(enrollment, now)) {
+            throw MfaLoginService.resendLimited();
+        }
 
-        byte[] secret = Totp.newSecret();
-        enrollment.setMethod(MfaMethod.totp);
-        enrollment.setSecretCiphertext(mfaCrypto.encryptSecret(secret, user.getId()));
+        enrollment.setMethod(method);
         enrollment.setVerifiedAt(null);
         enrollment.setFailedAttempts(0);
         enrollment.setLastUsedStep(null);
+        clearEmailCode(enrollment);
+        if (method == MfaMethod.email) {
+            // Repetir la activacion por correo hace de "reenviar": codigo nuevo, el anterior deja de servir.
+            enrollment.setSecretCiphertext(null);
+            String code = MfaEmailCodeSender.newCode();
+            enrollment.setEmailCodeHash(mfaCrypto.hashEmailCode(user.getId(), code));
+            enrollment.setEmailCodeExpiresAt(now.plus(MfaEmailCodeSender.CODE_TTL));
+            emailCodeSender.send(enrollment, user, code, MfaEmailCodeSender.Purpose.ENROLLMENT, now);
+            enrollmentRepository.save(enrollment);
+            return new BeginMfaEnrollmentResponse(MfaMethod.email.name(), null, null);
+        }
+
+        byte[] secret = Totp.newSecret();
+        enrollment.setSecretCiphertext(mfaCrypto.encryptSecret(secret, user.getId()));
         enrollmentRepository.save(enrollment);
 
         String base32 = Totp.base32Encode(secret);
         return new BeginMfaEnrollmentResponse(MfaMethod.totp.name(), base32, otpauthUri(user.getEmail(), base32));
+    }
+
+    /**
+     * Envia por correo un codigo para el cambio de contrasena (solo con el metodo email: con la app el codigo
+     * ya esta en el telefono). Vale 5 minutos, una vez; pedir otro invalida el anterior. Respeta la espera y
+     * el tope de envios por usuario.
+     */
+    @Transactional
+    public void sendActionCode(AuthenticatedUser actor) {
+        lockAccount(actor);
+        User user = requireUser(actor);
+        MfaEnrollment enrollment = enrollmentRepository.findByUserIdForUpdate(user.getId())
+                .filter(found -> Boolean.TRUE.equals(found.getEnabled()) && found.getMethod() == MfaMethod.email)
+                .orElseThrow(() -> new BusinessException(HttpStatus.BAD_REQUEST, "MFA_EMAIL_CODE_NOT_AVAILABLE",
+                        "Tu verificación en dos pasos no usa códigos por correo."));
+        Instant now = authClock.instant();
+        if (!emailCodeSender.canSend(enrollment, now)) {
+            throw MfaLoginService.resendLimited();
+        }
+        String code = MfaEmailCodeSender.newCode();
+        enrollment.setEmailCodeHash(mfaCrypto.hashEmailCode(user.getId(), code));
+        enrollment.setEmailCodeExpiresAt(now.plus(MfaEmailCodeSender.CODE_TTL));
+        enrollment.setFailedAttempts(0);
+        emailCodeSender.send(enrollment, user, code, MfaEmailCodeSender.Purpose.PASSWORD_CHANGE, now);
     }
 
     /**
@@ -118,18 +159,22 @@ public class MfaService {
         AuthAccount account = lockAccount(actor);
         User user = requireUser(actor);
         MfaEnrollment enrollment = enrollmentRepository.findByUserIdForUpdate(user.getId())
-                .filter(found -> !Boolean.TRUE.equals(found.getEnabled()) && found.getSecretCiphertext() != null)
+                .filter(found -> !Boolean.TRUE.equals(found.getEnabled()) && hasPendingCode(found))
                 .orElseThrow(() -> new BusinessException(HttpStatus.CONFLICT, "MFA_ENROLLMENT_NOT_PENDING",
                         "No hay una verificación en dos pasos pendiente de confirmar."));
 
         Instant now = authClock.instant();
-        if (!codeVerifier.verifyTotp(enrollment, request.code(), now)) {
+        boolean valid = enrollment.getMethod() == MfaMethod.email
+                ? codeVerifier.verifyEmailCode(pendingEmailCode(enrollment), request.code(), now)
+                : codeVerifier.verifyTotp(enrollment, request.code(), now);
+        if (!valid) {
             int attempts = enrollment.getFailedAttempts() + 1;
             auditService.record(user.getTenantId(), user.getId(), account.getId(), AuthAuditService.MFA_FAILED,
                     Map.of("context", "enrollment", "attempt", attempts));
             if (attempts >= MAX_ENROLLMENT_ATTEMPTS) {
-                // Se descarta el secreto: hay que volver a empezar (y escanear un QR nuevo).
+                // Se descarta el secreto o el codigo: hay que volver a empezar la activacion.
                 enrollment.setSecretCiphertext(null);
+                clearEmailCode(enrollment);
                 enrollment.setFailedAttempts(0);
                 throw new BusinessException(HttpStatus.BAD_REQUEST, "MFA_ENROLLMENT_RESET",
                         "Demasiados intentos. Vuelve a iniciar la activación.");
@@ -141,6 +186,7 @@ public class MfaService {
         enrollment.setEnabled(true);
         enrollment.setVerifiedAt(now);
         enrollment.setFailedAttempts(0);
+        clearEmailCode(enrollment);
 
         recoveryCodeRepository.deleteAllByUserId(user.getId());
         List<String> codes = newRecoveryCodes();
@@ -177,6 +223,8 @@ public class MfaService {
         disabled.setVerifiedAt(null);
         disabled.setLastUsedStep(null);
         disabled.setFailedAttempts(0);
+        // Los contadores de envio se conservan: desactivar y reactivar no reinicia el tope de correos.
+        clearEmailCode(disabled);
         recoveryCodeRepository.deleteAllByUserId(user.getId());
         challengeRepository.findByUserIdAndConsumedAtIsNullAndInvalidatedAtIsNull(user.getId())
                 .forEach(challenge -> challenge.setInvalidatedAt(now));
@@ -184,23 +232,42 @@ public class MfaService {
     }
 
     /**
-     * Para el cambio de contrasena (changePassword): con el MFA activo exige un codigo de la app o de
-     * recuperacion valido. Se llama al final, despues de las demas validaciones, para no gastar un codigo
-     * de recuperacion en un cambio que igual se rechazaria. El llamador ya bloqueo la cuenta.
+     * Para el cambio de contrasena (changePassword): con el MFA activo exige un codigo valido (de la app, el
+     * enviado con {@link #sendActionCode} si el metodo es correo, o de recuperacion). Se llama al final,
+     * despues de las demas validaciones, para no gastar un codigo en un cambio que igual se rechazaria. El
+     * llamador ya bloqueo la cuenta.
+     *
+     * <p>{@code noRollbackFor}: un codigo por correo incorrecto suma un intento (al 5.o se descarta) y ese
+     * conteo debe quedar aunque el cambio responda con error. Ninguna otra escritura ocurre antes.
      */
-    @Transactional
+    @Transactional(noRollbackFor = MfaCodeRejectedException.class)
     public void requireCodeIfEnabled(User user, AuthAccount account, String code) {
-        Optional<MfaEnrollment> enrollment = enrollmentRepository.findByUserIdForUpdate(user.getId())
-                .filter(found -> Boolean.TRUE.equals(found.getEnabled()));
-        if (enrollment.isEmpty()) {
+        Optional<MfaEnrollment> found = enrollmentRepository.findByUserIdForUpdate(user.getId())
+                .filter(candidate -> Boolean.TRUE.equals(candidate.getEnabled()));
+        if (found.isEmpty()) {
             return;
         }
-        Optional<MfaCodeVerifier.Match> match = codeVerifier.verify(enrollment.get(), code, authClock.instant());
+        MfaEnrollment enrollment = found.get();
+        MfaCodeVerifier.EmailCode emailCode = enrollment.getMethod() == MfaMethod.email
+                ? pendingEmailCode(enrollment)
+                : null;
+        Optional<MfaCodeVerifier.Match> match = codeVerifier.verify(enrollment, code, authClock.instant(), emailCode);
         if (match.isEmpty()) {
-            // La excepcion deshace la transaccion del cambio: el fallo se audita aparte para que quede.
+            if (emailCode != null && enrollment.getEmailCodeHash() != null) {
+                int attempts = enrollment.getFailedAttempts() + 1;
+                if (attempts >= MAX_ENROLLMENT_ATTEMPTS) {
+                    clearEmailCode(enrollment);
+                    attempts = 0;
+                }
+                enrollment.setFailedAttempts(attempts);
+            }
             auditService.recordIndependently(user.getTenantId(), user.getId(), account.getId(),
                     AuthAuditService.MFA_FAILED, Map.of("context", "password_change"));
-            throw FieldValidationException.of("mfaCode", WRONG_MFA_CODE_MESSAGE);
+            throw new MfaCodeRejectedException(WRONG_MFA_CODE_MESSAGE);
+        }
+        if (match.get() == MfaCodeVerifier.Match.EMAIL_CODE) {
+            clearEmailCode(enrollment);
+            enrollment.setFailedAttempts(0);
         }
         if (match.get() == MfaCodeVerifier.Match.RECOVERY_CODE) {
             auditService.record(user.getTenantId(), user.getId(), account.getId(),
@@ -208,18 +275,34 @@ public class MfaService {
         }
     }
 
-    private static void requireTotp(String method) {
+    private static MfaMethod requireMethod(String method) {
         String value = method == null ? "" : method.trim();
         if (value.isEmpty()) {
             throw FieldValidationException.of("method", "Selecciona un método.");
         }
-        if ("email".equals(value)) {
-            throw new BusinessException(HttpStatus.BAD_REQUEST, "MFA_METHOD_NOT_AVAILABLE",
-                    "Método no disponible todavía.");
+        for (MfaMethod candidate : MfaMethod.values()) {
+            if (candidate.name().equals(value)) {
+                return candidate;
+            }
         }
-        if (!MfaMethod.totp.name().equals(value)) {
-            throw FieldValidationException.of("method", "Selecciona un método válido.");
-        }
+        throw FieldValidationException.of("method", "Selecciona un método válido.");
+    }
+
+    private static boolean hasPendingCode(MfaEnrollment enrollment) {
+        return enrollment.getMethod() == MfaMethod.email
+                ? enrollment.getEmailCodeHash() != null
+                : enrollment.getSecretCiphertext() != null;
+    }
+
+    /** Codigo por correo fuera del login: ligado al usuario (ver MfaCrypto.hashEmailCode). */
+    private static MfaCodeVerifier.EmailCode pendingEmailCode(MfaEnrollment enrollment) {
+        return new MfaCodeVerifier.EmailCode(
+                enrollment.getUserId(), enrollment.getEmailCodeHash(), enrollment.getEmailCodeExpiresAt());
+    }
+
+    private static void clearEmailCode(MfaEnrollment enrollment) {
+        enrollment.setEmailCodeHash(null);
+        enrollment.setEmailCodeExpiresAt(null);
     }
 
     private AuthAccount lockAccount(AuthenticatedUser actor) {

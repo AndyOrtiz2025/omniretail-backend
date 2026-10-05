@@ -18,7 +18,7 @@ import lombok.Setter;
  * ({@code enabled=false} con secreto) y activa ({@code enabled=true}) tras confirmar un codigo.
  *
  * <p>{@code secretCiphertext} es el secreto TOTP cifrado (ver MfaCrypto); es null cuando el MFA esta
- * desactivado. Sin {@code @Builder} ni {@code @ToString} a proposito: nada debe imprimir el secreto.
+ * desactivado o el metodo es correo. Sin {@code @Builder} ni {@code @ToString} a proposito: nada debe imprimir el secreto.
  * {@code lastUsedStep} es el ultimo paso TOTP aceptado; un codigo de ese paso o anterior se rechaza.
  */
 @Entity
@@ -54,4 +54,23 @@ public class MfaEnrollment extends BaseEntity {
 
     @Column(name = "last_used_step")
     private Long lastUsedStep;
+
+    /** HMAC del codigo por correo fuera del login: activacion pendiente o cambio de contrasena. */
+    @Column(name = "email_code_hash")
+    private String emailCodeHash;
+
+    @Column(name = "email_code_expires_at")
+    private Instant emailCodeExpiresAt;
+
+    /** Ultimo correo con codigo enviado al usuario, desde cualquier flujo (espera minima entre envios). */
+    @Column(name = "email_code_sent_at")
+    private Instant emailCodeSentAt;
+
+    /** Inicio de la hora en curso del tope de envios por usuario. */
+    @Column(name = "email_code_window_started_at")
+    private Instant emailCodeWindowStartedAt;
+
+    @NotNull
+    @Column(name = "email_code_window_count", nullable = false)
+    private Integer emailCodeWindowCount = 0;
 }

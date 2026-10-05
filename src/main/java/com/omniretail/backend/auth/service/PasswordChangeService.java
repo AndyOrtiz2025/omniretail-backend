@@ -37,8 +37,9 @@ public class PasswordChangeService {
     /**
      * Valida todo antes de escribir: cualquier error deja la contrasena y las sesiones como estaban. Al
      * cambiarla revoca las demas sesiones del usuario, pero no la actual.
+     * Un codigo MFA rechazado no deshace la transaccion: solo cuenta el intento (nada mas se escribio antes).
      */
-    @Transactional
+    @Transactional(noRollbackFor = MfaCodeRejectedException.class)
     public void change(AuthenticatedUser actor, ChangePasswordRequest request) {
         // Bloquea la cuenta: dos cambios simultaneos no pueden validarse contra el mismo hash.
         AuthAccount account = authAccountRepository.findByUserIdForUpdate(actor.userId())

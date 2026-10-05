@@ -15,8 +15,8 @@ import org.springframework.stereotype.Component;
 
 /**
  * Criptografia del MFA. De la clave maestra (MFA_ENCRYPTION_KEY) se derivan con HMAC-SHA256 y etiquetas
- * distintas dos subclaves independientes: una AES-256-GCM para el secreto TOTP y otra HMAC-SHA256 para
- * los codigos de recuperacion. Asi una clave nunca se usa para dos propositos.
+ * distintas tres subclaves independientes: AES-256-GCM para el secreto TOTP, HMAC-SHA256 para los codigos
+ * de recuperacion y HMAC-SHA256 para los codigos por correo. Asi una clave nunca se usa para dos propositos.
  *
  * <p>El secreto cifrado se guarda como Base64 de {@code iv (12 bytes) || ciphertext+tag}; el id del
  * usuario va como dato asociado (AAD), de modo que un secreto copiado a la fila de otro usuario no
@@ -27,18 +27,22 @@ public class MfaCrypto {
 
     private static final String AES_LABEL = "omniretail/mfa/totp-secret/aes-256-gcm";
     private static final String RECOVERY_LABEL = "omniretail/mfa/recovery-code/hmac-sha256";
+    private static final String EMAIL_CODE_LABEL = "omniretail/mfa/email-code/hmac-sha256";
     private static final int IV_BYTES = 12;
     private static final int TAG_BITS = 128;
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final SecretKeySpec aesKey;
     private final SecretKeySpec recoveryKey;
+    private final SecretKeySpec emailCodeKey;
 
     public MfaCrypto(MfaProperties properties) {
         byte[] master = properties.encryptionKey().getBytes(StandardCharsets.UTF_8);
         this.aesKey = new SecretKeySpec(hmac(master, AES_LABEL.getBytes(StandardCharsets.UTF_8)), "AES");
         this.recoveryKey = new SecretKeySpec(
                 hmac(master, RECOVERY_LABEL.getBytes(StandardCharsets.UTF_8)), "HmacSHA256");
+        this.emailCodeKey = new SecretKeySpec(
+                hmac(master, EMAIL_CODE_LABEL.getBytes(StandardCharsets.UTF_8)), "HmacSHA256");
     }
 
     public String encryptSecret(byte[] secret, UUID userId) {
@@ -71,10 +75,23 @@ public class MfaCrypto {
 
     /** HMAC-SHA256 en hexadecimal (64 caracteres) de un codigo de recuperacion ya normalizado. */
     public String hashRecoveryCode(String normalizedCode) {
+        return hmacHex(recoveryKey, normalizedCode);
+    }
+
+    /**
+     * HMAC-SHA256 de un codigo de 6 digitos enviado por correo, ligado a {@code bindingId} (el desafio o el
+     * usuario): el mismo codigo da hashes distintos en filas distintas, y sin la clave no se puede probar
+     * el millon de combinaciones contra la base.
+     */
+    public String hashEmailCode(UUID bindingId, String code) {
+        return hmacHex(emailCodeKey, bindingId + ":" + code);
+    }
+
+    private static String hmacHex(SecretKeySpec key, String value) {
         try {
             Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(recoveryKey);
-            return HexFormat.of().formatHex(mac.doFinal(normalizedCode.getBytes(StandardCharsets.UTF_8)));
+            mac.init(key);
+            return HexFormat.of().formatHex(mac.doFinal(value.getBytes(StandardCharsets.UTF_8)));
         } catch (GeneralSecurityException ex) {
             throw new IllegalStateException("HmacSHA256 no disponible.", ex);
         }
