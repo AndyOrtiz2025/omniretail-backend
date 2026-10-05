@@ -143,7 +143,7 @@ class MfaControllerTest {
         mockMvc.perform(get(MFA).header("Authorization", bearer(token)))
                 .andExpect(jsonPath("$.enabled").value(true))
                 .andExpect(jsonPath("$.method").value("totp"));
-        assertThat(actions(person)).containsExactly("mfa_enabled");
+        assertThat(mfaActions(person)).containsExactly("mfa_enabled");
 
         int sessionsBefore = activeSessions(person);
         String challenge = login(person)
@@ -245,7 +245,7 @@ class MfaControllerTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("MFA_ENROLLMENT_NOT_PENDING"));
         assertThat(enrollment(person).getEnabled()).isFalse();
-        assertThat(actions(person)).containsOnly("mfa_failed").hasSize(5);
+        assertThat(mfaActions(person)).containsOnly("mfa_failed").hasSize(5);
     }
 
     // --- Codigos ---
@@ -296,7 +296,7 @@ class MfaControllerTest {
         verifyChallenge(challengeToken(login(person)), "  " + recoveryCode.toLowerCase(Locale.ROOT) + " ")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.user.id").value(person.user().getId().toString()));
-        assertThat(actions(person)).containsExactly("mfa_enabled", "mfa_recovery_code_used");
+        assertThat(mfaActions(person)).containsExactly("mfa_enabled", "mfa_recovery_code_used");
 
         verifyChallenge(challengeToken(login(person)), recoveryCode)
                 .andExpect(status().isUnauthorized())
@@ -315,8 +315,9 @@ class MfaControllerTest {
         Person person = employee();
         Enabled enabled = enable(sessionToken(person), step - 1);
         String challenge = challengeToken(login(person));
-        jdbcTemplate.update("UPDATE mfa_challenges SET expires_at = now() - interval '1 second' WHERE user_id = ?",
-                person.user().getId());
+        // Hora de la JVM (la que usa el servicio), no now() de la base: el reloj del contenedor puede ir desfasado.
+        jdbcTemplate.update("UPDATE mfa_challenges SET expires_at = ? WHERE user_id = ?",
+                java.sql.Timestamp.from(Instant.now().minus(1, ChronoUnit.MINUTES)), person.user().getId());
 
         verifyChallenge(challenge, code(enabled.secret(), step))
                 .andExpect(status().isUnauthorized())
@@ -351,7 +352,9 @@ class MfaControllerTest {
         login(person)
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value("INVALID_CREDENTIALS"));
-        assertThat(actions(person)).filteredOn("mfa_failed"::equals).hasSize(5);
+        // El 5.o fallo bloquea la cuenta: se registra account_locked en lugar de mfa_failed (igual que el mock).
+        assertThat(actions(person)).filteredOn("mfa_failed"::equals).hasSize(4);
+        assertThat(actions(person)).filteredOn("account_locked"::equals).hasSize(1);
     }
 
     @Test
@@ -419,7 +422,7 @@ class MfaControllerTest {
         assertThat(disabled.getEnabled()).isFalse();
         assertThat(disabled.getSecretCiphertext()).isNull();
         assertThat(recoveryCodeRepository.findByUserId(person.user().getId())).isEmpty();
-        assertThat(actions(person)).containsExactly("mfa_enabled", "mfa_disabled");
+        assertThat(mfaActions(person)).containsExactly("mfa_enabled", "mfa_disabled");
 
         // Sin MFA el login vuelve a entregar la sesion directamente.
         login(person).andExpect(status().isOk()).andExpect(jsonPath("$.token").exists());
@@ -562,6 +565,11 @@ class MfaControllerTest {
         return auditLogRepository.findByAuthAccountIdOrderByCreatedAtAsc(account(person).getId()).stream()
                 .map(AuthAuditLog::getAction)
                 .toList();
+    }
+
+    /** Solo los eventos de MFA (cada login correcto tambien registra login_success). */
+    private List<String> mfaActions(Person person) {
+        return actions(person).stream().filter(action -> action.startsWith("mfa_")).toList();
     }
 
     private Tenant tenant() {

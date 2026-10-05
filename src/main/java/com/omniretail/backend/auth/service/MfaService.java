@@ -23,6 +23,7 @@ import com.omniretail.backend.shared.validation.UnknownFields;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.time.Clock;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.LinkedHashSet;
@@ -67,6 +68,7 @@ public class MfaService {
     private final MfaCrypto mfaCrypto;
     private final MfaCodeVerifier codeVerifier;
     private final AuthAuditService auditService;
+    private final Clock authClock;
 
     @Transactional(readOnly = true)
     public MfaStatusResponse status(AuthenticatedUser actor) {
@@ -120,7 +122,7 @@ public class MfaService {
                 .orElseThrow(() -> new BusinessException(HttpStatus.CONFLICT, "MFA_ENROLLMENT_NOT_PENDING",
                         "No hay una verificación en dos pasos pendiente de confirmar."));
 
-        Instant now = Instant.now();
+        Instant now = authClock.instant();
         if (!codeVerifier.verifyTotp(enrollment, request.code(), now)) {
             int attempts = enrollment.getFailedAttempts() + 1;
             auditService.record(user.getTenantId(), user.getId(), account.getId(), AuthAuditService.MFA_FAILED,
@@ -168,7 +170,7 @@ public class MfaService {
         if (enrollment.isEmpty()) {
             return;
         }
-        Instant now = Instant.now();
+        Instant now = authClock.instant();
         MfaEnrollment disabled = enrollment.get();
         disabled.setEnabled(false);
         disabled.setSecretCiphertext(null);
@@ -193,7 +195,7 @@ public class MfaService {
         if (enrollment.isEmpty()) {
             return;
         }
-        Optional<MfaCodeVerifier.Match> match = codeVerifier.verify(enrollment.get(), code, Instant.now());
+        Optional<MfaCodeVerifier.Match> match = codeVerifier.verify(enrollment.get(), code, authClock.instant());
         if (match.isEmpty()) {
             // La excepcion deshace la transaccion del cambio: el fallo se audita aparte para que quede.
             auditService.recordIndependently(user.getTenantId(), user.getId(), account.getId(),

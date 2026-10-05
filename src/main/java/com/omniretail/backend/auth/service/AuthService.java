@@ -14,6 +14,7 @@ import com.omniretail.backend.auth.entity.AuthAccount;
 import com.omniretail.backend.auth.entity.Session;
 import com.omniretail.backend.auth.repository.AuthAccountRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
+import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -37,13 +38,15 @@ public class AuthService {
     private final SessionService sessionService;
     private final JwtService jwtService;
     private final MfaLoginService mfaLoginService;
+    private final AuthAuditService auditService;
+    private final Clock authClock;
     /** Hash ficticio: sin candidatos igual se compara una contrasena, para no revelar si el email existe. */
     private final String dummyPasswordHash;
 
     public AuthService(AuthAccountRepository authAccountRepository, UserRepository userRepository,
             TenantRepository tenantRepository, PasswordEncoder passwordEncoder,
             LoginAttemptService loginAttemptService, SessionService sessionService, JwtService jwtService,
-            MfaLoginService mfaLoginService) {
+            MfaLoginService mfaLoginService, AuthAuditService auditService, Clock authClock) {
         this.authAccountRepository = authAccountRepository;
         this.userRepository = userRepository;
         this.tenantRepository = tenantRepository;
@@ -52,6 +55,8 @@ public class AuthService {
         this.sessionService = sessionService;
         this.jwtService = jwtService;
         this.mfaLoginService = mfaLoginService;
+        this.auditService = auditService;
+        this.authClock = authClock;
         this.dummyPasswordHash = passwordEncoder.encode(UUID.randomUUID().toString());
     }
 
@@ -61,10 +66,12 @@ public class AuthService {
     /**
      * Sin MFA devuelve la sesion, exactamente como antes. Con MFA activo la contrasena correcta no crea
      * sesion (R-A16): abre un desafio y los contadores de bloqueo no se reinician hasta el codigo correcto.
+     * {@code login_success} solo se registra cuando se entrega la sesion: si la contrasena correcta cortara la
+     * racha, alternar "codigos malos y login de nuevo" nunca bloquearia la cuenta.
      */
     @Transactional
     public LoginOutcome login(LoginRequest request) {
-        Instant now = Instant.now();
+        Instant now = authClock.instant();
         UUID customerTenantId = resolveCustomerTenant(request.tenantSlug());
         // Solo quedan cuentas que pueden entrar: si todas se descartan, la lista queda vacia.
         List<Candidate> candidates = authAccountRepository.findByEmail(request.email()).stream()
@@ -82,7 +89,9 @@ public class AuthService {
         if (matches.isEmpty()) {
             // Con varias candidatas no se sabe a cual apuntaba el intento: no se muta ninguna.
             if (candidates.size() == 1) {
-                loginAttemptService.recordFailure(candidates.get(0).account().getId(), now);
+                Candidate target = candidates.get(0);
+                loginAttemptService.recordFailure(target.account().getId(), target.user().getId(),
+                        target.user().getTenantId(), AuthAuditService.LOGIN_FAILED, null);
             }
             throw invalidCredentials();
         }
@@ -103,6 +112,8 @@ public class AuthService {
         account.setFailedLoginAttempts(0);
         account.setLockedUntil(null);
         account.setLastLoginAt(now);
+        auditService.record(match.user().getTenantId(), match.user().getId(), account.getId(),
+                AuthAuditService.LOGIN_SUCCESS, null);
 
         Session session = sessionService.open(match.user(), request.rememberMe(), request.deviceLabel(), now);
         String token = jwtService.generateToken(match.user(), session);
