@@ -178,6 +178,8 @@ public interface ProductInventorySettingsRepository
                                p.category_id,
                                c.name AS category_name,
                                p.base_unit_id,
+                               COALESCE(p.inventory_unit_id, p.base_unit_id) AS inventory_unit_id,
+                               COALESCE(p.sale_unit_id, p.base_unit_id) AS sale_unit_id,
                                COALESCE(s.min_stock, CAST(0 AS numeric)) AS min_stock,
                                s.reorder_point,
                                s.default_location_id,
@@ -206,6 +208,7 @@ public interface ProductInventorySettingsRepository
                                OR LOWER(COALESCE(c.name, '')) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%')
                                OR LOWER(COALESCE(l.name, '')) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%'))
                         GROUP BY p.id, p.sku, p.name, p.category_id, c.name, p.base_unit_id,
+                                 p.inventory_unit_id, p.sale_unit_id,
                                  s.min_stock, s.reorder_point, s.default_location_id, l.name
                     ), expiration_summary AS (
                         SELECT lot.product_id,
@@ -307,7 +310,9 @@ public interface ProductInventorySettingsRepository
                                default_location_id, default_location_name, next_expiration_date,
                                stock_status, suggested_reorder,
                                UPPER(stock_status) AS display_status,
-                               stock_status AS status_sort_key
+                               stock_status AS status_sort_key,
+                               inventory_unit_id,
+                               sale_unit_id
                         FROM classified
                         WHERE stock_status = COALESCE(CAST(:status AS text), stock_status)
                         UNION ALL
@@ -318,7 +323,8 @@ public interface ProductInventorySettingsRepository
                                CAST(NULL AS uuid), CAST(NULL AS text), CAST(NULL AS date),
                                CAST(NULL AS text), CAST(NULL AS numeric),
                                'NOT_CONTROLLED',
-                               'zzz_not_controlled'
+                               'zzz_not_controlled',
+                               CAST(NULL AS uuid), CAST(NULL AS uuid)
                         FROM service_rows
                         UNION ALL
                         SELECT product_id, sku, product_name, category_id, category_name, base_unit_id,
@@ -328,7 +334,8 @@ public interface ProductInventorySettingsRepository
                                CAST(NULL AS uuid), CAST(NULL AS text), CAST(NULL AS date),
                                CAST(NULL AS text), CAST(NULL AS numeric),
                                CASE WHEN available_quantity > 0 THEN 'KIT_AVAILABLE' ELSE 'KIT_UNAVAILABLE' END,
-                               CASE WHEN available_quantity > 0 THEN 'zz_kit_available' ELSE 'zz_kit_unavailable' END
+                               CASE WHEN available_quantity > 0 THEN 'zz_kit_available' ELSE 'zz_kit_unavailable' END,
+                               CAST(NULL AS uuid), CAST(NULL AS uuid)
                         FROM kit_rows
                     )
                     SELECT product_id AS "productId", :branchId AS "branchId", sku, product_name AS "productName",
@@ -339,7 +346,35 @@ public interface ProductInventorySettingsRepository
                            default_location_id AS "defaultLocationId", default_location_name AS "defaultLocationName",
                            next_expiration_date AS "nextExpirationDate",
                            stock_status AS "stockStatus", suggested_reorder AS "suggestedReorder",
-                           display_status AS "displayStatus"
+                           display_status AS "displayStatus",
+                           inventory_unit_id AS "inventoryUnitId",
+                           sale_unit_id AS "saleUnitId",
+                           CASE
+                               WHEN inventory_unit_id IS NULL THEN CAST(NULL AS numeric)
+                               WHEN inventory_unit_id = base_unit_id THEN CAST(1 AS numeric)
+                               ELSE COALESCE(
+                                   (SELECT uc.factor FROM unit_conversions uc
+                                     WHERE uc.tenant_id = :tenantId AND uc.product_id = all_rows.product_id
+                                       AND uc.from_unit_id = all_rows.inventory_unit_id
+                                       AND uc.to_unit_id = all_rows.base_unit_id),
+                                   (SELECT uc.factor FROM unit_conversions uc
+                                     WHERE uc.tenant_id = :tenantId AND uc.product_id IS NULL
+                                       AND uc.from_unit_id = all_rows.inventory_unit_id
+                                       AND uc.to_unit_id = all_rows.base_unit_id))
+                           END AS "inventoryToBaseFactor",
+                           CASE
+                               WHEN sale_unit_id IS NULL THEN CAST(NULL AS numeric)
+                               WHEN sale_unit_id = base_unit_id THEN CAST(1 AS numeric)
+                               ELSE COALESCE(
+                                   (SELECT uc.factor FROM unit_conversions uc
+                                     WHERE uc.tenant_id = :tenantId AND uc.product_id = all_rows.product_id
+                                       AND uc.from_unit_id = all_rows.sale_unit_id
+                                       AND uc.to_unit_id = all_rows.base_unit_id),
+                                   (SELECT uc.factor FROM unit_conversions uc
+                                     WHERE uc.tenant_id = :tenantId AND uc.product_id IS NULL
+                                       AND uc.from_unit_id = all_rows.sale_unit_id
+                                       AND uc.to_unit_id = all_rows.base_unit_id))
+                           END AS "saleToBaseFactor"
                     FROM all_rows
                     ORDER BY
                       CASE WHEN :sortField = 'productName' AND :sortDirection = 'asc' THEN LOWER(product_name) END ASC,
@@ -592,6 +627,10 @@ public interface ProductInventorySettingsRepository
         String getProductType();
         String getInventoryMode();
         String getDisplayStatus();
+        UUID getInventoryUnitId();
+        UUID getSaleUnitId();
+        BigDecimal getInventoryToBaseFactor();
+        BigDecimal getSaleToBaseFactor();
     }
 
     interface InventoryStockSummaryProjection {

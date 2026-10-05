@@ -25,4 +25,8 @@ public record InventoryStockItemDto(
         BigDecimal suggestedReorder,
         ProductType productType,
         InventoryProductMode inventoryMode,
-        InventoryStockDisplayStatus displayStatus) {}
+        InventoryStockDisplayStatus displayStatus,
+        UUID inventoryUnitId,
+        UUID saleUnitId,
+        BigDecimal inventoryToBaseFactor,
+        BigDecimal saleToBaseFactor) {}

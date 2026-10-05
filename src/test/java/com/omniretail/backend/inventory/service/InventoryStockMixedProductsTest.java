@@ -324,6 +324,123 @@ class InventoryStockMixedProductsTest {
                         exception -> assertThat(exception.getCode()).isEqualTo("PRODUCT_NOT_FOUND"));
     }
 
+    // ------------------------------------------------ unit presentation metadata
+
+    @Test
+    void inventoryUnitDifferentFromBaseExposesItsPersistedFactorWhileQuantitiesStayInBaseUnits() {
+        Fixture f = fixture();
+        UUID box = unit(f, "Caja", "cj");
+        UUID product = physical(f, "Producto en cajas", "20", "4", null);
+        setUnits(product, box, f.unit());
+        conversion(f, product, box, f.unit(), "10"); // 1 Caja = 10 Unidad
+
+        InventoryStockItemDto item = byId(list(f, null, null, null, PageRequest.of(0, 20)).items(), product);
+
+        assertThat(item.baseUnitId()).isEqualTo(f.unit());
+        assertThat(item.inventoryUnitId()).isEqualTo(box);
+        assertThat(item.saleUnitId()).isEqualTo(f.unit());
+        assertThat(item.inventoryToBaseFactor()).isEqualByComparingTo("10");
+        assertThat(item.saleToBaseFactor()).isEqualByComparingTo("1");
+        // El balance no se convierte: sigue en unidad base (20 Unidad = 2 Caja lo calcula el frontend).
+        assertThat(item.quantity()).isEqualByComparingTo("20");
+        assertThat(item.reservedQuantity()).isEqualByComparingTo("4");
+        assertThat(item.availableQuantity()).isEqualByComparingTo("16");
+    }
+
+    @Test
+    void unitsDefaultToBaseWithFactorOneWhenNothingIsConfigured() {
+        Fixture f = fixture();
+        UUID product = physical(f, "Sin presentaciones", "7", "0", null);
+        UUID sameAsBase = physical(f, "Presentaciones iguales a base", "3", "0", null);
+        setUnits(sameAsBase, f.unit(), f.unit());
+
+        var items = list(f, null, null, null, PageRequest.of(0, 20)).items();
+
+        for (UUID id : List.of(product, sameAsBase)) {
+            InventoryStockItemDto item = byId(items, id);
+            assertThat(item.inventoryUnitId()).isEqualTo(f.unit());
+            assertThat(item.saleUnitId()).isEqualTo(f.unit());
+            assertThat(item.inventoryToBaseFactor()).isEqualByComparingTo("1");
+            assertThat(item.saleToBaseFactor()).isEqualByComparingTo("1");
+        }
+    }
+
+    @Test
+    void saleUnitDifferentFromBaseUsesProductConversionThenGlobalAndMissingConversionIsNull() {
+        Fixture f = fixture();
+        UUID box = unit(f, "Caja", "cj");
+        UUID pack = unit(f, "Paquete", "pq");
+        UUID dozen = unit(f, "Docena", "dz");
+        UUID perProduct = physical(f, "Conversion propia", "50", "0", null);
+        setUnits(perProduct, box, pack);
+        conversion(f, perProduct, box, f.unit(), "10");
+        conversion(f, perProduct, pack, f.unit(), "6");
+        UUID global = physical(f, "Conversion global", "50", "0", null);
+        setUnits(global, null, pack);
+        conversion(f, null, pack, f.unit(), "4"); // global del tenant (product_id NULL)
+        UUID missing = physical(f, "Sin conversion", "50", "0", null);
+        setUnits(missing, dozen, f.unit());
+
+        var items = list(f, null, null, null, PageRequest.of(0, 20)).items();
+
+        InventoryStockItemDto own = byId(items, perProduct);
+        assertThat(own.inventoryToBaseFactor()).isEqualByComparingTo("10");
+        assertThat(own.saleUnitId()).isEqualTo(pack);
+        assertThat(own.saleToBaseFactor()).isEqualByComparingTo("6");
+        InventoryStockItemDto fallback = byId(items, global);
+        assertThat(fallback.inventoryToBaseFactor()).isEqualByComparingTo("1");
+        assertThat(fallback.saleToBaseFactor()).isEqualByComparingTo("4");
+        // Presentación distinta sin conversión persistida: no se fabrica equivalencia.
+        InventoryStockItemDto unknown = byId(items, missing);
+        assertThat(unknown.inventoryUnitId()).isEqualTo(dozen);
+        assertThat(unknown.inventoryToBaseFactor()).isNull();
+        assertThat(unknown.saleToBaseFactor()).isEqualByComparingTo("1");
+    }
+
+    @Test
+    void conversionsOfAnotherProductOrTenantAreNeverUsed() {
+        Fixture f = fixture();
+        UUID box = unit(f, "Caja", "cj");
+        UUID mine = physical(f, "Mio", "5", "0", null);
+        UUID other = physical(f, "Otro", "5", "0", null);
+        setUnits(mine, box, null);
+        setUnits(other, box, null);
+        conversion(f, other, box, f.unit(), "12");
+        Fixture otherTenant = fixture();
+        UUID foreignBox = unit(otherTenant, "Caja", "cj");
+        conversion(otherTenant, null, foreignBox, otherTenant.unit(), "99");
+        use(f);
+
+        var items = list(f, null, null, null, PageRequest.of(0, 20)).items();
+
+        assertThat(byId(items, mine).inventoryToBaseFactor()).isNull();
+        assertThat(byId(items, other).inventoryToBaseFactor()).isEqualByComparingTo("12");
+    }
+
+    @Test
+    void serviceAndKitKeepTheMixedContractWithoutUnitMetadata() {
+        Fixture f = fixture();
+        UUID component = physical(f, "Componente", "10", "0", null);
+        service(f, "Servicio");
+        kit(f, "Kit", List.of(component(component, "1")));
+
+        var items = list(f, null, null, null, PageRequest.of(0, 20)).items();
+
+        assertThat(items).hasSize(3);
+        for (InventoryStockItemDto item : items) {
+            if (item.productType() == ProductType.physical) {
+                assertThat(item.inventoryUnitId()).isEqualTo(f.unit());
+                assertThat(item.inventoryToBaseFactor()).isEqualByComparingTo("1");
+            } else {
+                assertThat(item.inventoryUnitId()).isNull();
+                assertThat(item.saleUnitId()).isNull();
+                assertThat(item.inventoryToBaseFactor()).isNull();
+                assertThat(item.saleToBaseFactor()).isNull();
+                assertThat(item.baseUnitId()).isEqualTo(f.unit());
+            }
+        }
+    }
+
     // --------------------------------------------------- kit availability detail
 
     @Test
@@ -552,6 +669,26 @@ class InventoryStockMixedProductsTest {
     private void use(Fixture f) {
         given(currentUser.require()).willReturn(new AuthenticatedUser(
                 f.user(), f.tenant(), UserType.employee, UUID.randomUUID(), f.branch(), UUID.randomUUID()));
+    }
+
+    private UUID unit(Fixture f, String name, String symbol) {
+        UUID unit = UUID.randomUUID();
+        jdbc.update("INSERT INTO units (id, tenant_id, code, name, symbol, category, allows_decimals, status) VALUES (?, ?, ?, ?, ?, 'unit', true, 'active')",
+                unit, f.tenant(), "U-" + unit.toString().substring(0, 8), name, symbol);
+        return unit;
+    }
+
+    private void setUnits(UUID product, UUID inventoryUnit, UUID saleUnit) {
+        jdbc.update("UPDATE products SET inventory_unit_id = ?, sale_unit_id = ? WHERE id = ?",
+                inventoryUnit, saleUnit, product);
+    }
+
+    /** 1 {@code from} = {@code factor} {@code to}; product null = conversión global del tenant. */
+    private void conversion(Fixture f, UUID product, UUID from, UUID to, String factor) {
+        jdbc.update("""
+                INSERT INTO unit_conversions (id, tenant_id, product_id, from_unit_id, to_unit_id, factor)
+                VALUES (?, ?, ?, ?, ?, ?::numeric)
+                """, UUID.randomUUID(), f.tenant(), product, from, to, factor);
     }
 
     private UUID addBranch(Fixture f) {

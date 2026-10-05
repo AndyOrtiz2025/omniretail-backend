@@ -223,7 +223,11 @@ public class InventoryStockQueryService {
                 row.getSuggestedReorder(),
                 ProductType.valueOf(row.getProductType()),
                 InventoryProductMode.valueOf(row.getInventoryMode()),
-                InventoryStockDisplayStatus.valueOf(row.getDisplayStatus()));
+                InventoryStockDisplayStatus.valueOf(row.getDisplayStatus()),
+                row.getInventoryUnitId(),
+                row.getSaleUnitId(),
+                row.getInventoryToBaseFactor(),
+                row.getSaleToBaseFactor());
     }
 
     private record SortSelection(String field, String direction) {}
