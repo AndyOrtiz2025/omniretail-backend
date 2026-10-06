@@ -328,8 +328,10 @@ class PickingServiceTest {
                 VALUES (?, ?, ?, 'TRACE', 'Trazable', 'warehouse', 'active')
                 """, location, fixture.tenantId(), fixture.branchId());
         jdbc.update("""
-                INSERT INTO inventory_lots (id, tenant_id, product_id, lot_number)
-                VALUES (?, ?, ?, 'LOT-A'), (?, ?, ?, 'LOT-B')
+                INSERT INTO inventory_lots
+                    (id, tenant_id, product_id, lot_number, expiration_date)
+                VALUES (?, ?, ?, 'LOT-A', DATE '2030-01-15'),
+                       (?, ?, ?, 'LOT-B', DATE '2030-02-20')
                 """, firstLot, fixture.tenantId(), fixture.productId(),
                 secondLot, fixture.tenantId(), fixture.productId());
         jdbc.update("""
@@ -373,7 +375,7 @@ class PickingServiceTest {
         assertThat(lotReserved(firstLot)).isEqualByComparingTo("5.000");
         assertThat(lotReserved(secondLot)).isEqualByComparingTo("0.000");
 
-        service.updateItem(
+        PickingLineResponse selected = service.updateItem(
                 fixture.branchId(),
                 pickingId,
                 itemId,
@@ -383,6 +385,14 @@ class PickingServiceTest {
                         "lot-b",
                         List.of(new PickingTrackingSelectionRequest(
                                 location, secondLot, new BigDecimal("5.000"), List.of()))));
+        assertThat(selected.trackingSelections()).singleElement().satisfies(selection -> {
+            assertThat(selection.locationId()).isEqualTo(location);
+            assertThat(selection.lotId()).isEqualTo(secondLot);
+            assertThat(selection.lotNumber()).isEqualTo("LOT-B");
+            assertThat(selection.expirationDate().toString()).isEqualTo("2030-02-20");
+            assertThat(selection.quantity()).isEqualByComparingTo("5.000");
+            assertThat(selection.serialNumbers()).isEmpty();
+        });
         assertThat(lotReserved(firstLot)).isEqualByComparingTo("0.000");
         assertThat(lotReserved(secondLot)).isEqualByComparingTo("5.000");
 

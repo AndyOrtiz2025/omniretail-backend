@@ -21,6 +21,7 @@ import com.omniretail.backend.logistics.dto.PackingFinalizeResponse;
 import com.omniretail.backend.logistics.dto.PackingPreparedContentResponse;
 import com.omniretail.backend.logistics.dto.PackingQueueResponse;
 import com.omniretail.backend.logistics.dto.PackingVersionedRequest;
+import com.omniretail.backend.logistics.dto.PhysicalTraceSelectionResponse;
 import com.omniretail.backend.logistics.dto.RegisterPackingLabelPrintRequest;
 import com.omniretail.backend.logistics.dto.SavePackingPreparationRequest;
 import com.omniretail.backend.logistics.entity.Packing;
@@ -74,6 +75,7 @@ public class PackingService {
     private final InventoryTransferRepository transferRepository;
     private final ProductRepository productRepository;
     private final CustomerRepository customerRepository;
+    private final PickingTraceProjectionService traceProjectionService;
     private final BranchAccessResolver branchAccessResolver;
     private final CurrentUser currentUser;
     private final TenantCapabilityGuard tenantCapabilityGuard;
@@ -403,9 +405,14 @@ public class PackingService {
                     if (product == null) {
                         throw conflict("PACKING_PRODUCT_NOT_FOUND", "Producto de Packing no encontrado.");
                     }
+                    List<PhysicalTraceSelectionResponse> trackingSelections =
+                            traceProjectionService.project(tenantId, item, product);
+                    List<String> serialNumbers = trackingSelections.stream()
+                            .flatMap(selection -> selection.serialNumbers().stream())
+                            .toList();
                     return new PackingPreparedContentResponse(
                             item.getProductId(), product.getSku(), product.getName(),
-                            item.getPickedQuantity(), List.of());
+                            item.getPickedQuantity(), serialNumbers, trackingSelections);
                 })
                 .toList();
     }

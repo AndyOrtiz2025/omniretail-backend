@@ -417,13 +417,6 @@ public class SaleService {
                     "KIT_FULFILLMENT_NOT_SUPPORTED",
                     "Los kits aun no admiten fulfillment POS diferido.");
         }
-        if (Boolean.TRUE.equals(product.getTrackingLot())
-                || Boolean.TRUE.equals(product.getTrackingSerial())
-                || Boolean.TRUE.equals(product.getTrackingExpiration())) {
-            throw BusinessException.conflict(
-                    "TRACEABILITY_NOT_SUPPORTED",
-                    "El fulfillment POS diferido aun no admite productos trazables.");
-        }
         if (line.trackingSelections() != null && !line.trackingSelections().isEmpty()) {
             throw invalidTrackingSelection(
                     "La seleccion fisica de una venta diferida corresponde a Picking.");

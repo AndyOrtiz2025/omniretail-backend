@@ -79,6 +79,93 @@ class StorePickupServiceTest {
     }
 
     @Test
+    void traceableHandoverConsumesPickedLotAndSerialsExactlyOnce() {
+        DispatchTestFixture.Data fixture = pickupFixture();
+        actor(fixture);
+        UUID lot = UUID.randomUUID();
+        jdbc.update(
+                "UPDATE products SET tracking_lot = true, tracking_serial = true WHERE id = ?",
+                fixture.productId());
+        jdbc.update("""
+                INSERT INTO inventory_lots (id, tenant_id, product_id, lot_number)
+                VALUES (?, ?, ?, 'PICKUP-LOT')
+                """, lot, fixture.tenantId(), fixture.productId());
+        jdbc.update("""
+                INSERT INTO inventory_lot_balances
+                    (id, tenant_id, branch_id, location_id, lot_id, quantity, reserved_quantity)
+                VALUES (?, ?, ?, ?, ?, 5.000, 5.000)
+                """, UUID.randomUUID(), fixture.tenantId(), fixture.branchId(),
+                fixture.locationId(), lot);
+        for (int index = 1; index <= 5; index++) {
+            jdbc.update("""
+                    INSERT INTO inventory_serials
+                        (id, tenant_id, branch_id, location_id, product_id, serial_number,
+                         lot_id, status, version)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'RESERVED', 0)
+                    """, UUID.randomUUID(), fixture.tenantId(), fixture.branchId(),
+                    fixture.locationId(), fixture.productId(), "PICKUP-SER-" + index, lot);
+        }
+        UUID pickingId = jdbc.queryForObject(
+                "SELECT picking_order_id FROM packings WHERE id = ?",
+                UUID.class,
+                fixture.packingId());
+        jdbc.update("""
+                INSERT INTO picking_items
+                    (id, tenant_id, picking_order_id, source_line_id, order_item_id,
+                     product_id, requested_quantity, picked_quantity, location_id,
+                     picked_traces, status)
+                VALUES (?, ?, ?, ?, ?, ?, 5.000, 5.000, ?, ?::jsonb, 'completed')
+                """,
+                UUID.randomUUID(),
+                fixture.tenantId(),
+                pickingId,
+                fixture.orderItemId(),
+                fixture.orderItemId(),
+                fixture.productId(),
+                fixture.locationId(),
+                """
+                [{"locationId":"%s","lotId":"%s","quantity":5.000,
+                  "serialNumbers":["PICKUP-SER-1","PICKUP-SER-2","PICKUP-SER-3",
+                                   "PICKUP-SER-4","PICKUP-SER-5"]}]
+                """.formatted(fixture.locationId(), lot));
+
+        service.handover(fixture.branchId(), fixture.orderId());
+        StorePickupHandoverResponse retry =
+                service.handover(fixture.branchId(), fixture.orderId());
+
+        assertThat(retry.idempotent()).isTrue();
+        assertThat(jdbc.queryForObject(
+                        "SELECT quantity FROM inventory_lot_balances WHERE lot_id = ?",
+                        BigDecimal.class,
+                        lot))
+                .isEqualByComparingTo("0.000");
+        assertThat(jdbc.queryForObject(
+                        "SELECT reserved_quantity FROM inventory_lot_balances WHERE lot_id = ?",
+                        BigDecimal.class,
+                        lot))
+                .isEqualByComparingTo("0.000");
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM inventory_serials WHERE lot_id = ? AND status = 'CONSUMED'",
+                        Long.class,
+                        lot))
+                .isEqualTo(5L);
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*)
+                        FROM inventory_movement_traces trace
+                        JOIN inventory_movements movement ON movement.id = trace.movement_id
+                        WHERE movement.reference_id = ?
+                          AND movement.reference_line_id = ?
+                          AND trace.serial_id IS NOT NULL
+                        """,
+                        Long.class,
+                        fixture.orderId(),
+                        fixture.orderItemId()))
+                .isEqualTo(5L);
+        assertThat(count("inventory_movements", "reference_id", fixture.orderId())).isOne();
+    }
+
+    @Test
     void concurrentHandoversConsumeInventoryAndCreateMovementOnce() {
         DispatchTestFixture.Data fixture = pickupFixture();
         actor(fixture);

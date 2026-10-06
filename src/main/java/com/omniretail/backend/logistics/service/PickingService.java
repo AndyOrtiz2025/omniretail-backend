@@ -114,6 +114,7 @@ public class PickingService {
     private final LocationRepository locationRepository;
     private final InventoryTraceabilityMutationService traceabilityMutationService;
     private final InventoryPhysicalSelectionCodec physicalSelectionCodec;
+    private final PickingTraceProjectionService traceProjectionService;
     private final BranchAccessResolver branchAccessResolver;
     private final CurrentUser currentUser;
     private final TenantCapabilityGuard tenantCapabilityGuard;
@@ -1018,7 +1019,8 @@ public class PickingService {
                         Boolean.TRUE.equals(product.getTrackingExpiration()),
                         Boolean.TRUE.equals(product.getTrackingSerial())),
                 inventory,
-                item.getSourceLineId());
+                item.getSourceLineId(),
+                traceProjectionService.project(tenantId, item, product));
     }
 
     private PickingLineResponse.InventoryAvailability inventoryAvailability(

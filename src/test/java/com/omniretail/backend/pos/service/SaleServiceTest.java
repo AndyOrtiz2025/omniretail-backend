@@ -859,8 +859,9 @@ class SaleServiceTest {
     }
 
     @Test
-    void createsDeferredHomeDeliveryWithPhysicalReservationAndPickingWithoutStockOut() {
+    void createsTraceableDeferredHomeDeliveryWithReservationAndPickingWithoutStockOut() {
         Product product = product();
+        product.setTrackingLot(true);
         when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product));
         when(unitConversionResolver.toBaseQuantity(tenant, product, new BigDecimal("2")))
                 .thenReturn(new BigDecimal("24.000"));
@@ -893,8 +894,9 @@ class SaleServiceTest {
     }
 
     @Test
-    void createsDeferredStorePickupWithoutAddressOrStockOut() {
+    void createsTraceableDeferredStorePickupWithoutAddressOrStockOut() {
         Product product = product();
+        product.setTrackingSerial(true);
         when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product));
         stubSalePersistence();
         Order order = stubDeferredOrderPersistence();
@@ -922,6 +924,42 @@ class SaleServiceTest {
         verify(reservationLifecycle).reserve(any());
         verifyNoInteractions(inventory, traceabilityMutation);
         verifyNoInteractions(inventoryMovements);
+    }
+
+    @Test
+    void rejectsPhysicalTrackingSelectionInDeferredPosRequest() {
+        Product traceable = product();
+        traceable.setTrackingLot(true);
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(traceable));
+        CreateSaleRequest valid = deferredRequest(
+                new BigDecimal("20.00"), BigDecimal.ONE, UUID.randomUUID());
+        CreateSaleRequest withSelection = new CreateSaleRequest(
+                valid.branchId(),
+                valid.cashShiftId(),
+                valid.customerId(),
+                valid.taxTotal(),
+                List.of(new CreateSaleRequest.Item(
+                        productId,
+                        BigDecimal.ONE,
+                        BigDecimal.ZERO,
+                        List.of(new InventoryTrackingSelectionRequest(
+                                productId,
+                                UUID.randomUUID(),
+                                UUID.randomUUID(),
+                                BigDecimal.ONE,
+                                List.of())))),
+                valid.payments(),
+                valid.confirmationId(),
+                valid.document(),
+                null,
+                valid.deferredOrder());
+
+        assertThatThrownBy(() -> service.create(withSelection))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("INVALID_TRACKING_SELECTION"));
+        verifyNoInteractions(orders, orderItems, reservationLifecycle, pickingService);
     }
 
     @Test
@@ -1049,7 +1087,7 @@ class SaleServiceTest {
     }
 
     @Test
-    void rejectsDeferredKitsAndTraceableProductsBeforePersistentEffects() {
+    void rejectsDeferredKitsBeforePersistentEffects() {
         Product kit = product();
         kit.setProductType(ProductType.kit);
         when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(kit));
@@ -1058,19 +1096,6 @@ class SaleServiceTest {
                 .isInstanceOfSatisfying(BusinessException.class,
                         exception -> assertThat(exception.getCode())
                                 .isEqualTo("KIT_FULFILLMENT_NOT_SUPPORTED"));
-        verifyNoInteractions(orders, orderItems, reservationLifecycle, pickingService);
-        verify(sales, never()).save(any());
-        verify(sales, never()).saveAndFlush(any());
-
-        clearInvocations(products);
-        Product traceable = product();
-        traceable.setTrackingLot(true);
-        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(traceable));
-        assertThatThrownBy(() -> service.create(deferredRequest(
-                new BigDecimal("20.00"), BigDecimal.ONE, UUID.randomUUID())))
-                .isInstanceOfSatisfying(BusinessException.class,
-                        exception -> assertThat(exception.getCode())
-                                .isEqualTo("TRACEABILITY_NOT_SUPPORTED"));
         verifyNoInteractions(orders, orderItems, reservationLifecycle, pickingService);
         verify(sales, never()).save(any());
         verify(sales, never()).saveAndFlush(any());

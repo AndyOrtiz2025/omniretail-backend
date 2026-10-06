@@ -9,4 +9,15 @@ public record PackingPreparedContentResponse(
         String sku,
         String name,
         BigDecimal quantity,
-        List<String> serialNumbers) {}
+        List<String> serialNumbers,
+        List<PhysicalTraceSelectionResponse> trackingSelections) {
+
+    public PackingPreparedContentResponse(
+            UUID productId,
+            String sku,
+            String name,
+            BigDecimal quantity,
+            List<String> serialNumbers) {
+        this(productId, sku, name, quantity, serialNumbers, List.of());
+    }
+}
