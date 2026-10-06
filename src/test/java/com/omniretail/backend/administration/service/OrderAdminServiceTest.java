@@ -51,6 +51,22 @@ class OrderAdminServiceTest {
     }
 
     @Test
+    void listIncludesTheAssociatedCustomerName() {
+        Fixture fixture = fixture(false);
+        UUID customerId = customer(fixture, "Ana Cliente");
+        order(fixture, "WEB-CUSTOMER", "confirmed", customerId);
+        actor(fixture.tenantId());
+
+        PageResponse<OrderAdminResponse> response = service.list(null, PageRequest.of(0, 20));
+
+        assertThat(response.items()).singleElement().satisfies(order -> {
+            assertThat(order.customerId()).isEqualTo(customerId);
+            assertThat(order.customerName()).isEqualTo("Ana Cliente");
+            assertThat(order.guestCustomer()).isNull();
+        });
+    }
+
+    @Test
     void cancellationReleasesOnlyTheUnconsumedReservedStock() {
         Fixture fixture = fixture(true);
         UUID orderId = order(fixture, "WEB-CANCEL", "confirmed");
@@ -162,13 +178,29 @@ class OrderAdminServiceTest {
     }
 
     private UUID order(Fixture fixture, String number, String status) {
+        return order(fixture, number, status, null);
+    }
+
+    private UUID order(Fixture fixture, String number, String status, UUID customerId) {
         UUID id = UUID.randomUUID();
         jdbc.update("""
-                INSERT INTO orders (id, tenant_id, branch_id, order_number, source, guest_customer, status,
+                INSERT INTO orders (id, tenant_id, branch_id, order_number, source, customer_id, guest_customer, status,
                     delivery_method, transport_mode, subtotal, discount_total, shipping_total, total, tracking_token)
-                VALUES (?, ?, ?, ?, 'ecommerce', '{}'::jsonb, ?, 'store_pickup', 'none',
+                VALUES (?, ?, ?, ?, 'ecommerce', ?, CASE WHEN ? IS NULL THEN '{}'::jsonb ELSE NULL END, ?, 'store_pickup', 'none',
                     10.00, 0.00, 0.00, 10.00, ?)
-                """, id, fixture.tenantId(), fixture.branchId(), number, status, UUID.randomUUID().toString());
+                """, id, fixture.tenantId(), fixture.branchId(), number, customerId, customerId, status,
+                UUID.randomUUID().toString());
+        return id;
+    }
+
+    private UUID customer(Fixture fixture, String name) {
+        UUID id = UUID.randomUUID();
+        String suffix = UUID.randomUUID().toString();
+        jdbc.update("""
+                INSERT INTO customers (id, tenant_id, code, name, email, status)
+                VALUES (?, ?, ?, ?, ?, 'active')
+                """, id, fixture.tenantId(), "C-" + suffix.substring(0, 8), name,
+                "customer-" + suffix + "@example.com");
         return id;
     }
 
