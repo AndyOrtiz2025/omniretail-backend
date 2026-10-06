@@ -1,6 +1,6 @@
 databaseChangeLog:
   - changeSet:
-      id: 052-pos-store-pickup
+      id: 053-pos-store-pickup
       author: rique
       changes:
         - addColumn:
