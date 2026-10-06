@@ -36,6 +36,7 @@ public class SecurityConfig {
         "/swagger-ui/**",
         "/swagger-ui.html",
         "/api/v1/auth/login",
+        "/api/v1/auth/google",
         "/api/v1/auth/mfa/verify",
         "/api/v1/auth/mfa/resend",
         "/api/v1/auth/email/verify",

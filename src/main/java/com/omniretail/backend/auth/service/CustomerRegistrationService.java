@@ -1,26 +1,17 @@
 package com.omniretail.backend.auth.service;
 
-import com.omniretail.backend.administration.entity.Role;
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.entity.User;
-import com.omniretail.backend.administration.entity.UserStatus;
-import com.omniretail.backend.administration.entity.UserType;
-import com.omniretail.backend.administration.repository.RoleRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.administration.repository.UserRepository;
 import com.omniretail.backend.auth.dto.RegisterCustomerRequest;
 import com.omniretail.backend.auth.dto.RegisterCustomerResponse;
 import com.omniretail.backend.auth.dto.VerifyEmailResponse;
 import com.omniretail.backend.auth.entity.AccountStatus;
-import com.omniretail.backend.auth.entity.AuthAccount;
 import com.omniretail.backend.auth.entity.EmailVerification;
 import com.omniretail.backend.auth.repository.AuthAccountRepository;
 import com.omniretail.backend.auth.repository.EmailVerificationRepository;
-import com.omniretail.backend.ecommerce.entity.Customer;
-import com.omniretail.backend.ecommerce.entity.CustomerStatus;
-import com.omniretail.backend.ecommerce.repository.CustomerRepository;
-import com.omniretail.backend.pos.service.DocumentCounterService;
 import com.omniretail.backend.shared.config.FrontendProperties;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.exception.FieldValidationException;
@@ -28,28 +19,21 @@ import com.omniretail.backend.shared.notification.EmailMessage;
 import com.omniretail.backend.shared.notification.EmailPurpose;
 import com.omniretail.backend.shared.notification.EmailRequestedEvent;
 import jakarta.validation.Validator;
-import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /** Registro publico de clientes y verificacion de su correo (mismas reglas que MockAuthRepository). */
-@Slf4j
 @Service
 @RequiredArgsConstructor
 public class CustomerRegistrationService {
@@ -64,16 +48,12 @@ public class CustomerRegistrationService {
     private static final int EMAIL_MAX_LENGTH = 254;
     private static final int PHONE_DIGITS = 8;
     private static final Pattern DIGITS = Pattern.compile("\\d+");
-    private static final String USERS_TENANT_EMAIL_CONSTRAINT = "uk_users_tenant_email";
-    private static final List<String> NON_CUSTOMER_PERMISSION_PREFIXES = List.of("admin.", "pos.", "inventory.");
 
     private final TenantRepository tenantRepository;
     private final UserRepository userRepository;
-    private final RoleRepository roleRepository;
-    private final CustomerRepository customerRepository;
     private final AuthAccountRepository authAccountRepository;
     private final EmailVerificationRepository emailVerificationRepository;
-    private final DocumentCounterService documentCounterService;
+    private final CustomerAccountFactory customerAccountFactory;
     private final PasswordEncoder passwordEncoder;
     private final ApplicationEventPublisher eventPublisher;
     private final FrontendProperties frontendProperties;
@@ -100,38 +80,14 @@ public class CustomerRegistrationService {
         if (userRepository.existsByTenantIdAndEmailIgnoreCase(tenantId, email)) {
             throw emailAlreadyRegistered();
         }
-        Role customerRole = findCustomerRole(tenantId);
-
-        // El contador hace flush: se pide antes de crear las entidades.
-        String code = documentCounterService.nextCustomerCode(tenantId);
-        // customers.user_id tiene FK a users y no se puede actualizar: primero el usuario, luego el cliente.
-        User newUser = User.builder()
-                .name(name)
-                .email(email)
-                .phone(phone)
-                .type(UserType.customer)
-                .status(UserStatus.active)
-                .roleId(customerRole.getId())
-                .build();
-        newUser.setTenantId(tenantId);
-        User user = userRepository.save(newUser);
-        Customer newCustomer = Customer.builder()
-                .userId(user.getId())
-                .code(code)
-                .name(name)
-                .email(email)
-                .phone(phone)
-                .status(CustomerStatus.active)
-                .build();
-        newCustomer.setTenantId(tenantId);
-        Customer customer = customerRepository.save(newCustomer);
-        user.setCustomerId(customer.getId());
-        authAccountRepository.save(AuthAccount.builder()
-                .userId(user.getId())
-                .email(email)
-                .passwordHash(passwordEncoder.encode(request.password()))
-                .status(AccountStatus.pending_verification)
-                .build());
+        User user;
+        try {
+            user = customerAccountFactory.create(tenantId, name, email, phone,
+                    passwordEncoder.encode(request.password()), AccountStatus.pending_verification).user();
+        } catch (CustomerAccountFactory.EmailTakenException ex) {
+            // Un registro concurrente con el mismo correo lo detecta la BD: se responde igual que el chequeo previo.
+            throw emailAlreadyRegistered();
+        }
 
         Instant now = Instant.now();
         String token = AuthTokens.generate();
@@ -141,7 +97,6 @@ public class CustomerRegistrationService {
                 .createdAt(now)
                 .expiresAt(now.plus(EMAIL_VERIFICATION_TTL))
                 .build());
-        flushDetectingDuplicateEmail();
 
         eventPublisher.publishEvent(new EmailRequestedEvent(verificationEmail(user, token)));
         return new RegisterCustomerResponse(RegisterCustomerResponse.UserView.from(user));
@@ -208,37 +163,6 @@ public class CustomerRegistrationService {
         }
     }
 
-    /** Rol de sistema de cliente, buscado igual que el mock: nunca un rol con permisos operativos. */
-    private Role findCustomerRole(UUID tenantId) {
-        return roleRepository.findByTenantId(tenantId).stream()
-                .filter(role -> Boolean.TRUE.equals(role.getIsSystem()))
-                .filter(role -> role.getPermissions().contains("customer.account.read"))
-                .filter(role -> role.getPermissions().stream()
-                        .noneMatch(permission -> NON_CUSTOMER_PERMISSION_PREFIXES.stream().anyMatch(permission::startsWith)))
-                .findFirst()
-                .orElseThrow(() -> {
-                    log.error("El tenant {} no tiene el rol de sistema de cliente; no se puede registrar clientes.", tenantId);
-                    return new BusinessException(
-                            HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", REGISTRATION_FAILED_MESSAGE);
-                });
-    }
-
-    /** Un registro concurrente con el mismo correo lo detecta la BD: se responde igual que el chequeo previo. */
-    private void flushDetectingDuplicateEmail() {
-        try {
-            userRepository.flush();
-        } catch (DataIntegrityViolationException ex) {
-            String constraint = findCause(ex, ConstraintViolationException.class)
-                    .map(ConstraintViolationException::getConstraintName)
-                    .orElse(null);
-            String sqlState = findCause(ex, SQLException.class).map(SQLException::getSQLState).orElse(null);
-            if ("23505".equals(sqlState) && USERS_TENANT_EMAIL_CONSTRAINT.equalsIgnoreCase(constraint)) {
-                throw emailAlreadyRegistered();
-            }
-            throw ex;
-        }
-    }
-
     private EmailMessage verificationEmail(User user, String token) {
         String link = frontendProperties.link("/verificar-correo/" + token);
         String body = """
@@ -252,17 +176,6 @@ public class CustomerRegistrationService {
                 """.formatted(user.getName(), link, EMAIL_VERIFICATION_TTL.toMinutes());
         return EmailMessage.text(
                 user.getTenantId(), EmailPurpose.EMAIL_VERIFICATION, user.getEmail(), "Verifica tu correo", body);
-    }
-
-    private static <T extends Throwable> Optional<T> findCause(Throwable ex, Class<T> type) {
-        Throwable cause = ex;
-        for (int depth = 0; cause != null && depth < 20; depth++) {
-            if (type.isInstance(cause)) {
-                return Optional.of(type.cast(cause));
-            }
-            cause = cause.getCause();
-        }
-        return Optional.empty();
     }
 
     private static BusinessException emailAlreadyRegistered() {
