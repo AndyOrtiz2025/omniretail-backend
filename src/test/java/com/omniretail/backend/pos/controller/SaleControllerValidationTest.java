@@ -1,37 +1,108 @@
 package com.omniretail.backend.pos.controller;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import com.omniretail.backend.pos.service.SaleService;
+import com.omniretail.backend.ecommerce.entity.DeliveryMethod;
+import com.omniretail.backend.ecommerce.entity.OrderStatus;
+import com.omniretail.backend.pos.dto.PosSalesHistoryPageResponse;
+import com.omniretail.backend.pos.dto.PosSalesHistorySummaryResponse;
 import com.omniretail.backend.pos.dto.SaleConfirmationResponse;
 import com.omniretail.backend.pos.dto.SaleDocumentResponse;
 import com.omniretail.backend.pos.entity.SaleDocumentType;
 import com.omniretail.backend.pos.entity.SaleStatus;
+import com.omniretail.backend.pos.service.PosSalesHistoryService;
+import com.omniretail.backend.pos.service.SaleService;
 import com.omniretail.backend.shared.exception.GlobalExceptionHandler;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableHandlerMethodArgumentResolver;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 class SaleControllerValidationTest {
     private SaleService service;
+    private PosSalesHistoryService historyService;
     private MockMvc mvc;
 
     @BeforeEach
     void setUp() {
         service = mock(SaleService.class);
-        mvc = MockMvcBuilders.standaloneSetup(new SaleController(service))
+        historyService = mock(PosSalesHistoryService.class);
+        mvc = MockMvcBuilders.standaloneSetup(new SaleController(service, historyService))
+                .setCustomArgumentResolvers(new PageableHandlerMethodArgumentResolver())
                 .setControllerAdvice(new GlobalExceptionHandler()).build();
+    }
+
+    @Test
+    void historyRequiresBranch() throws Exception {
+        mvc.perform(get("/pos/sales/history"))
+                .andExpect(status().isBadRequest());
+
+        verifyNoInteractions(historyService);
+    }
+
+    @Test
+    void historyBindsSupportedQueryParametersAndReturnsPageResponse() throws Exception {
+        UUID branchId = UUID.randomUUID();
+        when(historyService.search(
+                        eq(branchId),
+                        eq("POS-001"),
+                        eq(LocalDate.parse("2026-10-01")),
+                        eq(LocalDate.parse("2026-10-02")),
+                        eq(SaleStatus.completed),
+                        eq(DeliveryMethod.home_delivery),
+                        eq(OrderStatus.picking),
+                        any(Pageable.class)))
+                .thenReturn(new PosSalesHistoryPageResponse(
+                        List.of(),
+                        1,
+                        25,
+                        0,
+                        0,
+                        new PosSalesHistorySummaryResponse(0, 0, 0, 0, 0)));
+
+        mvc.perform(get("/pos/sales/history")
+                        .param("branchId", branchId.toString())
+                        .param("search", "POS-001")
+                        .param("from", "2026-10-01")
+                        .param("to", "2026-10-02")
+                        .param("status", "completed")
+                        .param("deliveryMethod", "home_delivery")
+                        .param("operationalStatus", "picking")
+                        .param("page", "0")
+                        .param("size", "25")
+                        .param("sort", "createdAt,desc"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items").isArray())
+                .andExpect(jsonPath("$.page").value(1))
+                .andExpect(jsonPath("$.pageSize").value(25))
+                .andExpect(jsonPath("$.summary.total").value(0));
+
+        verify(historyService).search(
+                eq(branchId),
+                eq("POS-001"),
+                eq(LocalDate.parse("2026-10-01")),
+                eq(LocalDate.parse("2026-10-02")),
+                eq(SaleStatus.completed),
+                eq(DeliveryMethod.home_delivery),
+                eq(OrderStatus.picking),
+                any(Pageable.class));
     }
 
     @Test
