@@ -19,6 +19,7 @@ public record OrderAdminResponse(
         String orderNumber,
         UUID branchId,
         UUID customerId,
+        String customerName,
         JsonNode guestCustomer,
         OrderStatus status,
         DeliveryMethod deliveryMethod,
@@ -43,9 +44,9 @@ public record OrderAdminResponse(
             Boolean externallyVerified) {}
 
     public static OrderAdminResponse of(
-            Order order, List<OrderItem> items, List<Payment> payments, JsonMapper jsonMapper) {
+            Order order, String customerName, List<OrderItem> items, List<Payment> payments, JsonMapper jsonMapper) {
         return new OrderAdminResponse(order.getId(), order.getOrderNumber(), order.getBranchId(),
-                order.getCustomerId(), json(order.getGuestCustomer(), jsonMapper), order.getStatus(), order.getDeliveryMethod(),
+                order.getCustomerId(), customerName, json(order.getGuestCustomer(), jsonMapper), order.getStatus(), order.getDeliveryMethod(),
                 json(order.getDeliveryAddress(), jsonMapper), json(order.getStorePickupContact(), jsonMapper),
                 json(order.getNotificationContact(), jsonMapper),
                 order.getSubtotal(), order.getDiscountTotal(), order.getShippingTotal(), order.getTotal(),

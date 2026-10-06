@@ -3,6 +3,7 @@ package com.omniretail.backend.ecommerce.repository;
 import com.omniretail.backend.ecommerce.entity.Customer;
 import com.omniretail.backend.ecommerce.entity.CustomerStatus;
 import jakarta.persistence.LockModeType;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -17,6 +18,8 @@ public interface CustomerRepository extends JpaRepository<Customer, UUID> {
     List<Customer> findByTenantIdAndStatus(UUID tenantId, CustomerStatus status);
 
     Optional<Customer> findByTenantIdAndId(UUID tenantId, UUID id);
+
+    List<Customer> findByTenantIdAndIdIn(UUID tenantId, Collection<UUID> ids);
 
     Optional<Customer> findByTenantIdAndUserIdAndStatus(
             UUID tenantId, UUID userId, CustomerStatus status);

@@ -6,6 +6,8 @@ import com.omniretail.backend.ecommerce.entity.InventoryReservationStatus;
 import com.omniretail.backend.ecommerce.entity.Order;
 import com.omniretail.backend.ecommerce.entity.OrderSource;
 import com.omniretail.backend.ecommerce.entity.OrderStatus;
+import com.omniretail.backend.ecommerce.entity.Customer;
+import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.ecommerce.repository.InventoryReservationRepository;
 import com.omniretail.backend.ecommerce.repository.OrderItemRepository;
 import com.omniretail.backend.ecommerce.repository.OrderRepository;
@@ -31,6 +33,7 @@ import tools.jackson.databind.json.JsonMapper;
 public class OrderAdminService {
 
     private final OrderRepository orderRepository;
+    private final CustomerRepository customerRepository;
     private final OrderItemRepository orderItemRepository;
     private final PaymentRepository paymentRepository;
     private final InventoryReservationRepository reservationRepository;
@@ -54,9 +57,18 @@ public class OrderAdminService {
                 .findByTenantIdAndOrderIdInOrderByCreatedAtAscIdAsc(tenantId,
                         orders.getContent().stream().map(Order::getId).toList()).stream()
                 .collect(java.util.stream.Collectors.groupingBy(com.omniretail.backend.pos.entity.Payment::getOrderId));
+        List<UUID> customerIds = orders.getContent().stream()
+                .map(Order::getCustomerId)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .toList();
+        Map<UUID, String> customerNames = customerIds.isEmpty()
+                ? Map.of()
+                : customerRepository.findByTenantIdAndIdIn(tenantId, customerIds).stream()
+                        .collect(java.util.stream.Collectors.toMap(Customer::getId, Customer::getName));
         return new PageResponse<>(orders.getContent().stream()
-                .map(order -> OrderAdminResponse.of(order, items.getOrDefault(order.getId(), List.of()),
-                        payments.getOrDefault(order.getId(), List.of()), jsonMapper))
+                .map(order -> OrderAdminResponse.of(order, customerNames.get(order.getCustomerId()),
+                        items.getOrDefault(order.getId(), List.of()), payments.getOrDefault(order.getId(), List.of()), jsonMapper))
                 .toList(), orders.getNumber() + 1, orders.getSize(), orders.getTotalElements(), orders.getTotalPages());
     }
 
@@ -103,7 +115,11 @@ public class OrderAdminService {
     }
 
     private OrderAdminResponse toResponse(UUID tenantId, Order order) {
-        return OrderAdminResponse.of(order, orderItemRepository.findByOrderId(order.getId()),
+        String customerName = order.getCustomerId() == null ? null : customerRepository
+                .findByTenantIdAndId(tenantId, order.getCustomerId())
+                .map(Customer::getName)
+                .orElse(null);
+        return OrderAdminResponse.of(order, customerName, orderItemRepository.findByOrderId(order.getId()),
                 paymentRepository.findByTenantIdAndOrderIdOrderByCreatedAtAscIdAsc(tenantId, order.getId()), jsonMapper);
     }
 
