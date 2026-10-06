@@ -36,11 +36,20 @@ spring:
       max-request-size: ${MEDIA_MAX_REQUEST_SIZE:6MB}
 
   # SMTP. En desarrollo apunta a Mailpit (docker compose); usuario y clave son opcionales.
+  # Para Gmail (smtp.gmail.com:587) hay que activar MAIL_SMTP_AUTH y MAIL_SMTP_STARTTLS; por defecto
+  # quedan apagados para que Mailpit, que no habla TLS, siga funcionando igual.
   mail:
     host: ${MAIL_HOST:localhost}
     port: ${MAIL_PORT:1025}
     username: ${MAIL_USERNAME:}
     password: ${MAIL_PASSWORD:}
+    properties:
+      mail.smtp.auth: ${MAIL_SMTP_AUTH:false}
+      mail.smtp.starttls.enable: ${MAIL_SMTP_STARTTLS:false}
+      mail.smtp.starttls.required: ${MAIL_SMTP_STARTTLS:false}
+      mail.smtp.connectiontimeout: ${MAIL_SMTP_TIMEOUT_MILLIS:10000}
+      mail.smtp.timeout: ${MAIL_SMTP_TIMEOUT_MILLIS:10000}
+      mail.smtp.writetimeout: ${MAIL_SMTP_TIMEOUT_MILLIS:10000}
 
   threads:
     virtual:
@@ -59,6 +68,10 @@ app:
     # Clave maestra de la verificacion en dos pasos (secreto TOTP cifrado y HMAC de los codigos de
     # recuperacion). Minimo 32 bytes. Mismo patron que app.jwt.secret: valor de dev en application-dev.
     encryption-key: ${MFA_ENCRYPTION_KEY:}
+  google:
+    # Client ID web de Google Cloud para "Iniciar sesion con Google". Opcional: vacio, la app arranca
+    # igual y POST /auth/google responde 503 GOOGLE_LOGIN_NOT_CONFIGURED.
+    client-id: ${GOOGLE_CLIENT_ID:}
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
   mail:

@@ -27,6 +27,7 @@ public class AuthAuditService {
     public static final String MFA_DISABLED = "mfa_disabled";
     public static final String MFA_FAILED = "mfa_failed";
     public static final String MFA_RECOVERY_CODE_USED = "mfa_recovery_code_used";
+    public static final String EXTERNAL_IDENTITY_LINKED = "external_identity_linked";
 
     private final AuthAuditLogRepository auditLogRepository;
     private final Clock authClock;

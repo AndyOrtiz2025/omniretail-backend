@@ -1,0 +1,84 @@
+databaseChangeLog:
+  - changeSet:
+      id: 052-auth-external-identities
+      author: AndyOrtiz2025
+      changes:
+        # Cuenta externa (Google) vinculada a una cuenta de acceso. Solo se guarda lo necesario para
+        # reconocerla: proveedor, subject (sub del ID token), el correo con que se vinculo y la fecha.
+        # Nunca el ID token ni la foto.
+        - createTable:
+            tableName: auth_external_identities
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: account_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: auth_accounts
+                    referencedColumnNames: id
+                    foreignKeyName: fk_auth_external_identities_account
+                    deleteCascade: true
+              # El correo es unico por tienda, no global: la misma cuenta de Google puede ser cliente de
+              # varias tiendas (una cuenta de acceso en cada una), asi que el subject se repite entre tenants.
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_auth_external_identities_tenant
+              - column:
+                  name: provider
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: subject
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: email
+                  type: VARCHAR(254)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: linked_at
+                  type: TIMESTAMPTZ
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        # Una cuenta de acceso tiene a lo sumo una identidad por proveedor.
+        - addUniqueConstraint:
+            tableName: auth_external_identities
+            columnNames: account_id, provider
+            constraintName: uk_auth_external_identities_account_provider
+        # Dentro de una tienda, una identidad externa abre una sola cuenta.
+        - addUniqueConstraint:
+            tableName: auth_external_identities
+            columnNames: provider, subject, tenant_id
+            constraintName: uk_auth_external_identities_provider_subject_tenant
+        - sql:
+            sql: "ALTER TABLE auth_external_identities ADD CONSTRAINT ck_auth_external_identities_provider CHECK (provider IN ('google'))"
+      rollback:
+        - dropTable:
+            tableName: auth_external_identities
