@@ -26,6 +26,12 @@ docker compose up -d          # PostgreSQL 16 + Mailpit
 | OpenAPI JSON | http://localhost:8080/api-docs |
 | Mailpit (correos de dev) | http://localhost:8025 |
 
+Credenciales del cliente demo para la app movil:
+
+- Tienda: `ferrepharma-demo`
+- Email: `ana@example.com`
+- Password: `ClienteDemo1`
+
 Si un puerto está ocupado en tu máquina, cámbialo **solo en tu `.env`** (`POSTGRES_PORT`,
 `SERVER_PORT`, ...). El `.env` no se sube a git y los defaults del equipo no cambian.
 
