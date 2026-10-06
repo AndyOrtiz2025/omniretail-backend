@@ -87,6 +87,7 @@ public class PurchaseOrderService {
     private final TenantCapabilityGuard tenantCapabilityGuard;
     private final PermissionResolver permissionResolver;
     private final CurrentUser currentUser;
+    private final PurchaseOrderEmailNotifier purchaseOrderEmailNotifier;
 
     @Transactional(readOnly = true)
     public PageResponse<PurchaseOrderResponse> list(
@@ -248,6 +249,13 @@ public class PurchaseOrderService {
         PurchaseOrder saved = purchaseOrderRepository.saveAndFlush(order);
         List<PurchaseOrderItem> items = purchaseOrderItemRepository
                 .findByTenantIdAndPurchaseOrderIdOrderByIdAsc(actor.tenantId(), id);
+
+        Supplier supplier = supplierRepository.findByTenantIdAndId(actor.tenantId(), saved.getSupplierId())
+                .orElse(null);
+        Branch branch = branchRepository.findByTenantIdAndId(actor.tenantId(), saved.getBranchId())
+                .orElse(null);
+        purchaseOrderEmailNotifier.notifyOrderApproved(saved, supplier, branch, items);
+
         return response(saved, items, SuggestedCosts.NONE);
     }
 
