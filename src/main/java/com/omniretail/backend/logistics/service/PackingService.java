@@ -223,7 +223,10 @@ public class PackingService {
         packing.setFinalizedByUserId(actor.userId());
         packing.setFinalizedAt(now);
         if (context.order() != null) {
-            context.order().setStatus(OrderStatus.ready_for_dispatch);
+            context.order().setStatus(
+                    context.order().getDeliveryMethod() == DeliveryMethod.store_pickup
+                            ? OrderStatus.ready_for_pickup
+                            : OrderStatus.ready_for_dispatch);
             orderRepository.save(context.order());
         }
         packing = packingRepository.saveAndFlush(packing);
@@ -502,13 +505,19 @@ public class PackingService {
                 || !packing.getBranchId().equals(order.getBranchId())) {
             throw conflict("PACKING_SOURCE_CONFLICT", "Packing no coincide con su pedido.");
         }
-        if ((order.getSource() != OrderSource.ecommerce
-                        && order.getSource() != OrderSource.pos)
-                || order.getDeliveryMethod() != DeliveryMethod.home_delivery) {
+        if (!isEligibleOrderSource(order)) {
             throw conflict(
                     "PACKING_ORDER_NOT_ELIGIBLE",
-                    "Solo pedidos ecommerce o POS con entrega a domicilio admiten Packing.");
+                    "El pedido no admite Packing.");
         }
+    }
+
+    private static boolean isEligibleOrderSource(Order order) {
+        return (order.getSource() == OrderSource.ecommerce
+                        && order.getDeliveryMethod() == DeliveryMethod.home_delivery)
+                || (order.getSource() == OrderSource.pos
+                        && (order.getDeliveryMethod() == DeliveryMethod.home_delivery
+                                || order.getDeliveryMethod() == DeliveryMethod.store_pickup));
     }
 
     private static void requireMatchingTransfer(
@@ -541,10 +550,13 @@ public class PackingService {
                 && order.getStatus() != OrderStatus.packing) {
             throw conflict("PACKING_ORDER_STATE_CONFLICT", "Packing y pedido tienen estados incompatibles.");
         }
-        if (packing.getStatus() == PackingStatus.finalized
-                && order.getStatus() != OrderStatus.ready_for_dispatch
-                && order.getStatus() != OrderStatus.dispatched
-                && order.getStatus() != OrderStatus.delivered) {
+        boolean finalizedOrderState = order.getDeliveryMethod() == DeliveryMethod.store_pickup
+                ? order.getStatus() == OrderStatus.ready_for_pickup
+                        || order.getStatus() == OrderStatus.delivered
+                : order.getStatus() == OrderStatus.ready_for_dispatch
+                        || order.getStatus() == OrderStatus.dispatched
+                        || order.getStatus() == OrderStatus.delivered;
+        if (packing.getStatus() == PackingStatus.finalized && !finalizedOrderState) {
             throw conflict("PACKING_ORDER_STATE_CONFLICT", "Packing y pedido tienen estados incompatibles.");
         }
     }

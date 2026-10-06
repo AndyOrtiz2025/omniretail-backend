@@ -893,8 +893,13 @@ class SaleServiceTest {
     }
 
     @Test
-    void rejectsUnsupportedDeferredDeliveryAndConflictingSourceOrderInput() {
-        reset(branchAccess);
+    void createsDeferredStorePickupWithoutAddressOrStockOut() {
+        Product product = product();
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product));
+        stubSalePersistence();
+        Order order = stubDeferredOrderPersistence();
+        PickingOrder picking = picking(order);
+        when(pickingService.ensureForOrder(tenant, order.getId())).thenReturn(Optional.of(picking));
         CreateSaleRequest valid = deferredRequest(
                 new BigDecimal("20.00"), BigDecimal.ONE, UUID.randomUUID());
         CreateSaleRequest storePickup = new CreateSaleRequest(
@@ -904,12 +909,26 @@ class SaleServiceTest {
                         valid.deferredOrder().idempotencyKey(),
                         DeliveryMethod.store_pickup,
                         TransportMode.customer,
-                        valid.deferredOrder().deliveryAddress(),
+                        null,
                         valid.deferredOrder().notificationContact()));
-        assertThatThrownBy(() -> service.create(storePickup))
-                .isInstanceOfSatisfying(BusinessException.class,
-                        exception -> assertThat(exception.getCode())
-                                .isEqualTo("DEFERRED_DELIVERY_METHOD_NOT_SUPPORTED"));
+
+        var result = service.create(storePickup);
+
+        assertThat(result.order().deliveryMethod()).isEqualTo(DeliveryMethod.store_pickup);
+        assertThat(result.order().deliveryAddress()).isNull();
+        assertThat(result.order().storePickupContact()).isNull();
+        assertThat(result.sourceOrderId()).isEqualTo(order.getId());
+        assertThat(result.pickingOrder().id()).isEqualTo(picking.getId());
+        verify(reservationLifecycle).reserve(any());
+        verifyNoInteractions(inventory, traceabilityMutation);
+        verifyNoInteractions(inventoryMovements);
+    }
+
+    @Test
+    void rejectsConflictingSourceOrderInput() {
+        reset(branchAccess);
+        CreateSaleRequest valid = deferredRequest(
+                new BigDecimal("20.00"), BigDecimal.ONE, UUID.randomUUID());
 
         CreateSaleRequest conflicting = new CreateSaleRequest(
                 valid.branchId(), valid.cashShiftId(), valid.customerId(), valid.taxTotal(),
@@ -923,14 +942,69 @@ class SaleServiceTest {
     }
 
     @Test
+    void rejectsImmediateAsDeferredDeliveryMethod() {
+        reset(branchAccess);
+        CreateSaleRequest valid = deferredRequest(
+                new BigDecimal("20.00"), BigDecimal.ONE, UUID.randomUUID());
+        CreateSaleRequest unsupported = new CreateSaleRequest(
+                valid.branchId(), valid.cashShiftId(), valid.customerId(), valid.taxTotal(),
+                valid.items(), valid.payments(), valid.confirmationId(), valid.document(), null,
+                new CreateSaleRequest.DeferredOrder(
+                        valid.deferredOrder().idempotencyKey(),
+                        DeliveryMethod.immediate,
+                        TransportMode.none,
+                        null,
+                        valid.deferredOrder().notificationContact()));
+
+        assertThatThrownBy(() -> service.create(unsupported))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("DEFERRED_DELIVERY_METHOD_NOT_SUPPORTED"));
+
+        verifyNoInteractions(products, orders, sales, reservationLifecycle, pickingService);
+    }
+
+    @Test
+    void deferredFingerprintDistinguishesHomeDeliveryAndStorePickup() {
+        reset(currentUser, branchAccess);
+        CreateSaleRequest home = deferredRequest(
+                new BigDecimal("20.00"), BigDecimal.ONE, UUID.randomUUID());
+        CreateSaleRequest pickup = new CreateSaleRequest(
+                home.branchId(), home.cashShiftId(), home.customerId(), home.taxTotal(),
+                home.items(), home.payments(), home.confirmationId(), home.document(), null,
+                new CreateSaleRequest.DeferredOrder(
+                        home.deferredOrder().idempotencyKey(),
+                        DeliveryMethod.store_pickup,
+                        TransportMode.customer,
+                        null,
+                        home.deferredOrder().notificationContact()));
+
+        String homeFingerprint = ReflectionTestUtils.invokeMethod(service, "fingerprint", home);
+        String pickupFingerprint = ReflectionTestUtils.invokeMethod(service, "fingerprint", pickup);
+
+        assertThat(pickupFingerprint).isNotEqualTo(homeFingerprint);
+    }
+
+    @Test
     void replayOfDeferredConfirmationReturnsSameOrderAndPickingWithoutNewEffects() {
         Product product = product();
         UUID confirmationId = UUID.randomUUID();
-        CreateSaleRequest request = deferredRequest(
+        CreateSaleRequest homeRequest = deferredRequest(
                 new BigDecimal("20.00"), BigDecimal.ONE, confirmationId);
+        CreateSaleRequest request = new CreateSaleRequest(
+                homeRequest.branchId(), homeRequest.cashShiftId(), homeRequest.customerId(),
+                homeRequest.taxTotal(), homeRequest.items(), homeRequest.payments(),
+                homeRequest.confirmationId(), homeRequest.document(), null,
+                new CreateSaleRequest.DeferredOrder(
+                        homeRequest.deferredOrder().idempotencyKey(),
+                        DeliveryMethod.store_pickup,
+                        TransportMode.customer,
+                        null,
+                        homeRequest.deferredOrder().notificationContact()));
         when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product));
         stubSalePersistence();
         Order order = stubDeferredOrderPersistence();
+        order.setDeliveryMethod(DeliveryMethod.store_pickup);
         PickingOrder picking = picking(order);
         when(pickingService.ensureForOrder(tenant, order.getId())).thenReturn(Optional.of(picking));
 
@@ -964,6 +1038,7 @@ class SaleServiceTest {
 
         assertThat(replay.id()).isEqualTo(first.id());
         assertThat(replay.order().id()).isEqualTo(first.order().id());
+        assertThat(replay.order().deliveryMethod()).isEqualTo(DeliveryMethod.store_pickup);
         assertThat(replay.pickingOrder().id()).isEqualTo(first.pickingOrder().id());
         assertThat(replay.idempotent()).isTrue();
         verify(orders, times(1)).saveAndFlush(any());
@@ -1035,6 +1110,8 @@ class SaleServiceTest {
         UUID orderId = UUID.randomUUID();
         sale.setSourceOrderId(orderId);
         Order order = deferredOrder(orderId);
+        order.setDeliveryMethod(DeliveryMethod.store_pickup);
+        order.setStatus(OrderStatus.ready_for_pickup);
         InventoryReservation reservation = InventoryReservation.builder()
                 .status(InventoryReservationStatus.active).build();
         ReflectionTestUtils.setField(reservation, "id", UUID.randomUUID());
@@ -1072,6 +1149,27 @@ class SaleServiceTest {
         verify(reservationLifecycle, never()).release(any(), any());
         verify(orders, never()).save(any());
         verifyNoInteractions(inventory);
+    }
+
+    @Test
+    void rejectsStorePickupVoidAfterHandover() {
+        Sale sale = sale(SaleStatus.completed);
+        UUID orderId = UUID.randomUUID();
+        sale.setSourceOrderId(orderId);
+        Order order = deferredOrder(orderId);
+        order.setDeliveryMethod(DeliveryMethod.store_pickup);
+        order.setStatus(OrderStatus.delivered);
+        order.setDeliveredAt(Instant.now());
+        when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
+        when(orders.findByTenantIdAndIdForUpdate(tenant, orderId)).thenReturn(Optional.of(order));
+
+        assertThatThrownBy(() -> service.voidSale(sale.getId()))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("DEFERRED_SALE_ALREADY_FULFILLED"));
+
+        verifyNoInteractions(reservationLifecycle, inventory, inventoryMovements);
+        verify(orders, never()).save(any());
     }
 
     @Test

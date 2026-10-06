@@ -343,7 +343,7 @@ public class SaleService {
                 .source(OrderSource.pos)
                 .customerId(request.customerId())
                 .status(OrderStatus.confirmed)
-                .deliveryMethod(DeliveryMethod.home_delivery)
+                .deliveryMethod(deferred.deliveryMethod())
                 .transportMode(deferred.transportMode())
                 .deliveryAddress(json(deferred.deliveryAddress()))
                 .notificationContact(json(deferred.notificationContact()))
@@ -684,7 +684,7 @@ public class SaleService {
         Order order = orders.findByTenantIdAndIdForUpdate(tenantId, sale.getSourceOrderId())
                 .filter(found -> found.getBranchId().equals(sale.getBranchId())
                         && found.getSource() == OrderSource.pos
-                        && found.getDeliveryMethod() == DeliveryMethod.home_delivery)
+                        && isSupportedDeferredDeliveryMethod(found.getDeliveryMethod()))
                 .orElseThrow(SaleService::incompleteDeferredConfirmation);
         if (order.getStatus() == OrderStatus.dispatched
                 || order.getStatus() == OrderStatus.delivered) {
@@ -948,7 +948,7 @@ public class SaleService {
             Order order = orders.findByTenantIdAndId(tenantId, sale.getSourceOrderId())
                     .filter(found -> found.getBranchId().equals(sale.getBranchId())
                             && found.getSource() == OrderSource.pos
-                            && found.getDeliveryMethod() == DeliveryMethod.home_delivery)
+                            && isSupportedDeferredDeliveryMethod(found.getDeliveryMethod()))
                     .orElseThrow(SaleService::incompleteDeferredConfirmation);
             PickingOrder picking = pickingOrders.findByTenantIdAndSourceTypeAndSourceId(
                             tenantId,
@@ -1034,11 +1034,11 @@ public class SaleService {
     private static NormalizedDeferredOrder normalizeDeferredOrder(
             CreateSaleRequest.DeferredOrder input) {
         if (input == null) return null;
-        if (input.deliveryMethod() != DeliveryMethod.home_delivery) {
+        if (!isSupportedDeferredDeliveryMethod(input.deliveryMethod())) {
             throw new BusinessException(
                     HttpStatus.BAD_REQUEST,
                     "DEFERRED_DELIVERY_METHOD_NOT_SUPPORTED",
-                    "Este incremento solo admite entrega a domicilio.");
+                    "La venta diferida solo admite entrega a domicilio o retiro en tienda.");
         }
         String idempotencyKey = trimToNull(input.idempotencyKey());
         if (idempotencyKey == null || idempotencyKey.length() > 124) {
@@ -1053,37 +1053,40 @@ public class SaleService {
                     "TRANSPORT_MODE_REQUIRED",
                     "El modo de transporte es requerido.");
         }
-        CreateSaleRequest.DeliveryAddress address = input.deliveryAddress();
-        if (address == null
-                || trimToNull(address.recipientName()) == null
-                || trimToNull(address.recipientPhone()) == null
-                || trimToNull(address.line1()) == null
-                || trimToNull(address.city()) == null
-                || trimToNull(address.country()) == null) {
-            throw new BusinessException(
-                    HttpStatus.BAD_REQUEST,
-                    "DELIVERY_ADDRESS_REQUIRED",
-                    "La entrega a domicilio requiere una direccion completa.");
+        Map<String, Object> normalizedAddress = null;
+        if (input.deliveryMethod() == DeliveryMethod.home_delivery) {
+            CreateSaleRequest.DeliveryAddress address = input.deliveryAddress();
+            if (address == null
+                    || trimToNull(address.recipientName()) == null
+                    || trimToNull(address.recipientPhone()) == null
+                    || trimToNull(address.line1()) == null
+                    || trimToNull(address.city()) == null
+                    || trimToNull(address.country()) == null) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "DELIVERY_ADDRESS_REQUIRED",
+                        "La entrega a domicilio requiere una direccion completa.");
+            }
+            String phone;
+            try {
+                phone = PhoneNormalizer.normalize(address.recipientPhone());
+            } catch (IllegalArgumentException exception) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "DELIVERY_PHONE_INVALID",
+                        "El telefono de entrega no es valido.");
+            }
+            normalizedAddress = new LinkedHashMap<>();
+            normalizedAddress.put("recipientName", address.recipientName().trim());
+            normalizedAddress.put("recipientPhone", phone);
+            normalizedAddress.put("line1", address.line1().trim());
+            putIfNotNull(normalizedAddress, "line2", trimToNull(address.line2()));
+            normalizedAddress.put("city", address.city().trim());
+            putIfNotNull(normalizedAddress, "stateOrDepartment", trimToNull(address.stateOrDepartment()));
+            putIfNotNull(normalizedAddress, "postalCode", trimToNull(address.postalCode()));
+            normalizedAddress.put("country", address.country().trim());
+            putIfNotNull(normalizedAddress, "references", trimToNull(address.references()));
         }
-        String phone;
-        try {
-            phone = PhoneNormalizer.normalize(address.recipientPhone());
-        } catch (IllegalArgumentException exception) {
-            throw new BusinessException(
-                    HttpStatus.BAD_REQUEST,
-                    "DELIVERY_PHONE_INVALID",
-                    "El telefono de entrega no es valido.");
-        }
-        Map<String, Object> normalizedAddress = new LinkedHashMap<>();
-        normalizedAddress.put("recipientName", address.recipientName().trim());
-        normalizedAddress.put("recipientPhone", phone);
-        normalizedAddress.put("line1", address.line1().trim());
-        putIfNotNull(normalizedAddress, "line2", trimToNull(address.line2()));
-        normalizedAddress.put("city", address.city().trim());
-        putIfNotNull(normalizedAddress, "stateOrDepartment", trimToNull(address.stateOrDepartment()));
-        putIfNotNull(normalizedAddress, "postalCode", trimToNull(address.postalCode()));
-        normalizedAddress.put("country", address.country().trim());
-        putIfNotNull(normalizedAddress, "references", trimToNull(address.references()));
 
         Map<String, Object> notification = null;
         if (input.notificationContact() != null) {
@@ -1109,7 +1112,16 @@ public class SaleService {
             }
         }
         return new NormalizedDeferredOrder(
-                idempotencyKey, input.transportMode(), normalizedAddress, notification);
+                idempotencyKey,
+                input.deliveryMethod(),
+                input.transportMode(),
+                normalizedAddress,
+                notification);
+    }
+
+    private static boolean isSupportedDeferredDeliveryMethod(DeliveryMethod deliveryMethod) {
+        return deliveryMethod == DeliveryMethod.home_delivery
+                || deliveryMethod == DeliveryMethod.store_pickup;
     }
 
     private static void putIfNotNull(Map<String, Object> values, String key, Object value) {
@@ -1160,7 +1172,7 @@ public class SaleService {
     private static String deferredFingerprint(NormalizedDeferredOrder deferred) {
         if (deferred == null) return "immediate";
         return deferred.idempotencyKey()
-                + ":" + DeliveryMethod.home_delivery
+                + ":" + deferred.deliveryMethod()
                 + ":" + deferred.transportMode()
                 + ":" + deferred.deliveryAddress()
                 + ":" + deferred.notificationContact();
@@ -1285,6 +1297,7 @@ public class SaleService {
 
     private record NormalizedDeferredOrder(
             String idempotencyKey,
+            DeliveryMethod deliveryMethod,
             com.omniretail.backend.ecommerce.entity.TransportMode transportMode,
             Map<String, Object> deliveryAddress,
             Map<String, Object> notificationContact) {}

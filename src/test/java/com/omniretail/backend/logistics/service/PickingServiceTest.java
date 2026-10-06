@@ -105,8 +105,23 @@ class PickingServiceTest {
     }
 
     @Test
-    void rejectsStorePickupOrders() {
+    void createsPickingForPosStorePickup() {
         Fixture storePickup = fixture("store_pickup", false);
+        jdbc.update("UPDATE orders SET source = 'pos' WHERE id = ?", storePickup.orderId());
+        entityManager.flush();
+        entityManager.clear();
+
+        PickingOrder picking = service.ensureForOrder(
+                storePickup.tenantId(), storePickup.orderId()).orElseThrow();
+
+        assertThat(picking.getSourceType()).isEqualTo(PickingSourceType.order);
+        assertThat(picking.getSourceId()).isEqualTo(storePickup.orderId());
+    }
+
+    @Test
+    void rejectsEcommerceStorePickup() {
+        Fixture storePickup = fixture("store_pickup", false);
+
         assertCode(
                 () -> service.ensureForOrder(storePickup.tenantId(), storePickup.orderId()),
                 "PICKING_ORDER_NOT_ELIGIBLE");

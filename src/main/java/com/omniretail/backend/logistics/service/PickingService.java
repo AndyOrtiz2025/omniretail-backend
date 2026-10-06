@@ -687,23 +687,26 @@ public class PickingService {
     }
 
     private static void requireEligibleOrderSource(Order order) {
-        if ((order.getSource() != OrderSource.ecommerce
-                        && order.getSource() != OrderSource.pos)
-                || order.getDeliveryMethod() != DeliveryMethod.home_delivery) {
+        if (!isEligibleOrderSource(order)) {
             throw conflict(
                     "PICKING_ORDER_NOT_ELIGIBLE",
-                    "Solo los pedidos ecommerce o POS con entrega a domicilio admiten Picking.");
+                    "El pedido no admite Picking.");
         }
     }
 
     private static void requireMutablePicking(PickingOrder picking, SourceContext source) {
         requireNonTerminal(picking);
-        if (source.order() != null
-                && ((source.order().getSource() != OrderSource.ecommerce
-                                && source.order().getSource() != OrderSource.pos)
-                        || source.order().getDeliveryMethod() != DeliveryMethod.home_delivery)) {
+        if (source.order() != null && !isEligibleOrderSource(source.order())) {
             throw conflict("PICKING_ORDER_NOT_ELIGIBLE", "El pedido no admite Picking.");
         }
+    }
+
+    private static boolean isEligibleOrderSource(Order order) {
+        return (order.getSource() == OrderSource.ecommerce
+                        && order.getDeliveryMethod() == DeliveryMethod.home_delivery)
+                || (order.getSource() == OrderSource.pos
+                        && (order.getDeliveryMethod() == DeliveryMethod.home_delivery
+                                || order.getDeliveryMethod() == DeliveryMethod.store_pickup));
     }
 
     private static void requireEligibleTransfer(InventoryTransfer transfer) {

@@ -125,6 +125,36 @@ class PackingServiceTest {
     }
 
     @Test
+    void finalizesPosStorePickupAsReadyForPickupWithoutTouchingInventory() {
+        Fixture fixture = fixture();
+        jdbc.update(
+                "UPDATE orders SET source = 'pos', delivery_method = 'store_pickup', "
+                        + "delivery_address = NULL WHERE id = ?",
+                fixture.orderId());
+        actor(fixture);
+
+        service.savePreparation(
+                fixture.branchId(), fixture.packingId(), preparation(0L, "pickup-prepare", "2.750", 2));
+        PackingActionResponse labeled = service.generateLabel(
+                fixture.branchId(), fixture.packingId(), versioned(1L, "pickup-label"));
+        service.registerLabelPrint(
+                fixture.branchId(),
+                fixture.packingId(),
+                new RegisterPackingLabelPrintRequest(
+                        2L, "pickup-print", labeled.packing().labelGenerationId()));
+
+        PackingFinalizeResponse finalized = service.finalizePacking(
+                fixture.branchId(), fixture.packingId(), versioned(3L, "pickup-finalize"));
+
+        assertThat(finalized.orderStatus()).isEqualTo(OrderStatus.ready_for_pickup);
+        assertThat(orderStatus(fixture)).isEqualTo(OrderStatus.ready_for_pickup.name());
+        assertThat(physicalQuantity(fixture)).isEqualByComparingTo("10.000");
+        assertThat(reservedQuantity(fixture)).isEqualByComparingTo("5.000");
+        assertThat(reservationStatus(fixture)).isEqualTo(InventoryReservationStatus.active.name());
+        assertThat(movementCount(fixture)).isZero();
+    }
+
+    @Test
     void historicalRetryReturnsItsOriginalSnapshotBeforeCheckingStaleVersion() {
         Fixture fixture = fixture();
         actor(fixture);
