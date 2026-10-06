@@ -1,0 +1,29 @@
+databaseChangeLog:
+  - changeSet:
+      id: 999-09-seed-mobile-customer
+      author: joga17000
+      context: dev
+      # Una version previa de este changeset (author distinto) pudo ejecutarse en bases locales;
+      # si la ficha ya existe se marca como ejecutado en lugar de fallar por clave duplicada.
+      preConditions:
+        - onFail: MARK_RAN
+        - sqlCheck:
+            expectedResult: 0
+            sql: SELECT COUNT(*) FROM customers WHERE id = '99999999-9999-9999-9999-999999999901'
+      changes:
+        - sql:
+            sql: |
+              INSERT INTO customers (id, tenant_id, user_id, code, name, email, status)
+              VALUES (
+                '99999999-9999-9999-9999-999999999901',
+                '11111111-1111-1111-1111-111111111111',
+                '44444444-4444-4444-4444-444444444443',
+                'CLI-DEMO-001',
+                'Ana Cliente',
+                'ana@example.com',
+                'active'
+              );
+
+              UPDATE users
+              SET customer_id = '99999999-9999-9999-9999-999999999901'
+              WHERE id = '44444444-4444-4444-4444-444444444443';
