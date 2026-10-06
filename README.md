@@ -30,7 +30,7 @@ Credenciales del cliente demo para la app movil:
 
 - Tienda: `ferrepharma-demo`
 - Email: `ana@example.com`
-- Password: `Cliente123!`
+- Password: `ClienteDemo1`
 
 Si un puerto está ocupado en tu máquina, cámbialo **solo en tu `.env`** (`POSTGRES_PORT`,
 `SERVER_PORT`, ...). El `.env` no se sube a git y los defaults del equipo no cambian.

@@ -1,8 +1,15 @@
 databaseChangeLog:
   - changeSet:
       id: 999-09-seed-mobile-customer
-      author: opencode
+      author: joga17000
       context: dev
+      # Una version previa de este changeset (author distinto) pudo ejecutarse en bases locales;
+      # si la ficha ya existe se marca como ejecutado en lugar de fallar por clave duplicada.
+      preConditions:
+        - onFail: MARK_RAN
+        - sqlCheck:
+            expectedResult: 0
+            sql: SELECT COUNT(*) FROM customers WHERE id = '99999999-9999-9999-9999-999999999901'
       changes:
         - sql:
             sql: |
@@ -20,7 +27,3 @@ databaseChangeLog:
               UPDATE users
               SET customer_id = '99999999-9999-9999-9999-999999999901'
               WHERE id = '44444444-4444-4444-4444-444444444443';
-
-              UPDATE auth_accounts
-              SET password_hash = '$2a$10$VTJVOtyRHpiAq6AMhkXubO6ziXDdoHcpb4nFXAixpjBZJpiRv63sO'
-              WHERE user_id = '44444444-4444-4444-4444-444444444443';
