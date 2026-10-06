@@ -438,6 +438,26 @@ class InventoryTransferServiceIntegrationTest {
         TraceableTransfer traceable = readyTraceableTransfer("trace-partial");
         InventoryTransferResponse transfer = traceable.transfer();
 
+        var packing = packings
+                .findByTenantIdAndBranchIdAndSourceTypeAndSourceId(
+                        fixture.tenantId(),
+                        fixture.sourceBranchId(),
+                        PackingSourceType.transfer,
+                        transfer.id())
+                .orElseThrow();
+        assertThat(packingService.getDetail(fixture.sourceBranchId(), packing.getId())
+                        .preparedContents())
+                .singleElement()
+                .satisfies(content -> {
+                    assertThat(content.trackingSelections()).singleElement().satisfies(selection -> {
+                        assertThat(selection.locationId()).isEqualTo(traceable.sourceLocationId());
+                        assertThat(selection.lotId()).isEqualTo(traceable.lotId());
+                        assertThat(selection.lotNumber()).isEqualTo("TRACE-LOT-trace-partial");
+                        assertThat(selection.quantity()).isEqualByComparingTo("2.000");
+                        assertThat(selection.serialNumbers()).containsExactly("TRACE-A", "TRACE-B");
+                    });
+                });
+
         var dispatch = dispatchService.confirmTransfer(
                 fixture.sourceBranchId(),
                 transfer.id(),

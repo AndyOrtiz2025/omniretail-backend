@@ -102,6 +102,7 @@ public class DispatchService {
     private final InventoryTransferItemRepository transferItems;
     private final PickingOrderRepository pickingOrders;
     private final PickingItemRepository pickingItems;
+    private final OrderFulfillmentConsumptionService orderFulfillmentConsumption;
     private final BranchAccessResolver branchAccessResolver;
     private final CurrentUser currentUser;
     private final TenantCapabilityGuard tenantCapabilityGuard;
@@ -232,31 +233,8 @@ public class DispatchService {
                 .isPresent()) {
             throw conflict("DISPATCH_ALREADY_EXISTS", "El pedido ya tiene un despacho.");
         }
-        List<InventoryReservation> active =
-                reservations.findByTenantIdAndSourceTypeAndSourceIdAndStatus(
-                        actor.tenantId(),
-                        InventoryReservationSourceType.order,
-                        orderId,
-                        InventoryReservationStatus.active);
-        if (active.isEmpty()) {
-            throw conflict(
-                    "INVENTORY_RESERVATION_NOT_ACTIVE",
-                    "El pedido no tiene reservas activas.");
-        }
-        Map<UUID, Product> activeProducts = new java.util.HashMap<>();
-        for (InventoryReservation reservation : active) {
-            Product product = products
-                    .findByTenantIdAndId(actor.tenantId(), reservation.getProductId())
-                    .orElseThrow(() -> notFound(
-                            "PRODUCT_NOT_FOUND", "Producto no encontrado."));
-            activeProducts.put(product.getId(), product);
-            if (isTraceable(product)) {
-                requirePickingSelection(
-                        actor.tenantId(), branchId, PickingSourceType.order, orderId,
-                        reservation.getSourceLineId(), product, reservation.getQuantity());
-            }
-        }
-
+        OrderFulfillmentConsumptionService.PreparedOrderConsumption preparedConsumption =
+                orderFulfillmentConsumption.prepareOrder(actor.tenantId(), branchId, orderId);
         Instant now = Instant.now();
         Dispatch newDispatch = Dispatch.builder()
                 .branchId(branchId)
@@ -272,58 +250,12 @@ public class DispatchService {
                 .build();
         newDispatch.setTenantId(actor.tenantId());
         Dispatch dispatch = dispatches.saveAndFlush(newDispatch);
-        for (InventoryReservation reservation : active) {
-            Product product = activeProducts.get(reservation.getProductId());
-            List<Allocation> reservationAllocations = allocations(reservation);
-            BigDecimal aggregateBefore = isTraceable(product)
-                    ? aggregateQuantity(actor.tenantId(), reservationAllocations)
-                    : null;
-            reservationLifecycle.consume(actor.tenantId(), reservation.getId());
-            if (isTraceable(product)) {
-                PickingSelection selection = requirePickingSelection(
-                        actor.tenantId(), branchId, PickingSourceType.order, orderId,
-                        reservation.getSourceLineId(), product, reservation.getQuantity());
-                traceabilityMutation.consumePhysicalReservation(
-                        actor.tenantId(),
-                        branchId,
-                        product,
-                        selection.item().getLocationId(),
-                        reservation.getQuantity(),
-                        selection.selections(),
-                        InventorySerialStatus.CONSUMED,
-                        aggregateBefore,
-                        aggregateBefore.subtract(reservation.getQuantity()),
-                        "Despacho ecommerce confirmado",
-                        "dispatch",
-                        dispatch.getId(),
-                        reservation.getSourceLineId(),
-                        actor.userId());
-                continue;
-            }
-            for (Allocation allocation : reservationAllocations) {
-                var balance = balances.findByTenantIdAndId(
-                                actor.tenantId(), allocation.balanceId())
-                        .orElseThrow(() -> conflict(
-                                "INVENTORY_RESERVATION_INCONSISTENT",
-                                "La reserva no coincide con el balance de inventario."));
-                movements.save(InventoryMovement.builder()
-                        .tenantId(actor.tenantId())
-                        .branchId(branchId)
-                        .productId(reservation.getProductId())
-                        .type(InventoryMovementType.out)
-                        .reason("Despacho ecommerce confirmado")
-                        .quantity(allocation.quantity())
-                        .quantityBefore(balance.getQuantity().add(allocation.quantity()))
-                        .quantityAfter(balance.getQuantity())
-                        .fromLocationId(balance.getLocationId())
-                        .toLocationId(null)
-                        .referenceType("dispatch")
-                        .referenceId(dispatch.getId())
-                        .referenceLineId(reservation.getSourceLineId())
-                        .performedByUserId(actor.userId())
-                        .build());
-            }
-        }
+        orderFulfillmentConsumption.consumePrepared(
+                preparedConsumption,
+                actor.userId(),
+                "Despacho ecommerce confirmado",
+                "dispatch",
+                dispatch.getId());
         List<DispatchPackage> saved = packages.saveAll(requestedPackages.stream()
                 .map(packageRequest -> DispatchPackage.builder()
                         .dispatchId(dispatch.getId())
@@ -778,29 +710,6 @@ public class DispatchService {
 
     private static String trimToNull(String value) {
         return value == null || value.trim().isEmpty() ? null : value.trim();
-    }
-
-    private List<Allocation> allocations(InventoryReservation reservation) {
-        JsonNode root = jsonMapper.readTree(reservation.getAllocations());
-        if (!root.isArray() || root.isEmpty()) {
-            UUID balanceId = balances
-                    .findByTenantIdAndBranchIdAndProductIdAndLocationIdIsNull(
-                            reservation.getTenantId(),
-                            reservation.getBranchId(),
-                            reservation.getProductId())
-                    .orElseThrow(() -> conflict(
-                            "INVENTORY_RESERVATION_INCONSISTENT",
-                            "La reserva no coincide con el balance de inventario."))
-                    .getId();
-            return List.of(new Allocation(balanceId, reservation.getQuantity()));
-        }
-        List<Allocation> result = new ArrayList<>();
-        for (JsonNode node : root) {
-            result.add(new Allocation(
-                    UUID.fromString(node.get("balanceId").asText()),
-                    new BigDecimal(node.get("reservedQuantity").asText())));
-        }
-        return result;
     }
 
     private List<Allocation> transferAllocations(InventoryReservation reservation) {

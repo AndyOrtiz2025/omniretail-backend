@@ -8,6 +8,7 @@ import com.omniretail.backend.pos.entity.CashMovementType;
 import com.omniretail.backend.pos.entity.CashShiftStatus;
 import com.omniretail.backend.pos.repository.CashMovementRepository;
 import com.omniretail.backend.pos.repository.CashShiftRepository;
+import com.omniretail.backend.pos.repository.SaleRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
@@ -16,7 +17,11 @@ import com.omniretail.backend.shared.security.TenantCapabilityGuard;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -31,6 +36,7 @@ public class CashMovementService {
     private final CashShiftRepository shifts;
     private final CashMovementRepository movements;
     private final BranchAccessResolver branchAccessResolver;
+    private final SaleRepository sales;
 
     public CashMovementResponse create(CreateCashMovementRequest request) {
         AuthenticatedUser actor = currentUser.require();
@@ -68,8 +74,30 @@ public class CashMovementService {
                 .filter(found -> found.getUserId().equals(actor.userId())
                         || branchAccessResolver.resolve(actor).allows(found.getBranchId()))
                 .orElseThrow(this::notFound);
-        return movements.findByTenantIdAndCashShiftIdOrderByCreatedAtAscIdAsc(actor.tenantId(), shift.getId())
-                .stream().map(CashMovementResponse::from).toList();
+        List<CashMovement> shiftMovements = movements
+                .findByTenantIdAndCashShiftIdOrderByCreatedAtAscIdAsc(actor.tenantId(), shift.getId());
+        Set<UUID> saleIds = shiftMovements.stream()
+                .filter(CashMovementService::referencesSale)
+                .map(CashMovement::getReferenceId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<UUID, String> saleNumbers = saleIds.isEmpty()
+                ? Map.of()
+                : sales.findByTenantIdAndIdIn(actor.tenantId(), saleIds).stream()
+                        .collect(Collectors.toMap(
+                                sale -> sale.getId(),
+                                sale -> sale.getNumber(),
+                                (first, second) -> first));
+        return shiftMovements.stream()
+                .map(movement -> CashMovementResponse.from(
+                        movement,
+                        referencesSale(movement) ? saleNumbers.get(movement.getReferenceId()) : null))
+                .toList();
+    }
+
+    private static boolean referencesSale(CashMovement movement) {
+        return "sale".equals(movement.getReferenceType())
+                || "sale_void".equals(movement.getReferenceType());
     }
 
     private BusinessException notFound() {

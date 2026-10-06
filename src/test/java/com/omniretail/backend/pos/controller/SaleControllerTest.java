@@ -6,15 +6,22 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.omniretail.backend.SubscriptionTestFixtures;
 import com.omniretail.backend.TestcontainersConfiguration;
+import com.omniretail.backend.administration.entity.Branch;
+import com.omniretail.backend.administration.entity.BranchStatus;
+import com.omniretail.backend.administration.entity.BranchType;
 import com.omniretail.backend.administration.entity.Role;
 import com.omniretail.backend.administration.entity.RoleStatus;
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.entity.User;
 import com.omniretail.backend.administration.entity.UserType;
+import com.omniretail.backend.administration.repository.BranchRepository;
 import com.omniretail.backend.administration.repository.RoleRepository;
+import com.omniretail.backend.administration.repository.SaasPlanRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
+import com.omniretail.backend.administration.repository.TenantSubscriptionRepository;
 import com.omniretail.backend.administration.repository.UserRepository;
 import com.omniretail.backend.auth.entity.Session;
 import com.omniretail.backend.auth.repository.SessionRepository;
@@ -42,7 +49,10 @@ class SaleControllerTest {
     private MockMvc mockMvc;
 
     @Autowired private TenantRepository tenantRepository;
+    @Autowired private BranchRepository branchRepository;
     @Autowired private RoleRepository roleRepository;
+    @Autowired private SaasPlanRepository planRepository;
+    @Autowired private TenantSubscriptionRepository subscriptionRepository;
     @Autowired private UserRepository userRepository;
     @Autowired private SessionRepository sessionRepository;
     @Autowired private JwtService jwtService;
@@ -62,6 +72,8 @@ class SaleControllerTest {
 
         mockMvc.perform(get("/api/v1/pos/sales").param("branchId", branchId))
                 .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/v1/pos/sales/history").param("branchId", branchId))
+                .andExpect(status().isUnauthorized());
         mockMvc.perform(get("/api/v1/pos/sales/{id}", saleId))
                 .andExpect(status().isUnauthorized());
         mockMvc.perform(post("/api/v1/pos/sales/{id}/void", saleId))
@@ -80,9 +92,65 @@ class SaleControllerTest {
         mockMvc.perform(get("/api/v1/pos/sales/{id}", saleId)
                         .header("Authorization", "Bearer " + token))
                 .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/v1/pos/sales/history").param("branchId", branchId)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isForbidden());
         mockMvc.perform(post("/api/v1/pos/sales/{id}/void", saleId)
                         .header("Authorization", "Bearer " + token))
                 .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void salesHistoryAllowsAuthenticatedUserWithReadPermission() throws Exception {
+        AuthorizedHistoryFixture fixture = authorizedHistoryFixture();
+
+        mockMvc.perform(get("/api/v1/pos/sales/history")
+                        .param("branchId", fixture.branchId().toString())
+                        .header("Authorization", "Bearer " + fixture.token()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items").isArray())
+                .andExpect(jsonPath("$.summary.total").value(0));
+    }
+
+    private AuthorizedHistoryFixture authorizedHistoryFixture() {
+        Tenant tenant = tenantRepository.save(Tenant.builder()
+                .name("Tienda " + UUID.randomUUID())
+                .slug("tienda-" + UUID.randomUUID())
+                .status(TenantStatus.active)
+                .defaultCurrency("GTQ")
+                .timezone("America/Guatemala")
+                .build());
+        SubscriptionTestFixtures.provisionBasic(subscriptionRepository, planRepository, tenant.getId());
+        Branch branch = Branch.builder()
+                .code("POS-" + UUID.randomUUID().toString().substring(0, 8))
+                .name("Sucursal POS")
+                .type(BranchType.store)
+                .status(BranchStatus.active)
+                .build();
+        branch.setTenantId(tenant.getId());
+        branch = branchRepository.save(branch);
+        Role role = Role.builder()
+                .name("Rol " + UUID.randomUUID())
+                .status(RoleStatus.active)
+                .permissions(List.of("pos.sales.read"))
+                .build();
+        role.setTenantId(tenant.getId());
+        role = roleRepository.save(role);
+        User user = User.builder()
+                .name("Empleado")
+                .email("user-" + UUID.randomUUID() + "@test.local")
+                .type(UserType.employee)
+                .roleId(role.getId())
+                .branchId(branch.getId())
+                .build();
+        user.setTenantId(tenant.getId());
+        user = userRepository.save(user);
+        Session session = sessionRepository.save(Session.builder()
+                .userId(user.getId())
+                .activeBranchId(branch.getId())
+                .expiresAt(Instant.now().plus(1, ChronoUnit.HOURS).truncatedTo(ChronoUnit.SECONDS))
+                .build());
+        return new AuthorizedHistoryFixture(jwtService.generateToken(user, session), branch.getId());
     }
 
     private String tokenWithoutPosPermissions() {
@@ -105,4 +173,6 @@ class SaleControllerTest {
                 .expiresAt(Instant.now().plus(1, ChronoUnit.HOURS).truncatedTo(ChronoUnit.SECONDS)).build());
         return jwtService.generateToken(user, session);
     }
+
+    private record AuthorizedHistoryFixture(String token, UUID branchId) {}
 }

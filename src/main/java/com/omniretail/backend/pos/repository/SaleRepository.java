@@ -2,19 +2,20 @@ package com.omniretail.backend.pos.repository;
 
 import com.omniretail.backend.pos.entity.Sale;
 import com.omniretail.backend.pos.entity.SaleStatus;
+import jakarta.persistence.LockModeType;
 import java.time.Instant;
-import java.util.List;
 import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Lock;
-import org.springframework.data.jpa.repository.Query;
-import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
 
-public interface SaleRepository extends JpaRepository<Sale, UUID> {
+public interface SaleRepository extends JpaRepository<Sale, UUID>, JpaSpecificationExecutor<Sale> {
 
     Optional<Sale> findByTenantIdAndId(UUID tenantId, UUID id);
 

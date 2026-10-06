@@ -11,6 +11,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.UUID;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -78,6 +79,9 @@ public class Order extends TenantScopedEntity {
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "store_pickup_contact", columnDefinition = "jsonb", updatable = false)
     private String storePickupContact;
+
+    @Column(name = "delivered_at")
+    private Instant deliveredAt;
 
     @NotNull
     @DecimalMin("0.00")

@@ -125,6 +125,36 @@ class PackingServiceTest {
     }
 
     @Test
+    void finalizesPosStorePickupAsReadyForPickupWithoutTouchingInventory() {
+        Fixture fixture = fixture();
+        jdbc.update(
+                "UPDATE orders SET source = 'pos', delivery_method = 'store_pickup', "
+                        + "delivery_address = NULL WHERE id = ?",
+                fixture.orderId());
+        actor(fixture);
+
+        service.savePreparation(
+                fixture.branchId(), fixture.packingId(), preparation(0L, "pickup-prepare", "2.750", 2));
+        PackingActionResponse labeled = service.generateLabel(
+                fixture.branchId(), fixture.packingId(), versioned(1L, "pickup-label"));
+        service.registerLabelPrint(
+                fixture.branchId(),
+                fixture.packingId(),
+                new RegisterPackingLabelPrintRequest(
+                        2L, "pickup-print", labeled.packing().labelGenerationId()));
+
+        PackingFinalizeResponse finalized = service.finalizePacking(
+                fixture.branchId(), fixture.packingId(), versioned(3L, "pickup-finalize"));
+
+        assertThat(finalized.orderStatus()).isEqualTo(OrderStatus.ready_for_pickup);
+        assertThat(orderStatus(fixture)).isEqualTo(OrderStatus.ready_for_pickup.name());
+        assertThat(physicalQuantity(fixture)).isEqualByComparingTo("10.000");
+        assertThat(reservedQuantity(fixture)).isEqualByComparingTo("5.000");
+        assertThat(reservationStatus(fixture)).isEqualTo(InventoryReservationStatus.active.name());
+        assertThat(movementCount(fixture)).isZero();
+    }
+
+    @Test
     void historicalRetryReturnsItsOriginalSnapshotBeforeCheckingStaleVersion() {
         Fixture fixture = fixture();
         actor(fixture);
@@ -184,15 +214,136 @@ class PackingServiceTest {
     }
 
     @Test
-    void exposesTraceablePreparedContentsWithoutInventingSerials() {
+    void exposesLotSerialAndExpirationSelectionsWithoutTouchingInventory() {
         Fixture fixture = fixture();
         actor(fixture);
-        jdbc.update("UPDATE products SET tracking_serial = true WHERE id = ?", fixture.productId());
+        UUID location = UUID.randomUUID();
+        UUID firstLot = UUID.randomUUID();
+        UUID secondLot = UUID.randomUUID();
+        jdbc.update(
+                "UPDATE products SET tracking_lot = true, tracking_expiration = true, "
+                        + "tracking_serial = true WHERE id = ?",
+                fixture.productId());
+        jdbc.update("""
+                INSERT INTO locations (id, tenant_id, branch_id, code, name, type, status)
+                VALUES (?, ?, ?, 'TRACE-PACK', 'Trazable Packing', 'warehouse', 'active')
+                """, location, fixture.tenantId(), fixture.branchId());
+        jdbc.update("""
+                INSERT INTO inventory_lots
+                    (id, tenant_id, product_id, lot_number, expiration_date)
+                VALUES (?, ?, ?, 'LOT-A', DATE '2030-01-15'),
+                       (?, ?, ?, 'LOT-B', DATE '2030-02-20')
+                """, firstLot, fixture.tenantId(), fixture.productId(),
+                secondLot, fixture.tenantId(), fixture.productId());
+        jdbc.update("""
+                UPDATE picking_items
+                SET location_id = ?, picked_traces = ?::jsonb
+                WHERE picking_order_id = (SELECT picking_order_id FROM packings WHERE id = ?)
+                """,
+                location,
+                """
+                [
+                  {"locationId":"%s","lotId":"%s","quantity":2.000,
+                   "serialNumbers":["SER-A","SER-B"]},
+                  {"locationId":"%s","lotId":"%s","quantity":3.000,
+                   "serialNumbers":["SER-C","SER-D","SER-E"]}
+                ]
+                """.formatted(location, firstLot, location, secondLot),
+                fixture.packingId());
 
-        assertThat(service.getDetail(fixture.branchId(), fixture.packingId())
-                        .preparedContents())
+        var beforePhysical = physicalQuantity(fixture);
+        var beforeReserved = reservedQuantity(fixture);
+        assertThat(service.getDetail(fixture.branchId(), fixture.packingId()).preparedContents())
                 .singleElement()
-                .satisfies(content -> assertThat(content.serialNumbers()).isEmpty());
+                .satisfies(content -> {
+                    assertThat(content.serialNumbers())
+                            .containsExactly("SER-A", "SER-B", "SER-C", "SER-D", "SER-E");
+                    assertThat(content.trackingSelections()).hasSize(2);
+                    assertThat(content.trackingSelections().get(0)).satisfies(selection -> {
+                        assertThat(selection.locationId()).isEqualTo(location);
+                        assertThat(selection.lotId()).isEqualTo(firstLot);
+                        assertThat(selection.lotNumber()).isEqualTo("LOT-A");
+                        assertThat(selection.expirationDate().toString()).isEqualTo("2030-01-15");
+                        assertThat(selection.quantity()).isEqualByComparingTo("2.000");
+                        assertThat(selection.serialNumbers()).containsExactly("SER-A", "SER-B");
+                    });
+                    assertThat(content.trackingSelections().get(1)).satisfies(selection -> {
+                        assertThat(selection.lotId()).isEqualTo(secondLot);
+                        assertThat(selection.lotNumber()).isEqualTo("LOT-B");
+                        assertThat(selection.quantity()).isEqualByComparingTo("3.000");
+                    });
+                });
+        assertThat(physicalQuantity(fixture)).isEqualByComparingTo(beforePhysical);
+        assertThat(reservedQuantity(fixture)).isEqualByComparingTo(beforeReserved);
+        assertThat(reservationStatus(fixture)).isEqualTo(InventoryReservationStatus.active.name());
+        assertThat(movementCount(fixture)).isZero();
+    }
+
+    @Test
+    void rejectsMissingOtherTenantOrWrongProductLotInPickingHistory() {
+        Fixture fixture = fixture();
+        actor(fixture);
+        UUID location = UUID.randomUUID();
+        UUID missingLot = UUID.randomUUID();
+        jdbc.update("UPDATE products SET tracking_lot = true WHERE id = ?", fixture.productId());
+        jdbc.update("""
+                INSERT INTO locations (id, tenant_id, branch_id, code, name, type, status)
+                VALUES (?, ?, ?, 'TRACE-BAD', 'Trazable inconsistente', 'warehouse', 'active')
+                """, location, fixture.tenantId(), fixture.branchId());
+        setPickedTraces(fixture, location, missingLot);
+
+        assertCode(
+                () -> service.getDetail(fixture.branchId(), fixture.packingId()),
+                "PICKING_TRACE_HISTORY_INCONSISTENT");
+
+        UUID otherTenant = UUID.randomUUID();
+        UUID otherTenantLot = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO tenants (id, name, slug, status, default_currency, timezone)
+                VALUES (?, 'Otro tenant', ?, 'active', 'GTQ', 'America/Guatemala')
+                """, otherTenant, "other-" + otherTenant);
+        jdbc.update("""
+                INSERT INTO inventory_lots (id, tenant_id, product_id, lot_number)
+                VALUES (?, ?, ?, 'OTHER-TENANT')
+                """, otherTenantLot, otherTenant, fixture.productId());
+        setPickedTraces(fixture, location, otherTenantLot);
+
+        assertCode(
+                () -> service.getDetail(fixture.branchId(), fixture.packingId()),
+                "PICKING_TRACE_HISTORY_INCONSISTENT");
+
+        UUID otherProduct = UUID.randomUUID();
+        UUID wrongProductLot = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO products
+                    (id, tenant_id, sku, name, product_type, category_id, base_unit_id,
+                     tracking_stock, tracking_lot, tracking_expiration, tracking_serial)
+                SELECT ?, tenant_id, ?, 'Otro producto', product_type, category_id, base_unit_id,
+                       true, true, false, false
+                FROM products WHERE id = ?
+                """, otherProduct, "OTHER-" + otherProduct, fixture.productId());
+        jdbc.update("""
+                INSERT INTO inventory_lots (id, tenant_id, product_id, lot_number)
+                VALUES (?, ?, ?, 'WRONG-PRODUCT')
+                """, wrongProductLot, fixture.tenantId(), otherProduct);
+        setPickedTraces(fixture, location, wrongProductLot);
+
+        assertCode(
+                () -> service.getDetail(fixture.branchId(), fixture.packingId()),
+                "PICKING_TRACE_HISTORY_INCONSISTENT");
+    }
+
+    private void setPickedTraces(Fixture fixture, UUID location, UUID lot) {
+        jdbc.update("""
+                UPDATE picking_items
+                SET location_id = ?, picked_traces = ?::jsonb
+                WHERE picking_order_id = (SELECT picking_order_id FROM packings WHERE id = ?)
+                """,
+                location,
+                """
+                [{"locationId":"%s","lotId":"%s","quantity":5.000,"serialNumbers":[]}]
+                """.formatted(location, lot),
+                fixture.packingId());
     }
 
     private Fixture fixture() {

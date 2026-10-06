@@ -23,7 +23,49 @@ public record PickingLineResponse(
         List<String> availableSerialNumbers,
         Tracking tracking,
         InventoryAvailability inventory,
-        UUID sourceLineId) {
+        UUID sourceLineId,
+        List<PhysicalTraceSelectionResponse> trackingSelections) {
+
+    public PickingLineResponse(
+            UUID pickingLineId,
+            UUID orderItemId,
+            UUID productId,
+            String sku,
+            String name,
+            BigDecimal requiredQuantity,
+            BigDecimal pickedQuantity,
+            BigDecimal remainingQuantity,
+            PickingItemStatus status,
+            Location location,
+            Lot lot,
+            List<String> serialNumbers,
+            List<AvailableLocation> availableLocations,
+            List<AvailableLot> availableLots,
+            List<String> availableSerialNumbers,
+            Tracking tracking,
+            InventoryAvailability inventory,
+            UUID sourceLineId) {
+        this(
+                pickingLineId,
+                orderItemId,
+                productId,
+                sku,
+                name,
+                requiredQuantity,
+                pickedQuantity,
+                remainingQuantity,
+                status,
+                location,
+                lot,
+                serialNumbers,
+                availableLocations,
+                availableLots,
+                availableSerialNumbers,
+                tracking,
+                inventory,
+                sourceLineId,
+                List.of());
+    }
 
     public PickingLineResponse(
             UUID pickingLineId,
@@ -61,7 +103,8 @@ public record PickingLineResponse(
                 availableSerialNumbers,
                 tracking,
                 inventory,
-                orderItemId);
+                orderItemId,
+                List.of());
     }
 
     public record Location(UUID id, String code, String name) {}

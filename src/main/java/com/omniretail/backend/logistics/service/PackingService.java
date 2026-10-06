@@ -21,6 +21,7 @@ import com.omniretail.backend.logistics.dto.PackingFinalizeResponse;
 import com.omniretail.backend.logistics.dto.PackingPreparedContentResponse;
 import com.omniretail.backend.logistics.dto.PackingQueueResponse;
 import com.omniretail.backend.logistics.dto.PackingVersionedRequest;
+import com.omniretail.backend.logistics.dto.PhysicalTraceSelectionResponse;
 import com.omniretail.backend.logistics.dto.RegisterPackingLabelPrintRequest;
 import com.omniretail.backend.logistics.dto.SavePackingPreparationRequest;
 import com.omniretail.backend.logistics.entity.Packing;
@@ -74,6 +75,7 @@ public class PackingService {
     private final InventoryTransferRepository transferRepository;
     private final ProductRepository productRepository;
     private final CustomerRepository customerRepository;
+    private final PickingTraceProjectionService traceProjectionService;
     private final BranchAccessResolver branchAccessResolver;
     private final CurrentUser currentUser;
     private final TenantCapabilityGuard tenantCapabilityGuard;
@@ -223,7 +225,10 @@ public class PackingService {
         packing.setFinalizedByUserId(actor.userId());
         packing.setFinalizedAt(now);
         if (context.order() != null) {
-            context.order().setStatus(OrderStatus.ready_for_dispatch);
+            context.order().setStatus(
+                    context.order().getDeliveryMethod() == DeliveryMethod.store_pickup
+                            ? OrderStatus.ready_for_pickup
+                            : OrderStatus.ready_for_dispatch);
             orderRepository.save(context.order());
         }
         packing = packingRepository.saveAndFlush(packing);
@@ -400,9 +405,14 @@ public class PackingService {
                     if (product == null) {
                         throw conflict("PACKING_PRODUCT_NOT_FOUND", "Producto de Packing no encontrado.");
                     }
+                    List<PhysicalTraceSelectionResponse> trackingSelections =
+                            traceProjectionService.project(tenantId, item, product);
+                    List<String> serialNumbers = trackingSelections.stream()
+                            .flatMap(selection -> selection.serialNumbers().stream())
+                            .toList();
                     return new PackingPreparedContentResponse(
                             item.getProductId(), product.getSku(), product.getName(),
-                            item.getPickedQuantity(), List.of());
+                            item.getPickedQuantity(), serialNumbers, trackingSelections);
                 })
                 .toList();
     }
@@ -502,13 +512,19 @@ public class PackingService {
                 || !packing.getBranchId().equals(order.getBranchId())) {
             throw conflict("PACKING_SOURCE_CONFLICT", "Packing no coincide con su pedido.");
         }
-        if ((order.getSource() != OrderSource.ecommerce
-                        && order.getSource() != OrderSource.pos)
-                || order.getDeliveryMethod() != DeliveryMethod.home_delivery) {
+        if (!isEligibleOrderSource(order)) {
             throw conflict(
                     "PACKING_ORDER_NOT_ELIGIBLE",
-                    "Solo pedidos ecommerce o POS con entrega a domicilio admiten Packing.");
+                    "El pedido no admite Packing.");
         }
+    }
+
+    private static boolean isEligibleOrderSource(Order order) {
+        return (order.getSource() == OrderSource.ecommerce
+                        && order.getDeliveryMethod() == DeliveryMethod.home_delivery)
+                || (order.getSource() == OrderSource.pos
+                        && (order.getDeliveryMethod() == DeliveryMethod.home_delivery
+                                || order.getDeliveryMethod() == DeliveryMethod.store_pickup));
     }
 
     private static void requireMatchingTransfer(
@@ -541,10 +557,13 @@ public class PackingService {
                 && order.getStatus() != OrderStatus.packing) {
             throw conflict("PACKING_ORDER_STATE_CONFLICT", "Packing y pedido tienen estados incompatibles.");
         }
-        if (packing.getStatus() == PackingStatus.finalized
-                && order.getStatus() != OrderStatus.ready_for_dispatch
-                && order.getStatus() != OrderStatus.dispatched
-                && order.getStatus() != OrderStatus.delivered) {
+        boolean finalizedOrderState = order.getDeliveryMethod() == DeliveryMethod.store_pickup
+                ? order.getStatus() == OrderStatus.ready_for_pickup
+                        || order.getStatus() == OrderStatus.delivered
+                : order.getStatus() == OrderStatus.ready_for_dispatch
+                        || order.getStatus() == OrderStatus.dispatched
+                        || order.getStatus() == OrderStatus.delivered;
+        if (packing.getStatus() == PackingStatus.finalized && !finalizedOrderState) {
             throw conflict("PACKING_ORDER_STATE_CONFLICT", "Packing y pedido tienen estados incompatibles.");
         }
     }

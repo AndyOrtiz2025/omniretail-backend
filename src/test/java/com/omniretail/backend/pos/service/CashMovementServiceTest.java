@@ -11,6 +11,9 @@ import com.omniretail.backend.pos.entity.CashShift;
 import com.omniretail.backend.pos.entity.CashShiftStatus;
 import com.omniretail.backend.pos.repository.CashMovementRepository;
 import com.omniretail.backend.pos.repository.CashShiftRepository;
+import com.omniretail.backend.pos.repository.SaleRepository;
+import com.omniretail.backend.pos.entity.CashMovement;
+import com.omniretail.backend.pos.entity.Sale;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
@@ -35,6 +38,7 @@ class CashMovementServiceTest {
     @Mock CashShiftRepository shifts;
     @Mock CashMovementRepository movements;
     @Mock BranchAccessResolver branchAccessResolver;
+    @Mock SaleRepository sales;
     @InjectMocks CashMovementService service;
     private final UUID tenant = UUID.randomUUID();
     private final UUID user = UUID.randomUUID();
@@ -110,11 +114,49 @@ class CashMovementServiceTest {
         verify(movements).findByTenantIdAndCashShiftIdOrderByCreatedAtAscIdAsc(tenant, shiftId);
     }
 
+    @Test
+    void resolvesSaleNumbersInBatchOnlyForDirectSaleReferences() {
+        UUID saleId = UUID.randomUUID();
+        UUID returnId = UUID.randomUUID();
+        CashShift shift = shift(CashShiftStatus.open);
+        CashMovement saleMovement = movement("sale", saleId);
+        CashMovement voidMovement = movement("sale_void", saleId);
+        CashMovement returnMovement = movement("sale_return", returnId);
+        CashMovement manualMovement = movement(null, null);
+        Sale sale = Sale.builder().number("POS-123").build();
+        ReflectionTestUtils.setField(sale, "id", saleId);
+        sale.setTenantId(tenant);
+        when(shifts.findByTenantIdAndId(tenant, shiftId)).thenReturn(Optional.of(shift));
+        when(movements.findByTenantIdAndCashShiftIdOrderByCreatedAtAscIdAsc(tenant, shiftId))
+                .thenReturn(java.util.List.of(saleMovement, voidMovement, returnMovement, manualMovement));
+        when(sales.findByTenantIdAndIdIn(eq(tenant), eq(java.util.Set.of(saleId))))
+                .thenReturn(java.util.List.of(sale));
+
+        var result = service.listByShift(shiftId);
+
+        assertThat(result).extracting(response -> response.saleNumber())
+                .containsExactly("POS-123", "POS-123", null, null);
+        verify(sales).findByTenantIdAndIdIn(tenant, java.util.Set.of(saleId));
+    }
+
     private CashShift shift(CashShiftStatus status) {
         CashShift shift = CashShift.builder().userId(user).branchId(UUID.fromString("11111111-1111-1111-1111-111111111111"))
                 .openingAmount(new BigDecimal("100.00")).status(status).build();
         ReflectionTestUtils.setField(shift, "id", shiftId);
         shift.setTenantId(tenant);
         return shift;
+    }
+
+    private CashMovement movement(String referenceType, UUID referenceId) {
+        return CashMovement.builder()
+                .tenantId(tenant)
+                .cashShiftId(shiftId)
+                .type(CashMovementType.in)
+                .amount(BigDecimal.ONE)
+                .reason("Movimiento")
+                .referenceType(referenceType)
+                .referenceId(referenceId)
+                .createdByUserId(user)
+                .build();
     }
 }

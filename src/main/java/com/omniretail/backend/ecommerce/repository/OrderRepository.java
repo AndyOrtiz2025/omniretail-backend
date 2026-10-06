@@ -31,6 +31,9 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
 
     List<Order> findByTenantId(UUID tenantId);
 
+    List<Order> findByTenantIdAndBranchIdAndIdIn(
+            UUID tenantId, UUID branchId, Collection<UUID> ids);
+
     Optional<Order> findByTenantIdAndId(UUID tenantId, UUID id);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
