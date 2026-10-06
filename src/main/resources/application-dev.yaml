@@ -8,6 +8,9 @@ spring:
     contexts: dev # Incluye los changesets de semilla (context: dev).
 
 app:
+  cors:
+    # Agrega Expo web (app movil en modo web). La app nativa en Android/iOS no usa CORS.
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:8081}
   jwt:
     # Solo para desarrollo. Nunca usar este valor fuera de dev.
     secret: ${JWT_SECRET:omniretail-dev-secret-change-me-min-32-chars!!}

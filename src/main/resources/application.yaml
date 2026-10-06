@@ -73,7 +73,7 @@ app:
     # igual y POST /auth/google responde 503 GOOGLE_LOGIN_NOT_CONFIGURED.
     client-id: ${GOOGLE_CLIENT_ID:}
   cors:
-    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:8081}
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
   mail:
     from: ${MAIL_FROM:no-reply@omniretail.local}
     credential:
