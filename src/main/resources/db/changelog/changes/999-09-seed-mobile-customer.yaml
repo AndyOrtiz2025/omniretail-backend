@@ -1,0 +1,26 @@
+databaseChangeLog:
+  - changeSet:
+      id: 999-09-seed-mobile-customer
+      author: opencode
+      context: dev
+      changes:
+        - sql:
+            sql: |
+              INSERT INTO customers (id, tenant_id, user_id, code, name, email, status)
+              VALUES (
+                '99999999-9999-9999-9999-999999999901',
+                '11111111-1111-1111-1111-111111111111',
+                '44444444-4444-4444-4444-444444444443',
+                'CLI-DEMO-001',
+                'Ana Cliente',
+                'ana@example.com',
+                'active'
+              );
+
+              UPDATE users
+              SET customer_id = '99999999-9999-9999-9999-999999999901'
+              WHERE id = '44444444-4444-4444-4444-444444444443';
+
+              UPDATE auth_accounts
+              SET password_hash = '$2a$10$VTJVOtyRHpiAq6AMhkXubO6ziXDdoHcpb4nFXAixpjBZJpiRv63sO'
+              WHERE user_id = '44444444-4444-4444-4444-444444444443';
