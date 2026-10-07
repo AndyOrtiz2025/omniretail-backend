@@ -24,7 +24,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/public/{slug}/auth")
 @RequiredArgsConstructor
-@Tag(name = "Cuenta del cliente", description = "Registro, verificación de correo y recuperación de contraseña.")
+@Tag(name = "Customer registration", description = "Registro público de clientes en una tienda.")
 public class CustomerRegistrationController {
 
     private final CustomerRegistrationService registrationService;
@@ -33,9 +33,9 @@ public class CustomerRegistrationController {
     @ResponseStatus(HttpStatus.CREATED)
     @SecurityRequirements
     @Operation(
-            summary = "Registrar un cliente",
+            summary = "Register customer",
             description = """
-                    Crea la cuenta de un cliente en la tienda del `slug`. La cuenta queda pendiente de verificación: \
+                    **Público.** Crea la cuenta de un cliente en la tienda del `slug`. La cuenta queda pendiente de verificación: \
                     no puede iniciar sesión hasta abrir el enlace que se envía por correo (vence en 30 minutos).
 
                     - `phone` es opcional; si viene, debe tener exactamente 8 dígitos.

@@ -35,9 +35,11 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/me/payment-methods")
 @RequiredArgsConstructor
 @RequirePermission("customer.payment_method.manage")
-@Tag(name = "Mi cuenta", description = "Perfil, direcciones y métodos de pago del cliente autenticado.")
+@Tag(name = "Customer payment methods", description = "Mi cuenta: tarjetas guardadas del cliente autenticado. "
+        + "Nunca se guarda ni se acepta el número completo ni el CVV.")
 @ApiResponses({
-    @ApiResponse(responseCode = "401", description = "Sin token, token inválido o vencido, o sesión revocada."),
+    @ApiResponse(responseCode = "401", description = "Sin token, token inválido o vencido, o sesión revocada. "
+            + "Responde sin cuerpo."),
     @ApiResponse(
             responseCode = "403",
             description = "Sin el permiso (`ACCESS_DENIED`), o la sesión no es de un cliente activo "
@@ -53,8 +55,8 @@ public class CustomerPaymentMethodController {
 
     @GetMapping
     @Operation(
-            summary = "Consultar mis métodos de pago",
-            description = "Devuelve las tarjetas guardadas: la principal primero y luego de la más antigua a la "
+            summary = "List payment methods",
+            description = "**Solo clientes autenticados** (permiso `customer.payment_method.manage`). Devuelve las tarjetas guardadas: la principal primero y luego de la más antigua a la "
                     + "más reciente. Nunca incluye el token del proveedor.")
     @ApiResponse(
             responseCode = "200",
@@ -68,9 +70,9 @@ public class CustomerPaymentMethodController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(
-            summary = "Guardar tarjeta",
+            summary = "Add payment method",
             description = """
-                    Guarda una tarjeta. La primera del cliente nace principal.
+                    **Solo clientes autenticados.** Guarda una tarjeta. La primera del cliente nace principal.
 
                     - `brand` y `issuingBank` deben ser valores de las listas del frontend.
                     - `last4`: exactamente 4 dígitos. Nunca se envía el número completo ni el CVV.
@@ -95,8 +97,8 @@ public class CustomerPaymentMethodController {
 
     @PutMapping("/{id}")
     @Operation(
-            summary = "Editar tarjeta",
-            description = "Reemplaza el titular y el vencimiento con las mismas reglas que al guardarla. Marca, "
+            summary = "Update payment method",
+            description = "**Solo clientes autenticados.** Reemplaza el titular y el vencimiento con las mismas reglas que al guardarla. Marca, "
                     + "banco y últimos 4 no se pueden cambiar; tampoco cambia cuál es la principal.")
     @ApiResponses({
         @ApiResponse(
@@ -122,8 +124,8 @@ public class CustomerPaymentMethodController {
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Operation(
-            summary = "Eliminar tarjeta",
-            description = "Si era la principal y quedan otras, la más antigua pasa a ser la principal.")
+            summary = "Delete payment method",
+            description = "**Solo clientes autenticados.** Elimina la tarjeta. Si era la principal y quedan otras, la más antigua pasa a ser la principal.")
     @ApiResponses({
         @ApiResponse(responseCode = "204", description = "Tarjeta eliminada."),
         @ApiResponse(
@@ -137,8 +139,8 @@ public class CustomerPaymentMethodController {
 
     @PutMapping("/{id}/default")
     @Operation(
-            summary = "Marcar tarjeta principal",
-            description = "Deja esta tarjeta como la única principal del cliente.")
+            summary = "Set default payment method",
+            description = "**Solo clientes autenticados.** Deja esta tarjeta como la única principal del cliente.")
     @ApiResponses({
         @ApiResponse(
                 responseCode = "200",

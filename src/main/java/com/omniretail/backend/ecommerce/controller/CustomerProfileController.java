@@ -22,9 +22,10 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/me/profile")
 @RequiredArgsConstructor
-@Tag(name = "Mi cuenta", description = "Perfil, direcciones y métodos de pago del cliente autenticado.")
+@Tag(name = "Customer profile", description = "Mi cuenta: datos personales del cliente autenticado.")
 @ApiResponses({
-    @ApiResponse(responseCode = "401", description = "Sin token, token inválido o vencido, o sesión revocada."),
+    @ApiResponse(responseCode = "401", description = "Sin token, token inválido o vencido, o sesión revocada. "
+            + "Responde sin cuerpo."),
     @ApiResponse(
             responseCode = "403",
             description = "Sin el permiso (`ACCESS_DENIED`), o la sesión no es de un cliente activo "
@@ -37,7 +38,10 @@ public class CustomerProfileController {
 
     @GetMapping
     @RequirePermission("customer.account.read")
-    @Operation(summary = "Consultar mi perfil", description = "Devuelve los datos personales del cliente autenticado.")
+    @Operation(
+            summary = "Get my profile",
+            description = "**Solo clientes autenticados** (permiso `customer.account.read`). Devuelve los datos "
+                    + "personales del cliente de la sesión: código, nombre, correo y teléfono.")
     @ApiResponse(
             responseCode = "200",
             description = "Perfil del cliente.",
@@ -50,9 +54,9 @@ public class CustomerProfileController {
     @PutMapping
     @RequirePermission("customer.account.update")
     @Operation(
-            summary = "Actualizar mi perfil",
+            summary = "Update my profile",
             description = """
-                    Actualiza nombre y teléfono del cliente autenticado, también en su usuario para que `/auth/me` lo refleje.
+                    **Solo clientes autenticados** (permiso `customer.account.update`). Actualiza nombre y teléfono del cliente autenticado, también en su usuario para que `/auth/me` lo refleje.
 
                     - `name`: obligatorio, máximo 100 caracteres.
                     - `phone`: opcional, exactamente 8 dígitos; ausente o vacío lo elimina.
