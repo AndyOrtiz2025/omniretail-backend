@@ -67,7 +67,8 @@ public class OrderAdminService {
                 : customerRepository.findByTenantIdAndIdIn(tenantId, customerIds).stream()
                         .collect(java.util.stream.Collectors.toMap(Customer::getId, Customer::getName));
         return new PageResponse<>(orders.getContent().stream()
-                .map(order -> OrderAdminResponse.of(order, customerNames.get(order.getCustomerId()),
+                .map(order -> OrderAdminResponse.of(order,
+                        order.getCustomerId() == null ? null : customerNames.get(order.getCustomerId()),
                         items.getOrDefault(order.getId(), List.of()), payments.getOrDefault(order.getId(), List.of()), jsonMapper))
                 .toList(), orders.getNumber() + 1, orders.getSize(), orders.getTotalElements(), orders.getTotalPages());
     }

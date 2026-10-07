@@ -186,9 +186,9 @@ class OrderAdminServiceTest {
         jdbc.update("""
                 INSERT INTO orders (id, tenant_id, branch_id, order_number, source, customer_id, guest_customer, status,
                     delivery_method, transport_mode, subtotal, discount_total, shipping_total, total, tracking_token)
-                VALUES (?, ?, ?, ?, 'ecommerce', ?, CASE WHEN ? IS NULL THEN '{}'::jsonb ELSE NULL END, ?, 'store_pickup', 'none',
+                VALUES (?, ?, ?, ?, 'ecommerce', ?, ?::jsonb, ?, 'store_pickup', 'none',
                     10.00, 0.00, 0.00, 10.00, ?)
-                """, id, fixture.tenantId(), fixture.branchId(), number, customerId, customerId, status,
+                """, id, fixture.tenantId(), fixture.branchId(), number, customerId, customerId == null ? "{}" : null, status,
                 UUID.randomUUID().toString());
         return id;
     }
