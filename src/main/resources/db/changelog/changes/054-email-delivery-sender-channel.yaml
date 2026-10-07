@@ -1,0 +1,39 @@
+databaseChangeLog:
+  - changeSet:
+      id: 054-email-delivery-sender-channel
+      author: AndyOrtiz2025
+      changes:
+        # Diagnostico del remitente de cada envio. sender_channel: por donde salio el correo (o por donde se
+        # intento por ultima vez si fallo): PLATFORM (MAIL_*) o TENANT (Gmail del negocio). Nulo en los
+        # registros anteriores a este cambio.
+        # fallback_used / fallback_reason: la verificacion de correo intento primero el Gmail del negocio,
+        # fallo con ese codigo (EmailDeliveryException) y se reenvio por plataforma en el mismo intento.
+        - addColumn:
+            tableName: email_delivery
+            columns:
+              - column:
+                  name: sender_channel
+                  type: VARCHAR(10)
+              - column:
+                  name: fallback_used
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: fallback_reason
+                  type: VARCHAR(40)
+        - sql:
+            sql: "ALTER TABLE email_delivery ADD CONSTRAINT ck_email_delivery_sender_channel CHECK (sender_channel IN ('PLATFORM', 'TENANT'))"
+      rollback:
+        - sql:
+            sql: "ALTER TABLE email_delivery DROP CONSTRAINT ck_email_delivery_sender_channel"
+        - dropColumn:
+            tableName: email_delivery
+            columns:
+              - column:
+                  name: sender_channel
+              - column:
+                  name: fallback_used
+              - column:
+                  name: fallback_reason

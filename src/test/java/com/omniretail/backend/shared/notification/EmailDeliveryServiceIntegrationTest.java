@@ -15,10 +15,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Import;
 import org.springframework.mail.MailAuthenticationException;
@@ -35,6 +39,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 @SpringBootTest
 @ActiveProfiles("test")
 @Import({TestcontainersConfiguration.class, CapturingEmailSender.Config.class})
+@ExtendWith(OutputCaptureExtension.class)
 class EmailDeliveryServiceIntegrationTest {
 
     private static final String SECRET = "abcdEFGH12345678";
@@ -61,6 +66,7 @@ class EmailDeliveryServiceIntegrationTest {
     void setUp() {
         gmailSent.clear();
         gmailFailure = null;
+        platformSender.failWith(null);
         tenant = persistTenant();
         given(senderFactory.create(any(), any())).willReturn(new JavaMailSenderImpl() {
             @Override
@@ -258,6 +264,206 @@ class EmailDeliveryServiceIntegrationTest {
         assertThat(gmailSent).hasSize(3);
         // Segunda corrida: ya no hay nada vencido.
         assertThat(deliveryService.retryDue()).isZero();
+    }
+
+    @AfterEach
+    void restorePlatformSender() {
+        platformSender.failWith(null);
+    }
+
+    // --- Verificacion de correo: Gmail del negocio verificado, con la plataforma de respaldo ---
+
+    @Test
+    void verificationWithVerifiedSenderGoesThroughTheBusinessGmail() {
+        saveConfig(tenant, EmailSenderStatus.VERIFIED);
+        String to = unique();
+        request(verification(to));
+
+        EmailDelivery delivery = awaitDelivery(to);
+
+        assertThat(delivery.getStatus()).isEqualTo(EmailDeliveryStatus.SENT);
+        assertThat(delivery.getSenderChannel()).isEqualTo(EmailSenderChannel.TENANT);
+        assertThat(delivery.isFallbackUsed()).isFalse();
+        assertThat(delivery.getFallbackReason()).isNull();
+        assertThat(gmailSent).hasSize(1);
+        assertThat(platformSender.settledMessagesTo(to)).isEmpty();
+        // Lleva un token: no se guarda el cuerpo ni entra a la cola de reintentos.
+        assertThat(delivery.getEncryptedPayload()).isNull();
+        assertThat(delivery.getNextAttemptAt()).isNull();
+    }
+
+    @Test
+    void verificationThroughTheBusinessShowsTheBusinessAsSender() {
+        saveConfig(tenant, EmailSenderStatus.VERIFIED);
+        String to = unique();
+        request(verification(to));
+
+        awaitDelivery(to);
+
+        assertThat(gmailSent).singleElement().satisfies(mime -> {
+            assertThat(mime.getFrom()[0].toString()).contains("Mi Tienda", "tienda@gmail.com");
+            assertThat(mime.getAllRecipients()[0].toString()).isEqualTo(to);
+            assertThat(mime.getSubject()).isEqualTo("Verifica tu correo");
+        });
+    }
+
+    @Test
+    void verificationWithoutAVerifiedSenderGoesThroughThePlatform() {
+        // Sin configuracion, con contrasena guardada pero sin "Enviar prueba" (CONFIGURED), o en ERROR.
+        EmailSenderStatus[] statuses = {null, EmailSenderStatus.CONFIGURED, EmailSenderStatus.ERROR};
+        for (EmailSenderStatus status : statuses) {
+            Tenant other = persistTenant();
+            if (status != null) {
+                saveConfig(other, status);
+            }
+            String to = unique();
+            request(EmailMessage.text(other.getId(), EmailPurpose.EMAIL_VERIFICATION, to, "Verifica tu correo", "token-1"));
+
+            EmailDelivery delivery = awaitDelivery(to);
+
+            assertThat(delivery.getStatus()).as("estado %s", status).isEqualTo(EmailDeliveryStatus.SENT);
+            assertThat(delivery.getSenderChannel()).as("estado %s", status).isEqualTo(EmailSenderChannel.PLATFORM);
+            assertThat(delivery.isFallbackUsed()).as("estado %s", status).isFalse();
+            assertThat(platformSender.awaitMessageTo(to).body()).isEqualTo("token-1");
+        }
+        assertThat(gmailSent).isEmpty();
+    }
+
+    @Test
+    void newPasswordBringsTheSenderBackToConfiguredAndVerificationUsesThePlatform() {
+        saveConfig(tenant, EmailSenderStatus.VERIFIED);
+        String first = unique();
+        request(verification(first));
+        assertThat(awaitDelivery(first).getSenderChannel()).isEqualTo(EmailSenderChannel.TENANT);
+
+        // Lo que hace EmailSenderConfigService al guardar una contrasena nueva: CONFIGURED hasta otra prueba.
+        TenantEmailSenderConfig config = configs.findByTenantId(tenant.getId()).orElseThrow();
+        config.setStatus(EmailSenderStatus.CONFIGURED);
+        configs.saveAndFlush(config);
+        String second = unique();
+        request(verification(second));
+
+        assertThat(awaitDelivery(second).getSenderChannel()).isEqualTo(EmailSenderChannel.PLATFORM);
+        assertThat(gmailSent).hasSize(1);
+    }
+
+    @Test
+    void businessFailureFallsBackToThePlatformInTheSameAttempt() {
+        saveConfig(tenant, EmailSenderStatus.VERIFIED);
+        gmailFailure = new MailSendException("timeout");
+        String to = unique();
+        request(verification(to));
+
+        EmailDelivery delivery = awaitDelivery(to);
+
+        assertThat(delivery.getStatus()).isEqualTo(EmailDeliveryStatus.SENT);
+        assertThat(delivery.getAttempts()).isEqualTo(1);
+        assertThat(delivery.getSenderChannel()).isEqualTo(EmailSenderChannel.PLATFORM);
+        assertThat(delivery.isFallbackUsed()).isTrue();
+        assertThat(delivery.getFallbackReason()).isEqualTo("TRANSPORT_ERROR");
+        assertThat(delivery.getErrorCode()).isNull();
+        assertThat(delivery.getNextAttemptAt()).isNull();
+        assertThat(platformSender.awaitMessageTo(to).body()).isEqualTo("Abre el enlace: token-verificacion");
+        // Un fallo de transporte no marca el remitente en ERROR.
+        assertThat(configs.findByTenantId(tenant.getId()).orElseThrow().getStatus()).isEqualTo(EmailSenderStatus.VERIFIED);
+    }
+
+    @Test
+    void businessAuthenticationFailureMarksTheSenderInErrorAndFallsBack() {
+        saveConfig(tenant, EmailSenderStatus.VERIFIED);
+        gmailFailure = new MailAuthenticationException("535 " + SECRET);
+        String first = unique();
+        request(verification(first));
+
+        EmailDelivery delivery = awaitDelivery(first);
+
+        assertThat(delivery.getStatus()).isEqualTo(EmailDeliveryStatus.SENT);
+        assertThat(delivery.isFallbackUsed()).isTrue();
+        assertThat(delivery.getFallbackReason()).isEqualTo("AUTHENTICATION_FAILED");
+        TenantEmailSenderConfig config = configs.findByTenantId(tenant.getId()).orElseThrow();
+        assertThat(config.getStatus()).isEqualTo(EmailSenderStatus.ERROR);
+        assertThat(config.getLastFailureAt()).isNotNull();
+        platformSender.awaitMessageTo(first);
+
+        // El siguiente ya ni intenta el Gmail del negocio.
+        String second = unique();
+        request(verification(second));
+        EmailDelivery next = awaitDelivery(second);
+        assertThat(next.getSenderChannel()).isEqualTo(EmailSenderChannel.PLATFORM);
+        assertThat(next.isFallbackUsed()).isFalse();
+        platformSender.awaitMessageTo(second);
+    }
+
+    @Test
+    void bothChannelsFailingLeavesItFailedWithoutRetryOrBody(CapturedOutput output) {
+        saveConfig(tenant, EmailSenderStatus.VERIFIED);
+        gmailFailure = new MailSendException("timeout");
+        platformSender.failWith(new EmailDeliveryException(EmailDeliveryException.TRANSPORT_ERROR));
+        String to = unique();
+        request(verification(to));
+
+        EmailDelivery delivery = awaitDelivery(to);
+
+        assertThat(delivery.getStatus()).isEqualTo(EmailDeliveryStatus.FAILED);
+        assertThat(delivery.getErrorCode()).isEqualTo("TRANSPORT_ERROR");
+        assertThat(delivery.getSenderChannel()).isEqualTo(EmailSenderChannel.PLATFORM);
+        assertThat(delivery.isFallbackUsed()).isTrue();
+        assertThat(delivery.getNextAttemptAt()).isNull();
+        assertThat(delivery.getEncryptedPayload()).isNull();
+        makeDue(delivery);
+        assertThat(deliveryService.retryDue()).isZero();
+
+        // Logs: tenant, purpose, canal y motivo; nunca el correo completo, el asunto ni el cuerpo (token).
+        String logs = output.getAll();
+        assertThat(logs).contains("tenantId=" + tenant.getId(), "purpose=EMAIL_VERIFICATION", "reason=TRANSPORT_ERROR",
+                "channel=PLATFORM", "recipient=" + EmailDeliveryService.maskRecipient(to));
+        assertThat(logs).doesNotContain(to, "token-verificacion", "Verifica tu correo");
+    }
+
+    @Test
+    void recoveryInvitationAndMfaAlwaysUseThePlatformEvenWithAVerifiedBusiness() {
+        saveConfig(tenant, EmailSenderStatus.VERIFIED);
+        EmailPurpose[] purposes = {EmailPurpose.PASSWORD_RESET, EmailPurpose.EMPLOYEE_INVITATION, EmailPurpose.MFA_CODE};
+        for (EmailPurpose purpose : purposes) {
+            String to = unique();
+            request(EmailMessage.text(tenant.getId(), purpose, to, "Seguridad", "token-" + purpose));
+
+            EmailDelivery delivery = awaitDelivery(to);
+
+            assertThat(delivery.getStatus()).as(purpose.name()).isEqualTo(EmailDeliveryStatus.SENT);
+            assertThat(delivery.getSenderChannel()).as(purpose.name()).isEqualTo(EmailSenderChannel.PLATFORM);
+            assertThat(delivery.isFallbackUsed()).as(purpose.name()).isFalse();
+            assertThat(platformSender.awaitMessageTo(to).body()).isEqualTo("token-" + purpose);
+        }
+        assertThat(gmailSent).isEmpty();
+    }
+
+    @Test
+    void operationalEmailsNeverFallBackToThePlatform() {
+        saveConfig(tenant, EmailSenderStatus.VERIFIED);
+        gmailFailure = new MailSendException("timeout");
+        String to = unique();
+        request(EmailMessage.text(tenant.getId(), EmailPurpose.ORDER_CONFIRMATION, to, "Pedido", "Hola"));
+
+        EmailDelivery delivery = awaitDelivery(to);
+
+        assertThat(delivery.getStatus()).isEqualTo(EmailDeliveryStatus.FAILED);
+        assertThat(delivery.getSenderChannel()).isEqualTo(EmailSenderChannel.TENANT);
+        assertThat(delivery.isFallbackUsed()).isFalse();
+        assertThat(delivery.getNextAttemptAt()).isNotNull(); // sigue en la cola de reintentos
+        assertThat(platformSender.settledMessagesTo(to)).isEmpty();
+    }
+
+    @Test
+    void recipientIsMaskedForLogs() {
+        assertThat(EmailDeliveryService.maskRecipient("ana.perez@gmail.com")).isEqualTo("an***@gmail.com");
+        assertThat(EmailDeliveryService.maskRecipient("a@x.com")).isEqualTo("a***@x.com");
+        assertThat(EmailDeliveryService.maskRecipient("sin-arroba")).isEqualTo("***");
+    }
+
+    private EmailMessage verification(String to) {
+        return EmailMessage.text(tenant.getId(), EmailPurpose.EMAIL_VERIFICATION, to, "Verifica tu correo",
+                "Abre el enlace: token-verificacion");
     }
 
     private void request(EmailMessage message) {
