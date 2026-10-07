@@ -22,15 +22,15 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/auth")
 @RequiredArgsConstructor
-@Tag(name = "Activación de empleados", description = "Activación de cuentas mediante invitación.")
+@Tag(name = "Employee activation", description = "Activación de cuentas de empleado mediante el enlace de invitación.")
 public class EmployeeActivationController {
 
     private final EmployeeInvitationService invitationService;
 
     @PostMapping("/activate-employee")
     @SecurityRequirements
-    @Operation(summary = "Activar cuenta de empleado",
-            description = "Consume una invitación vigente, establece la contraseña y revoca las sesiones anteriores. "
+    @Operation(summary = "Activate employee account",
+            description = "**Público (con el enlace de invitación).** Consume una invitación vigente, establece la contraseña y revoca las sesiones anteriores. "
                     + "La contraseña debe cumplir la política de empleados (12 a 24 caracteres).")
     @ApiResponses({
         @ApiResponse(responseCode = "200", description = "Cuenta activada correctamente.",

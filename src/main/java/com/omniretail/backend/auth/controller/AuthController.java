@@ -35,7 +35,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/auth")
 @RequiredArgsConstructor
-@Tag(name = "Autenticación", description = "Inicio y cierre de sesión, y sesión actual.")
+@Tag(name = "Authentication", description = "Inicio y cierre de sesión, sesión actual y sucursal activa.")
 public class AuthController {
 
     private final AuthService authService;
@@ -47,16 +47,18 @@ public class AuthController {
     @PostMapping("/login")
     @SecurityRequirements
     @Operation(
-            summary = "Iniciar sesión",
+            summary = "Log in",
             description = """
-                    Inicia sesión de un empleado o de un cliente y devuelve el token JWT de la sesión.
+                    **Público.** Inicia sesión de un empleado o de un cliente con correo y contraseña y devuelve el
+                    token JWT de la sesión.
 
                     - Empleados: sesión de 8 horas; `rememberMe` se ignora.
                     - Clientes: requieren el `tenantSlug` de la tienda. La sesión dura 2 horas, o 30 días con `rememberMe`.
-                    - Tras 5 intentos fallidos la cuenta se bloquea 15 minutos.
-                    - Con la verificación en dos pasos activa, la contraseña correcta no crea sesión: responde
+                    - Bloqueo escalonado: el 5.º fallo en 10 minutos (contraseña o código MFA) bloquea la cuenta
+                      15, 30 o 60 minutos, según los bloqueos de las últimas 24 horas.
+                    - Si la cuenta tiene MFA activo, no entrega sesión: devuelve un challenge
                       `{ mfaRequired: true, challengeToken, method, expiresAt }` sin token, y la sesión se obtiene en
-                      `POST /auth/mfa/verify`. Sin MFA, la respuesta es la de siempre.
+                      `POST /auth/mfa/verify`. Con `method: "email"` además envía el código por correo.
 
                     El mensaje de error es siempre genérico: no revela si el correo existe ni si la cuenta está bloqueada.""")
     @ApiResponses({
@@ -83,9 +85,9 @@ public class AuthController {
     @PostMapping("/logout")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Operation(
-            summary = "Cerrar sesión",
-            description = "Revoca la sesión del token actual. Desde ese momento el token deja de ser válido en "
-                    + "cualquier endpoint.")
+            summary = "Log out",
+            description = "**Requiere sesión (cliente o empleado).** Revoca la sesión del token actual. Desde ese "
+                    + "momento el token deja de ser válido en cualquier endpoint.")
     @ApiResponses({
         @ApiResponse(responseCode = "204", description = "Sesión cerrada."),
         @ApiResponse(
@@ -99,14 +101,14 @@ public class AuthController {
     @PostMapping("/password/change")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Operation(
-            summary = "Cambiar contraseña",
+            summary = "Change password",
             description = """
-                    Cambia la contraseña de la cuenta de la sesión actual (cliente o empleado).
+                    **Requiere sesión (cliente o empleado).** Cambia la contraseña de la cuenta de la sesión actual.
 
                     - Exige la contraseña actual; la nueva debe ser distinta y cumplir la política del tipo de cuenta
                       (clientes: 8 a 24 caracteres; empleados: 12 a 24; con mayúscula, minúscula, número y carácter especial).
-                    - Con la verificación en dos pasos activa, `mfaCode` (código de la app o de recuperación) es
-                      obligatorio.
+                    - Con la verificación en dos pasos activa, `mfaCode` es obligatorio: código de la app, código
+                      por correo (se pide en `POST /auth/mfa/code`) o código de recuperación.
                     - Al cambiarla se revocan todas las demás sesiones del usuario; la sesión actual sigue activa.""")
     @ApiResponses({
         @ApiResponse(responseCode = "204", description = "Contraseña cambiada."),
@@ -119,7 +121,9 @@ public class AuthController {
                 content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
         @ApiResponse(
                 responseCode = "401",
-                description = "Sin token, token inválido o vencido, o sesión revocada. Responde sin cuerpo.")
+                description = "Sin token, token inválido o vencido, o sesión revocada (sin cuerpo); o la cuenta ya no "
+                        + "existe (`UNAUTHENTICATED`).",
+                content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
     })
     public void changePassword(@RequestBody ChangePasswordRequest request) {
         passwordChangeService.change(currentUser.require(), request);
@@ -127,9 +131,10 @@ public class AuthController {
 
     @GetMapping("/me")
     @Operation(
-            summary = "Obtener la sesión actual",
-            description = "Reconstruye la sesión del token: datos del usuario (incluidas sus sucursales permitidas), "
-                    + "tienda, rol con sus permisos y datos de la sesión. Para clientes sin rol activo, `role` es `null`.")
+            summary = "Get current session",
+            description = "**Requiere sesión (cliente o empleado).** Reconstruye la sesión del token: datos del usuario "
+                    + "(incluidas sus sucursales permitidas), tienda, rol con sus permisos y datos de la sesión. Para "
+                    + "clientes sin rol activo, `role` es `null`.")
     @ApiResponses({
         @ApiResponse(
                 responseCode = "200",
@@ -148,11 +153,11 @@ public class AuthController {
 
     @PatchMapping("/session/branch")
     @Operation(
-            summary = "Cambiar la sucursal activa de la sesión",
+            summary = "Change active branch",
             description = """
-                    Guarda la sucursal elegida en el selector del encabezado, solo para la sesión del token.
+                    **Solo empleados.** Guarda la sucursal elegida en el selector del encabezado, solo para la sesión
+                    del token.
 
-                    - Solo empleados.
                     - La sucursal debe estar activa, ser de la tienda de la sesión y estar entre las sucursales
                       asignadas al usuario (`allowedBranchIds`, o `branchId` si nunca se asignaron). Un rol con
                       `branchScope = all` no amplía esta lista.

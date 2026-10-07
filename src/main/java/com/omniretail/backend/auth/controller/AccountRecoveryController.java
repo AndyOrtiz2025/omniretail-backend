@@ -31,7 +31,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/auth")
 @RequiredArgsConstructor
-@Tag(name = "Cuenta del cliente", description = "Registro, verificación de correo y recuperación de contraseña.")
+@Tag(name = "Account recovery", description = "Verificación de correo y recuperación de contraseña. Endpoints públicos.")
 public class AccountRecoveryController {
 
     static final String GENERIC_RECOVERY_MESSAGE = "Si existe una cuenta asociada, recibirás instrucciones.";
@@ -42,8 +42,8 @@ public class AccountRecoveryController {
     @PostMapping("/email/verify")
     @SecurityRequirements
     @Operation(
-            summary = "Verificar el correo",
-            description = "Consume el token del enlace de verificación y activa la cuenta si estaba pendiente de "
+            summary = "Verify email",
+            description = "**Público.** Consume el token del enlace de verificación y activa la cuenta si estaba pendiente de "
                     + "verificación. Una cuenta deshabilitada o archivada no se reactiva. Devuelve el `tenantSlug` "
                     + "de la tienda para armar la URL de inicio de sesión.")
     @ApiResponses({
@@ -65,9 +65,9 @@ public class AccountRecoveryController {
     @ResponseStatus(HttpStatus.ACCEPTED)
     @SecurityRequirements
     @Operation(
-            summary = "Solicitar recuperación de contraseña",
+            summary = "Request password reset",
             description = """
-                    Envía un enlace de recuperación (vence en 15 minutos) a cada cuenta elegible con ese correo: \
+                    **Público.** Envía un enlace de recuperación (vence en 15 minutos) a cada cuenta elegible con ese correo: \
                     clientes de la tienda del `tenantSlug` (sin él, ninguno) y empleados de cualquier tienda.
 
                     - Solo cuentas activas o bloqueadas temporalmente.
@@ -100,9 +100,9 @@ public class AccountRecoveryController {
     @PostMapping("/password/reset")
     @SecurityRequirements
     @Operation(
-            summary = "Restablecer la contraseña",
+            summary = "Reset password",
             description = """
-                    Cambia la contraseña con el token del enlace de recuperación. La política depende del tipo de \
+                    **Público.** Cambia la contraseña con el token del enlace de recuperación. La política depende del tipo de \
                     cuenta (clientes: 8 a 24 caracteres; empleados: 12 a 24).
 
                     Cierra todas las sesiones abiertas de la cuenta y desbloquea una cuenta bloqueada \

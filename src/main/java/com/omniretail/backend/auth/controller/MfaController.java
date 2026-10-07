@@ -36,11 +36,13 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/auth/mfa")
 @RequiredArgsConstructor
-@Tag(name = "Autenticación", description = "Inicio y cierre de sesión, y sesión actual.")
+@Tag(name = "MFA", description = "Verificación en dos pasos (app autenticadora o código por correo): segundo paso "
+        + "del login, activación, desactivación y códigos para acciones sensibles.")
 public class MfaController {
 
     private static final String UNAUTHORIZED_DESCRIPTION =
-            "Sin token, token inválido o vencido, o sesión revocada. Responde sin cuerpo.";
+            "Sin token, token inválido o vencido, o sesión revocada (sin cuerpo); o la cuenta ya no existe "
+                    + "(`UNAUTHENTICATED`).";
 
     private final MfaService mfaService;
     private final MfaLoginService mfaLoginService;
@@ -49,12 +51,14 @@ public class MfaController {
     @PostMapping("/verify")
     @SecurityRequirements
     @Operation(
-            summary = "Completar el inicio de sesión con el segundo factor",
+            summary = "Verify MFA challenge",
             description = """
-                    Segundo paso del login cuando la cuenta tiene MFA activo. Recibe el `challengeToken` del login y
-                    el código de 6 dígitos de la app, o un código de recuperación `XXXX-XXXX` (cada uno sirve una vez).
+                    **Público.** Segundo paso del login cuando la cuenta tiene MFA activo. Recibe el `challengeToken`
+                    del login y el código de 6 dígitos (de la app o del correo, según `method`), o un código de
+                    recuperación `XXXX-XXXX` (cada uno sirve una vez).
 
-                    - El desafío vence en 5 minutos, es de un solo uso y admite 5 intentos.
+                    - El desafío es de un solo uso y admite 5 intentos. Con la app vence en 5 minutos; con correo,
+                      cada código vence en 5 minutos y el desafío dura como máximo 15.
                     - Cada código incorrecto suma al bloqueo de la cuenta, igual que una contraseña incorrecta.
                     - Responde lo mismo que `POST /auth/login` sin MFA.""")
     @ApiResponses({
@@ -81,9 +85,9 @@ public class MfaController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @SecurityRequirements
     @Operation(
-            summary = "Reenviar el código por correo del inicio de sesión",
+            summary = "Resend MFA login code",
             description = """
-                    Solo para el método por correo. Envía un código nuevo y el anterior deja de servir. El nuevo
+                    **Público.** Solo para el método por correo. Envía un código nuevo y el anterior deja de servir. El nuevo
                     vence a los 5 minutos, sin pasar los 15 minutos de vida del desafío. Conserva los intentos
                     fallidos del desafío.
 
@@ -111,9 +115,9 @@ public class MfaController {
     @PostMapping("/code")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Operation(
-            summary = "Enviar un código por correo para el cambio de contraseña",
+            summary = "Send MFA code for password change",
             description = """
-                    Solo con el MFA por correo activo. El código vence a los 5 minutos y se usa como `mfaCode` en
+                    **Requiere sesión (cliente o empleado).** Solo con el MFA por correo activo. El código vence a los 5 minutos y se usa como `mfaCode` en
                     `POST /auth/password/change`. Pedir otro invalida el anterior. Mismos límites de envío.""")
     @ApiResponses({
         @ApiResponse(responseCode = "204", description = "Código enviado."),
@@ -133,8 +137,10 @@ public class MfaController {
 
     @GetMapping
     @Operation(
-            summary = "Consultar mi verificación en dos pasos",
-            description = "`enabled` indica si está activa. `method` es `null` si nunca se inició una activación.")
+            summary = "Get MFA status",
+            description = "**Requiere sesión (cliente o empleado).** Indica si la verificación en dos pasos está activa "
+                    + "(`enabled`) y con qué método (`totp` o `email`). `method` es `null` si nunca se inició una "
+                    + "activación.")
     @ApiResponses({
         @ApiResponse(
                 responseCode = "200",
@@ -148,9 +154,9 @@ public class MfaController {
 
     @PostMapping("/enrollment")
     @Operation(
-            summary = "Iniciar la activación",
+            summary = "Start MFA enrollment",
             description = """
-                    La activación queda pendiente hasta confirmar un código en `POST /auth/mfa/enrollment/verify`.
+                    **Requiere sesión (cliente o empleado).** La activación queda pendiente hasta confirmar un código en `POST /auth/mfa/enrollment/verify`.
 
                     - `method: "totp"`: genera un secreto nuevo y devuelve el `otpauthUri` (para el QR) y el
                       secreto en Base32.
@@ -186,9 +192,10 @@ public class MfaController {
 
     @PostMapping("/enrollment/verify")
     @Operation(
-            summary = "Confirmar la activación",
+            summary = "Confirm MFA enrollment",
             description = """
-                    Activa el MFA con un código de la app y devuelve los 8 códigos de recuperación. Se muestran una
+                    **Requiere sesión (cliente o empleado).** Activa el MFA con un código de la app o del correo
+                    (según el método elegido) y devuelve los 8 códigos de recuperación. Se muestran una
                     sola vez: no hay forma de volver a consultarlos.
 
                     Tras 5 códigos incorrectos se descarta el secreto pendiente y hay que iniciar la activación de nuevo.""")
@@ -216,8 +223,8 @@ public class MfaController {
     @PostMapping("/disable")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Operation(
-            summary = "Desactivar",
-            description = "Pide la contraseña actual. Borra el secreto y los códigos de recuperación. Si no estaba "
+            summary = "Disable MFA",
+            description = "**Requiere sesión (cliente o empleado).** Pide la contraseña actual. Borra el secreto y los códigos de recuperación. Si no estaba "
                     + "activo, no cambia nada.")
     @ApiResponses({
         @ApiResponse(responseCode = "204", description = "MFA desactivado."),

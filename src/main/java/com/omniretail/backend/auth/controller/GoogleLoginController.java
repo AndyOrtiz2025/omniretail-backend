@@ -24,7 +24,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/auth")
 @RequiredArgsConstructor
-@Tag(name = "Autenticación", description = "Inicio y cierre de sesión, y sesión actual.")
+@Tag(name = "Authentication", description = "Inicio y cierre de sesión, sesión actual y sucursal activa.")
 public class GoogleLoginController {
 
     private final GoogleLoginService googleLoginService;
@@ -32,13 +32,18 @@ public class GoogleLoginController {
     @PostMapping("/google")
     @SecurityRequirements
     @Operation(
-            summary = "Iniciar sesión con Google",
+            summary = "Log in with Google",
             description = """
-                    Inicia sesión de un cliente de la tienda con el ID token (`credential`) de Google Identity Services.
+                    **Público, solo clientes.** Inicia sesión de un cliente de la tienda con el ID token (`credential`)
+                    de Google Identity Services. El backend verifica la firma, el emisor, que `aud` sea el
+                    GOOGLE_CLIENT_ID, el vencimiento y que Google haya confirmado el correo (`email_verified`).
 
-                    - Solo clientes: requiere el `tenantSlug`; `expectedUserType`, si viene, debe ser `customer`.
+                    - Requiere el `tenantSlug`; `expectedUserType`, si viene, debe ser `customer`.
                     - Si el correo no existe en la tienda, crea la cuenta de cliente (activa, sin contraseña: para
                       tener una, "Olvidé mi contraseña"). Si existe, la vincula a la cuenta de Google.
+                    - Una cuenta pendiente de verificación se activa, pero su contraseña anterior deja de servir y se
+                      cierran sus sesiones (protección contra pre-secuestro de cuenta).
+                    - Respeta el bloqueo y el estado de la cuenta. Un token inválido no suma intentos fallidos.
                     - Responde igual que `POST /auth/login`: la sesión, o el desafío de MFA si el cliente lo tiene activo.
                     - Error siempre genérico: token inválido o vencido, correo no confirmado por Google, cuenta de
                       empleado, bloqueada o inactiva, o ya vinculada a otra cuenta de Google.""")

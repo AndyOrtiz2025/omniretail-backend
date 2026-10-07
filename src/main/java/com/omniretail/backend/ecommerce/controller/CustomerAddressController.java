@@ -34,9 +34,10 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/me/addresses")
 @RequiredArgsConstructor
 @RequirePermission("customer.address.manage")
-@Tag(name = "Mi cuenta", description = "Perfil, direcciones y métodos de pago del cliente autenticado.")
+@Tag(name = "Customer addresses", description = "Mi cuenta: direcciones de entrega del cliente autenticado.")
 @ApiResponses({
-    @ApiResponse(responseCode = "401", description = "Sin token, token inválido o vencido, o sesión revocada."),
+    @ApiResponse(responseCode = "401", description = "Sin token, token inválido o vencido, o sesión revocada. "
+            + "Responde sin cuerpo."),
     @ApiResponse(
             responseCode = "403",
             description = "Sin el permiso (`ACCESS_DENIED`), o la sesión no es de un cliente activo "
@@ -55,8 +56,8 @@ public class CustomerAddressController {
 
     @GetMapping
     @Operation(
-            summary = "Consultar mis direcciones",
-            description = "Devuelve las direcciones del cliente, de la más antigua a la más reciente.")
+            summary = "List addresses",
+            description = "**Solo clientes autenticados** (permiso `customer.address.manage`). Devuelve las direcciones del cliente, de la más antigua a la más reciente.")
     @ApiResponse(
             responseCode = "200",
             description = "Direcciones del cliente.",
@@ -69,9 +70,9 @@ public class CustomerAddressController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(
-            summary = "Crear dirección",
+            summary = "Create address",
             description = """
-                    Crea una dirección de entrega. La primera del cliente nace predeterminada.
+                    **Solo clientes autenticados.** Crea una dirección de entrega. La primera del cliente nace predeterminada.
 
                     - `stateOrDepartment` debe ser un departamento de Guatemala y `city` un municipio de ese departamento.
                     - `postalCode` es opcional (5 dígitos).
@@ -92,8 +93,8 @@ public class CustomerAddressController {
 
     @PutMapping("/{id}")
     @Operation(
-            summary = "Editar dirección",
-            description = "Reemplaza los datos de la dirección con las mismas reglas que al crearla. No cambia "
+            summary = "Update address",
+            description = "**Solo clientes autenticados.** Reemplaza los datos de la dirección con las mismas reglas que al crearla. No cambia "
                     + "cuál es la predeterminada.")
     @ApiResponses({
         @ApiResponse(
@@ -116,8 +117,8 @@ public class CustomerAddressController {
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Operation(
-            summary = "Eliminar dirección",
-            description = "Si era la predeterminada y quedan otras, la más antigua pasa a ser la predeterminada.")
+            summary = "Delete address",
+            description = "**Solo clientes autenticados.** Elimina la dirección. Si era la predeterminada y quedan otras, la más antigua pasa a ser la predeterminada.")
     @ApiResponses({
         @ApiResponse(responseCode = "204", description = "Dirección eliminada."),
         @ApiResponse(
@@ -131,8 +132,8 @@ public class CustomerAddressController {
 
     @PutMapping("/{id}/default")
     @Operation(
-            summary = "Marcar dirección predeterminada",
-            description = "Deja esta dirección como la única predeterminada del cliente.")
+            summary = "Set default address",
+            description = "**Solo clientes autenticados.** Deja esta dirección como la única predeterminada del cliente.")
     @ApiResponses({
         @ApiResponse(
                 responseCode = "200",
