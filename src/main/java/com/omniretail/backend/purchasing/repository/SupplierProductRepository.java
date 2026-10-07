@@ -21,6 +21,10 @@ public interface SupplierProductRepository extends JpaRepository<SupplierProduct
 
     List<SupplierProduct> findByTenantIdAndIdIn(UUID tenantId, Collection<UUID> ids);
 
+    /** Relaciones de UN proveedor para varios productos, en una sola query (resolución batch de borradores). */
+    List<SupplierProduct> findByTenantIdAndSupplierIdAndProductIdIn(
+            UUID tenantId, UUID supplierId, Collection<UUID> productIds);
+
     boolean existsByTenantIdAndSupplierIdAndProductId(UUID tenantId, UUID supplierId, UUID productId);
 
     boolean existsByTenantIdAndSupplierIdAndProductIdAndIdNot(

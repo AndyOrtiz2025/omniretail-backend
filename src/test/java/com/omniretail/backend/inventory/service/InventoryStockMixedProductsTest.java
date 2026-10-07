@@ -16,6 +16,8 @@ import com.omniretail.backend.inventory.dto.InventoryAlertStatus;
 import com.omniretail.backend.inventory.dto.InventoryKitAvailabilityComponentDto;
 import com.omniretail.backend.inventory.dto.InventoryKitAvailabilityResponse;
 import com.omniretail.backend.inventory.dto.InventoryProductMode;
+import com.omniretail.backend.inventory.dto.InventoryStockBatchItemDto;
+import com.omniretail.backend.inventory.dto.InventoryStockBatchRequest;
 import com.omniretail.backend.inventory.dto.InventoryStockDisplayStatus;
 import com.omniretail.backend.inventory.dto.InventoryStockItemDto;
 import com.omniretail.backend.shared.exception.BusinessException;
@@ -322,6 +324,117 @@ class InventoryStockMixedProductsTest {
         assertThatThrownBy(() -> this.service.listBranches(UUID.randomUUID(), f.branch()))
                 .isInstanceOfSatisfying(BusinessException.class,
                         exception -> assertThat(exception.getCode()).isEqualTo("PRODUCT_NOT_FOUND"));
+    }
+
+    // ------------------------------------------------------- batch stock lookup
+
+    @Test
+    void batchReturnsStockForSeveralProductsKeepingRequestOrderAndProductRelation() {
+        Fixture f = fixture();
+        UUID critical = physical(f, "Critico", "5", "1", "10");
+        UUID normal = physical(f, "Normal", "30", "0", "10");
+        UUID empty = physical(f, "Sin balance", null, null, null);
+
+        var response = service.batch(new InventoryStockBatchRequest(f.branch(), List.of(normal, empty, critical)));
+
+        assertThat(response.branchId()).isEqualTo(f.branch());
+        assertThat(response.items()).extracting(InventoryStockBatchItemDto::productId)
+                .containsExactly(normal, empty, critical);
+        InventoryStockBatchItemDto c = response.items().get(2);
+        assertThat(c.quantity()).isEqualByComparingTo("5");
+        assertThat(c.reservedQuantity()).isEqualByComparingTo("1");
+        assertThat(c.availableQuantity()).isEqualByComparingTo("4");
+        assertThat(c.minStock()).isEqualByComparingTo("10");
+        assertThat(c.reorderPoint()).isNull();
+        assertThat(c.status()).isEqualTo(InventoryAlertStatus.critical);
+        assertThat(c.suggestedReorder()).isEqualByComparingTo("6");
+        assertThat(response.items().get(0).status()).isEqualTo(InventoryAlertStatus.normal);
+        assertThat(response.items().get(1).availableQuantity()).isEqualByComparingTo("0");
+        assertThat(response.items().get(1).status()).isEqualTo(InventoryAlertStatus.out_of_stock);
+    }
+
+    @Test
+    void batchMatchesTheStockListForTheSameProducts() {
+        Fixture f = fixture();
+        UUID a = physical(f, "A", "12", "2", "5");
+        UUID b = physical(f, "B", "3", "0", "10");
+
+        var batch = service.batch(new InventoryStockBatchRequest(f.branch(), List.of(a, b))).items();
+        var listed = service.list(f.branch(), null, null, null, PageRequest.of(0, 20)).items();
+
+        for (InventoryStockBatchItemDto item : batch) {
+            InventoryStockItemDto row = byId(listed, item.productId());
+            assertThat(item.availableQuantity()).isEqualByComparingTo(row.availableQuantity());
+            assertThat(item.status()).isEqualTo(row.status());
+            assertThat(item.suggestedReorder()).isEqualByComparingTo(row.suggestedReorder());
+            assertThat(item.minStock()).isEqualByComparingTo(row.minStock());
+        }
+    }
+
+    @Test
+    void batchHandlesEmptyListAndDuplicateIds() {
+        Fixture f = fixture();
+        UUID product = physical(f, "Producto", "9", "0", null);
+
+        assertThat(service.batch(new InventoryStockBatchRequest(f.branch(), List.of())).items()).isEmpty();
+        assertThat(service.batch(new InventoryStockBatchRequest(f.branch(), List.of(product, product, product)))
+                        .items())
+                .singleElement()
+                .satisfies(item -> assertThat(item.productId()).isEqualTo(product));
+    }
+
+    @Test
+    void batchIsScopedToTheBranchTenantAndFailsClosedOnForeignOrUnknownProducts() {
+        Fixture f = fixture();
+        UUID product = physical(f, "Propio", "9", "0", null);
+        UUID otherBranch = addBranch(f);
+        jdbc.update("""
+                INSERT INTO inventory_balances (tenant_id, branch_id, product_id, quantity, reserved_quantity)
+                VALUES (?, ?, ?, 100, 0)
+                """, f.tenant(), otherBranch, product);
+        Fixture foreign = fixture();
+        UUID foreignProduct = physical(foreign, "Ajeno", "50", "0", null);
+        use(f);
+
+        assertThat(service.batch(new InventoryStockBatchRequest(f.branch(), List.of(product))).items()
+                        .getFirst().quantity())
+                .isEqualByComparingTo("9");
+        assertThat(service.batch(new InventoryStockBatchRequest(otherBranch, List.of(product))).items()
+                        .getFirst().quantity())
+                .isEqualByComparingTo("100");
+        for (UUID unknown : List.of(foreignProduct, UUID.randomUUID())) {
+            assertThatThrownBy(() -> service.batch(new InventoryStockBatchRequest(f.branch(), List.of(product, unknown))))
+                    .isInstanceOfSatisfying(BusinessException.class,
+                            exception -> assertThat(exception.getCode()).isEqualTo("PRODUCT_NOT_FOUND"));
+        }
+        assertThatThrownBy(() -> service.batch(new InventoryStockBatchRequest(foreign.branch(), List.of(product))))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getCode()).isEqualTo("BRANCH_NOT_FOUND"));
+    }
+
+    @Test
+    void batchRejectsServiceKitAndEnforcesBranchAccessAndCapability() {
+        Fixture f = fixture();
+        UUID service = service(f, "Servicio");
+        UUID physical = physical(f, "Fisico", "5", "0", null);
+        UUID kit = kit(f, "Kit", List.of(component(physical, "1")));
+
+        for (UUID unsupported : List.of(service, kit)) {
+            assertThatThrownBy(() -> this.service.batch(
+                            new InventoryStockBatchRequest(f.branch(), List.of(physical, unsupported))))
+                    .isInstanceOfSatisfying(BusinessException.class, exception -> assertThat(exception.getCode())
+                            .isEqualTo("INVENTORY_STOCK_BATCH_PRODUCT_UNSUPPORTED"));
+        }
+        given(branchAccessResolver.resolve(any())).willReturn(new BranchAccess(false, Set.of()));
+        assertThatThrownBy(() -> this.service.batch(new InventoryStockBatchRequest(f.branch(), List.of(physical))))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getCode()).isEqualTo("BRANCH_ACCESS_DENIED"));
+        given(branchAccessResolver.resolve(any())).willReturn(new BranchAccess(true, Set.of()));
+        given(entitlements.resolve(any())).willReturn(
+                new TenantEntitlements(true, true, EnumSet.of(SaasCapability.pos)));
+        assertThatThrownBy(() -> this.service.batch(new InventoryStockBatchRequest(f.branch(), List.of(physical))))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getCode()).isEqualTo("CAPABILITY_REQUIRED"));
     }
 
     // ------------------------------------------------ unit presentation metadata

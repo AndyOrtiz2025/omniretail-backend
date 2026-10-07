@@ -5,6 +5,10 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -18,6 +22,10 @@ import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.auth.entity.Session;
 import com.omniretail.backend.auth.service.JwtService;
 import com.omniretail.backend.auth.service.SessionService;
+import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.catalog.repository.UnitRepository;
+import com.omniretail.backend.purchasing.repository.SupplierCostTierRepository;
+import com.omniretail.backend.purchasing.repository.SupplierProductRepository;
 import com.omniretail.backend.shared.security.PermissionResolver;
 import com.omniretail.backend.shared.security.SaasCapability;
 import com.omniretail.backend.shared.security.TenantEntitlementResolver;
@@ -39,6 +47,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -54,6 +63,10 @@ class PurchaseOrderControllerIntegrationTest {
     @Autowired private JdbcTemplate jdbc;
     @Autowired private JwtService jwtService;
     @MockitoBean private SessionService sessions;
+    @MockitoSpyBean private SupplierProductRepository supplierProducts;
+    @MockitoSpyBean private ProductRepository products;
+    @MockitoSpyBean private UnitRepository units;
+    @MockitoSpyBean private SupplierCostTierRepository costTiers;
     @MockitoBean private PermissionResolver permissions;
     @MockitoBean private TenantEntitlementResolver entitlements;
 
@@ -454,6 +467,65 @@ class PurchaseOrderControllerIntegrationTest {
                 executor.shutdownNow();
             }
         }
+    }
+
+    @Test
+    void draftResolutionLoadsProductsSupplierProductsUnitsAndTiersInBatchInsteadOfPerLine() throws Exception {
+        Fixture fixture = fixture();
+        String token = token(fixture.actor());
+        UUID second = addProduct(fixture, "SKU-B-");
+        UUID third = addProduct(fixture, "SKU-C-");
+        UUID secondRelation = addSupplierProduct(fixture, fixture.supplier(), second, fixture.purchaseUnit(), "12", "2");
+        addSupplierProduct(fixture, fixture.supplier(), third, fixture.purchaseUnit(), "12", "2");
+        jdbc.update("""
+                INSERT INTO supplier_cost_tiers (tenant_id, supplier_product_id, min_quantity, unit_cost)
+                VALUES (?, ?, 1, 6.00), (?, ?, 5, 5.00)
+                """, fixture.tenant(), secondRelation, fixture.tenant(), secondRelation);
+        clearInvocations(supplierProducts, products, units, costTiers);
+
+        mvc.perform(post(BASE)
+                        .header("Authorization", token)
+                        .contentType(APPLICATION_JSON)
+                        .content(orderBody(fixture.branch(), fixture.supplier(), "["
+                                + item(fixture.product(), "10", "7.00") + ","
+                                + item(second, "5", "5.00") + ","
+                                + item(third, "2", "9.00") + "]")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.items.length()").value(3))
+                .andExpect(jsonPath("$.items[0].productId").value(fixture.product().toString()))
+                .andExpect(jsonPath("$.items[1].productId").value(second.toString()))
+                .andExpect(jsonPath("$.items[2].productId").value(third.toString()));
+
+        verify(supplierProducts, times(1)).findByTenantIdAndSupplierIdAndProductIdIn(any(), any(), any());
+        verify(supplierProducts, never()).findByTenantIdAndSupplierIdAndProductId(any(), any(), any());
+        verify(products, times(1)).findByTenantIdAndIdIn(any(), any());
+        verify(products, never()).findByTenantIdAndId(any(), any());
+        verify(units, times(1)).findByTenantIdAndIdIn(any(), any());
+        verify(units, never()).findByTenantIdAndId(any(), any());
+        verify(costTiers, times(1)).findByTenantIdAndSupplierProductIdInOrderByMinQuantityAsc(any(), any());
+        verify(costTiers, never()).findByTenantIdAndSupplierProductIdOrderByMinQuantityAsc(any(), any());
+    }
+
+    @Test
+    void draftResolutionKeepsErrorsForUnknownProductAndMissingSupplierProductAndTenantIsolation() throws Exception {
+        Fixture fixture = fixture();
+        String token = token(fixture.actor());
+        UUID noRelation = addProduct(fixture, "SKU-NR-");
+        Fixture other = fixture();
+        UUID foreignProduct = other.product();
+
+        for (UUID product : List.of(noRelation, foreignProduct, UUID.randomUUID())) {
+            mvc.perform(post(BASE)
+                            .header("Authorization", token)
+                            .contentType(APPLICATION_JSON)
+                            .content(orderBody(fixture.branch(), fixture.supplier(),
+                                    "[" + item(fixture.product(), "10", "7.00") + "," + item(product, "2", "9.00") + "]")))
+                    .andExpect(status().isNotFound())
+                    .andExpect(jsonPath("$.code").value("PURCHASE_ORDER_SUPPLIER_PRODUCT_NOT_FOUND"));
+        }
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM purchase_orders WHERE tenant_id = ?", Long.class, fixture.tenant()))
+                .isZero();
     }
 
     private UUID createOrder(

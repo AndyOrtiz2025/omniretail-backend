@@ -4,6 +4,8 @@ import com.omniretail.backend.purchasing.entity.ReceiptIncident;
 import com.omniretail.backend.purchasing.entity.ReceiptIncidentStatus;
 import jakarta.persistence.LockModeType;
 import java.math.BigDecimal;
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
@@ -24,6 +26,22 @@ public interface ReceiptIncidentRepository extends JpaRepository<ReceiptIncident
 
     Page<ReceiptIncident> findByTenantIdAndGoodsReceiptId(
             UUID tenantId, UUID goodsReceiptId, Pageable pageable);
+
+    /** Total de incidencias (abiertas y resueltas) por recepción, en una sola query agrupada. */
+    @Query("""
+            select incident.goodsReceiptId as goodsReceiptId, count(incident) as total
+            from ReceiptIncident incident
+            where incident.tenantId = :tenantId and incident.goodsReceiptId in :goodsReceiptIds
+            group by incident.goodsReceiptId
+            """)
+    List<ReceiptIncidentCount> countByGoodsReceiptIds(
+            @Param("tenantId") UUID tenantId, @Param("goodsReceiptIds") Collection<UUID> goodsReceiptIds);
+
+    interface ReceiptIncidentCount {
+        UUID getGoodsReceiptId();
+
+        long getTotal();
+    }
 
     boolean existsByTenantIdAndGoodsReceiptItemId(UUID tenantId, UUID goodsReceiptItemId);
 

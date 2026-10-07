@@ -53,6 +53,8 @@ class GoodsReceiptServiceTest {
     @Autowired private ReceiptIncidentService incidents;
     @Autowired private InventorySerialValidationService serialValidation;
     @Autowired private JdbcTemplate jdbc;
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean
+    private com.omniretail.backend.purchasing.repository.ReceiptIncidentRepository incidentRepository;
     @MockitoBean private CurrentUser currentUser;
     @MockitoBean private PermissionResolver permissions;
     @MockitoBean private TenantEntitlementResolver entitlements;
@@ -1184,6 +1186,65 @@ class GoodsReceiptServiceTest {
                 new TenantEntitlements(true, true, EnumSet.noneOf(SaasCapability.class)));
         assertThatThrownBy(() -> serialValidation.validate(request))
                 .satisfies(thrown -> assertCode(thrown, "CAPABILITY_REQUIRED"));
+    }
+
+    @Test
+    void listExposesTotalReceivedQuantityAndIncidentCountPerReceiptWithOneAggregateQuery() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        UUID itemB = secondOrderItem(fixture);
+        GoodsReceiptResponse twoLines = createTwoLines(fixture, itemB); // 2 + 3 = 5
+        GoodsReceiptResponse oneLine = create(fixture, fixture.orderItem(), "4", fixture.location());
+        GoodsReceiptResponse none = create(fixture, fixture.orderItem(), "1", fixture.location());
+        UUID firstLine = receiptItemId(twoLines, fixture.orderItem());
+        UUID secondLine = receiptItemId(twoLines, itemB);
+        addIncident(fixture, twoLines.id(), firstLine, "open", "1");
+        addIncident(fixture, twoLines.id(), secondLine, "resolved", "1");
+        addIncident(fixture, twoLines.id(), null, "open", null);
+        addIncident(fixture, oneLine.id(), receiptItemId(oneLine, fixture.orderItem()), "open", "1");
+        org.mockito.Mockito.clearInvocations(incidentRepository);
+
+        var page = service.list(fixture.branch(), fixture.order(), GoodsReceiptStatus.draft,
+                org.springframework.data.domain.PageRequest.of(0, 20));
+
+        assertThat(page.items()).hasSize(3);
+        GoodsReceiptResponse listedTwo = page.items().stream()
+                .filter(item -> item.id().equals(twoLines.id())).findFirst().orElseThrow();
+        GoodsReceiptResponse listedOne = page.items().stream()
+                .filter(item -> item.id().equals(oneLine.id())).findFirst().orElseThrow();
+        GoodsReceiptResponse listedNone = page.items().stream()
+                .filter(item -> item.id().equals(none.id())).findFirst().orElseThrow();
+        assertThat(listedTwo.totalReceivedQuantity()).isEqualByComparingTo("5");
+        assertThat(listedTwo.incidentCount()).isEqualTo(3);
+        assertThat(listedOne.totalReceivedQuantity()).isEqualByComparingTo("4");
+        assertThat(listedOne.incidentCount()).isEqualTo(1);
+        assertThat(listedNone.totalReceivedQuantity()).isEqualByComparingTo("1");
+        assertThat(listedNone.incidentCount()).isZero();
+        org.mockito.Mockito.verify(incidentRepository, org.mockito.Mockito.times(1))
+                .countByGoodsReceiptIds(any(), any());
+    }
+
+    @Test
+    void detailAndMutationsReportTheSameAggregatesAndOtherTenantsIncidentsAreNeverCounted() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        GoodsReceiptResponse draft = create(fixture, fixture.orderItem(), "2", fixture.location());
+        assertThat(draft.incidentCount()).isZero();
+        assertThat(draft.totalReceivedQuantity()).isEqualByComparingTo("2");
+        addIncident(fixture, draft.id(), receiptItemId(draft, fixture.orderItem()), "open", "1");
+        Fixture other = fixture(true, false, true, "approved", "1");
+        GoodsReceiptResponse otherDraft = create(other, other.orderItem(), "1", other.location());
+        addIncident(other, otherDraft.id(), receiptItemId(otherDraft, other.orderItem()), "open", "1");
+        useActor(fixture);
+
+        GoodsReceiptResponse detail = service.get(draft.id());
+        GoodsReceiptResponse updated = service.update(
+                draft.id(), updateOf(line(fixture.orderItem(), "2", fixture.location())));
+
+        assertThat(detail.incidentCount()).isEqualTo(1);
+        assertThat(detail.totalReceivedQuantity()).isEqualByComparingTo("2");
+        assertThat(updated.incidentCount()).isEqualTo(1);
+        assertThat(service.list(fixture.branch(), null, GoodsReceiptStatus.confirmed,
+                        org.springframework.data.domain.PageRequest.of(0, 20)).items())
+                .isEmpty();
     }
 
     private GoodsReceiptItemRequest line(UUID orderItem, String quantity, UUID location) {

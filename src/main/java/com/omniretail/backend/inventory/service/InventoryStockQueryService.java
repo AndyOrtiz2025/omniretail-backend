@@ -11,6 +11,9 @@ import com.omniretail.backend.inventory.dto.InventoryAlertStatus;
 import com.omniretail.backend.inventory.dto.InventoryKitAvailabilityComponentDto;
 import com.omniretail.backend.inventory.dto.InventoryKitAvailabilityResponse;
 import com.omniretail.backend.inventory.dto.InventoryProductMode;
+import com.omniretail.backend.inventory.dto.InventoryStockBatchItemDto;
+import com.omniretail.backend.inventory.dto.InventoryStockBatchRequest;
+import com.omniretail.backend.inventory.dto.InventoryStockBatchResponse;
 import com.omniretail.backend.inventory.dto.InventoryStockDisplayStatus;
 import com.omniretail.backend.inventory.dto.InventoryStockItemDto;
 import com.omniretail.backend.inventory.dto.InventoryStockPageResponse;
@@ -18,6 +21,7 @@ import com.omniretail.backend.inventory.dto.InventoryStockSummaryDto;
 import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
 import com.omniretail.backend.inventory.repository.InventoryBalanceRepository.CrossBranchStockProjection;
 import com.omniretail.backend.inventory.repository.ProductInventorySettingsRepository;
+import com.omniretail.backend.inventory.repository.ProductInventorySettingsRepository.InventoryStockBatchProjection;
 import com.omniretail.backend.inventory.repository.ProductInventorySettingsRepository.InventoryStockProjection;
 import com.omniretail.backend.inventory.repository.ProductInventorySettingsRepository.InventoryStockSummaryProjection;
 import com.omniretail.backend.inventory.repository.ProductInventorySettingsRepository.KitComponentAvailabilityProjection;
@@ -29,8 +33,12 @@ import com.omniretail.backend.shared.security.TenantCapabilityGuard;
 import java.time.LocalDate;
 import java.util.Collection;
 import java.util.EnumSet;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -114,6 +122,57 @@ public class InventoryStockQueryService {
                         summary.getLowStock(),
                         summary.getExpiringSoonProducts(),
                         summary.getOutOfStock()));
+    }
+
+    /**
+     * Stock de varios productos físicos de una sucursal en una sola consulta (sin N+1). Fail-closed: si algún id
+     * no es un producto del tenant responde 404 (sin distinguir ajenos de inexistentes); si es servicio, kit o
+     * un producto sin control de stock, 400. Los ids repetidos se deduplican y se conserva el orden pedido.
+     */
+    public InventoryStockBatchResponse batch(InventoryStockBatchRequest request) {
+        AuthenticatedUser actor = currentUser.require();
+        UUID tenantId = actor.tenantId();
+        tenantCapabilityGuard.ensureTenantCapability(tenantId, SaasCapability.inventory);
+        requireBranchAndAccess(actor, request.branchId());
+        Set<UUID> productIds = new LinkedHashSet<>(request.productIds());
+        if (productIds.contains(null)) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST, "INVENTORY_STOCK_BATCH_INVALID", "Los productos son requeridos.");
+        }
+        if (productIds.isEmpty()) {
+            return new InventoryStockBatchResponse(request.branchId(), List.of());
+        }
+
+        List<Product> products = productRepository.findByTenantIdAndIdIn(tenantId, productIds);
+        if (products.size() != productIds.size()) {
+            throw new BusinessException(
+                    HttpStatus.NOT_FOUND, "PRODUCT_NOT_FOUND", "Producto no encontrado.");
+        }
+        if (products.stream().anyMatch(product -> product.getProductType() != ProductType.physical
+                || !Boolean.TRUE.equals(product.getTrackingStock()))) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "INVENTORY_STOCK_BATCH_PRODUCT_UNSUPPORTED",
+                    "El stock solo aplica a productos fisicos con control de inventario.");
+        }
+
+        Map<UUID, InventoryStockBatchProjection> rows = new HashMap<>();
+        settingsRepository.findStockBatch(tenantId, request.branchId(), productIds)
+                .forEach(row -> rows.put(row.getProductId(), row));
+        List<InventoryStockBatchItemDto> items = productIds.stream()
+                .map(rows::get)
+                .filter(Objects::nonNull)
+                .map(row -> new InventoryStockBatchItemDto(
+                        row.getProductId(),
+                        row.getQuantity(),
+                        row.getReservedQuantity(),
+                        row.getAvailableQuantity(),
+                        row.getMinStock(),
+                        row.getReorderPoint(),
+                        InventoryAlertStatus.valueOf(row.getStockStatus()),
+                        row.getSuggestedReorder()))
+                .toList();
+        return new InventoryStockBatchResponse(request.branchId(), items);
     }
 
     /**
