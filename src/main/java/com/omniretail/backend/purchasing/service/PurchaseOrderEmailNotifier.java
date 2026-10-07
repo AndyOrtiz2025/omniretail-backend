@@ -2,8 +2,10 @@ package com.omniretail.backend.purchasing.service;
 
 import com.omniretail.backend.administration.entity.Branch;
 import com.omniretail.backend.administration.entity.Supplier;
+import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.purchasing.entity.PurchaseOrder;
 import com.omniretail.backend.purchasing.entity.PurchaseOrderItem;
+import com.omniretail.backend.shared.notification.EmailAttachmentReference;
 import com.omniretail.backend.shared.notification.EmailMessage;
 import com.omniretail.backend.shared.notification.EmailPurpose;
 import com.omniretail.backend.shared.notification.EmailRequestedEvent;
@@ -13,17 +15,21 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 
 /**
- * Notificador por correo para ordenes de compra.
+ * Notificador por correo para ordenes de compra aprobadas.
  * Proposito TENANT: se envia al proveedor usando la cuenta Gmail configurada por el tenant.
- * Si el proveedor no tiene correo configurado, no se dispara ningun evento.
- * Si el tenant no tiene configurado Gmail, el evento sera marcado como fallido por EmailDeliveryService
- * sin abortar la transaccion de la orden.
+ *
+ * <p>El correo es un resumen (texto plano + HTML) con el PDF de la orden adjunto por REFERENCIA: el PDF se genera
+ * al momento de enviar (y de reintentar) y nunca viaja ni se guarda en el payload. Una aprobacion produce un unico
+ * evento; si el proveedor no tiene correo no se dispara nada. Si el tenant no tiene Gmail configurado, o falla el
+ * SMTP o la generacion del PDF, el envio queda FAILED en {@code email_delivery} (reintentable cuando aplica) sin
+ * abortar ni revertir la aprobacion.
  */
 @Component
 @RequiredArgsConstructor
 public class PurchaseOrderEmailNotifier {
 
     private final ApplicationEventPublisher eventPublisher;
+    private final TenantRepository tenantRepository;
 
     public void notifyOrderApproved(
             PurchaseOrder order,
@@ -35,69 +41,41 @@ public class PurchaseOrderEmailNotifier {
         }
 
         String recipient = supplier.getEmail().trim();
-        String subject = "Orden de compra " + order.getNumber();
-        String body = buildApprovedOrderBody(order, supplier, branch, items);
+        PurchaseOrderEmailTemplate.Content content = PurchaseOrderEmailTemplate.render(
+                businessName(order),
+                order,
+                supplier,
+                branch,
+                items == null ? 0 : items.size());
+        EmailAttachmentReference pdf = new EmailAttachmentReference(
+                PurchaseOrderPdfAttachmentResolver.TYPE,
+                order.getId(),
+                attachmentFilename(order),
+                PurchaseOrderPdfAttachmentResolver.MEDIA_TYPE);
 
-        eventPublisher.publishEvent(new EmailRequestedEvent(
-                EmailMessage.text(order.getTenantId(), EmailPurpose.PURCHASE_ORDER, recipient, subject, body)));
+        eventPublisher.publishEvent(new EmailRequestedEvent(EmailMessage.withAttachments(
+                order.getTenantId(),
+                EmailPurpose.PURCHASE_ORDER,
+                recipient,
+                content.subject(),
+                content.plainText(),
+                content.html(),
+                List.of(pdf))));
     }
 
-    private String buildApprovedOrderBody(
-            PurchaseOrder order,
-            Supplier supplier,
-            Branch branch,
-            List<PurchaseOrderItem> items) {
-        String supplierName = supplier.getName() != null && !supplier.getName().isBlank()
-                ? supplier.getName()
-                : "Proveedor";
-        StringBuilder sb = new StringBuilder();
-        sb.append("Estimado(a) ").append(supplierName).append(":\n\n");
-        sb.append("Le notificamos que la orden de compra ")
-                .append(order.getNumber())
-                .append(" ha sido aprobada.\n\n");
-
-        sb.append("Detalles de la orden:\n");
-        sb.append("- Numero: ").append(order.getNumber()).append("\n");
-        if (order.getExpectedDate() != null) {
-            sb.append("- Fecha esperada de entrega: ").append(order.getExpectedDate()).append("\n");
+    private String businessName(PurchaseOrder order) {
+        if (order.getTenantId() == null) {
+            return null;
         }
-        if (branch != null) {
-            sb.append("- Sucursal de recepcion: ").append(branch.getName()).append("\n");
-            if (branch.getAddress() != null && !branch.getAddress().isBlank()) {
-                sb.append("- Direccion de entrega: ").append(branch.getAddress()).append("\n");
-            }
-        }
+        return tenantRepository.findById(order.getTenantId())
+                .map(tenant -> tenant.getLegalName() != null && !tenant.getLegalName().isBlank()
+                        ? tenant.getLegalName()
+                        : tenant.getName())
+                .orElse(null);
+    }
 
-        if (items != null && !items.isEmpty()) {
-            sb.append("\nProductos solicitados:\n");
-            for (PurchaseOrderItem item : items) {
-                String unit = item.getUnitSymbolSnapshot() != null && !item.getUnitSymbolSnapshot().isBlank()
-                        ? item.getUnitSymbolSnapshot()
-                        : "unidades";
-                sb.append("- ")
-                        .append(item.getQuantity())
-                        .append(" ")
-                        .append(unit)
-                        .append(" | ")
-                        .append(item.getProductNameSnapshot())
-                        .append(" (SKU: ")
-                        .append(item.getProductSkuSnapshot())
-                        .append(")")
-                        .append(" | Costo unitario: Q")
-                        .append(item.getUnitCost())
-                        .append(" | Subtotal: Q")
-                        .append(item.getSubtotal())
-                        .append("\n");
-            }
-        }
-
-        sb.append("\nTotal: Q").append(order.getTotal() != null ? order.getTotal() : "0.00").append("\n\n");
-
-        if (order.getNotes() != null && !order.getNotes().isBlank()) {
-            sb.append("Notas adicionales:\n").append(order.getNotes()).append("\n\n");
-        }
-
-        sb.append("Saludos cordiales.");
-        return sb.toString();
+    private static String attachmentFilename(PurchaseOrder order) {
+        String number = order.getNumber() == null ? "orden" : order.getNumber().replaceAll("[^A-Za-z0-9-]+", "-");
+        return number + "-orden-compra.pdf";
     }
 }

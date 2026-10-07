@@ -1,7 +1,14 @@
 databaseChangeLog:
   - changeSet:
-      id: 054-email-delivery-sender-channel
+      id: 055-email-delivery-sender-channel
       author: AndyOrtiz2025
+      # Este changeset se llamo 054 antes de chocar con 054-ecommerce-require-account-for-checkout; en bases
+      # locales que ya lo ejecutaron con ese nombre se marca como ejecutado en lugar de fallar.
+      preConditions:
+        - onFail: MARK_RAN
+        - sqlCheck:
+            expectedResult: 0
+            sql: SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'email_delivery' AND column_name = 'sender_channel'
       changes:
         # Diagnostico del remitente de cada envio. sender_channel: por donde salio el correo (o por donde se
         # intento por ultima vez si fallo): PLATFORM (MAIL_*) o TENANT (Gmail del negocio). Nulo en los

@@ -177,6 +177,8 @@ public class StorefrontCheckoutService {
                     .build());
         }
 
+        BigDecimal shippingTotal = StorefrontShippingPolicy.calculate(subtotal);
+        BigDecimal total = subtotal.add(shippingTotal);
         UUID orderSeed = UUID.randomUUID();
         Order order = Order.builder()
                 .branchId(branch.getId())
@@ -192,8 +194,8 @@ public class StorefrontCheckoutService {
                         "emailMode", "send", "email", request.email().trim().toLowerCase())))
                 .subtotal(subtotal)
                 .discountTotal(discountTotal)
-                .shippingTotal(BigDecimal.ZERO)
-                .total(subtotal)
+                .shippingTotal(shippingTotal)
+                .total(total)
                 .trackingToken(UUID.randomUUID().toString().replace("-", ""))
                 .idempotencyKey(idempotencyKey)
                 .idempotencyFingerprint(fingerprint)
@@ -230,7 +232,7 @@ public class StorefrontCheckoutService {
                 .orderId(savedOrder.getId())
                 .method(PaymentMethod.card)
                 .status(PaymentStatus.approved)
-                .amount(subtotal)
+                .amount(total)
                 .currency(tenant.getDefaultCurrency())
                 .reference("CARD-SIMULATED-" + request.cardLastFour())
                 .build();

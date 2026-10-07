@@ -326,6 +326,109 @@ class InventoryStockMixedProductsTest {
                         exception -> assertThat(exception.getCode()).isEqualTo("PRODUCT_NOT_FOUND"));
     }
 
+    // ------------------------------------------------- reorder point and low stock
+
+    @Test
+    void reorderPointDefinesNearMinimumAndCriticalKeepsPrecedence() {
+        Fixture f = fixture();
+        // minStock 10, reorderPoint 25
+        UUID normal = physicalWithReorder(f, "p40", "40", "10", "25");
+        UUID atReorder = physicalWithReorder(f, "p25", "25", "10", "25");
+        UUID belowReorder = physicalWithReorder(f, "p20", "20", "10", "25");
+        UUID atMin = physicalWithReorder(f, "p10", "10", "10", "25");
+        UUID critical = physicalWithReorder(f, "p09", "9", "10", "25");
+        UUID out = physicalWithReorder(f, "p00", "0", "10", "25");
+
+        var items = service.list(f.branch(), null, null, null, PageRequest.of(0, 20)).items();
+
+        assertThat(byId(items, normal).status()).isEqualTo(InventoryAlertStatus.normal);
+        assertThat(byId(items, atReorder).status()).isEqualTo(InventoryAlertStatus.near_minimum);
+        assertThat(byId(items, belowReorder).status()).isEqualTo(InventoryAlertStatus.near_minimum);
+        assertThat(byId(items, atMin).status()).isEqualTo(InventoryAlertStatus.near_minimum);
+        assertThat(byId(items, critical).status()).isEqualTo(InventoryAlertStatus.critical);
+        assertThat(byId(items, out).status()).isEqualTo(InventoryAlertStatus.out_of_stock);
+        assertThat(byId(items, belowReorder).suggestedReorder()).isEqualByComparingTo("5");
+    }
+
+    @Test
+    void withoutReorderPointTheHistoricalMinStockTimesOnePointTwentyFiveRuleIsKept() {
+        Fixture f = fixture();
+        UUID near = physical(f, "near", "12.5", "0", "10");
+        UUID normal = physical(f, "normal", "12.501", "0", "10");
+        UUID critical = physical(f, "critical", "9.999", "0", "10");
+        UUID noThreshold = physical(f, "sin minimo", "3", "0", null);
+
+        var items = service.list(f.branch(), null, null, null, PageRequest.of(0, 20)).items();
+
+        assertThat(byId(items, near).status()).isEqualTo(InventoryAlertStatus.near_minimum);
+        assertThat(byId(items, normal).status()).isEqualTo(InventoryAlertStatus.normal);
+        assertThat(byId(items, critical).status()).isEqualTo(InventoryAlertStatus.critical);
+        assertThat(byId(items, noThreshold).status()).isEqualTo(InventoryAlertStatus.normal);
+    }
+
+    @Test
+    void lowStockFilterReturnsOnlyCriticalAndNearMinimumPaginatedAndConsistentWithTheKpi() {
+        Fixture f = fixture();
+        UUID critical = physicalWithReorder(f, "Aaa critico", "5", "10", "25");
+        UUID nearByReorder = physicalWithReorder(f, "Bbb reorden", "20", "10", "25");
+        UUID nearByFactor = physical(f, "Ccc factor", "12", "0", "10");
+        physicalWithReorder(f, "Ddd normal", "100", "10", "25");
+        physical(f, "Eee sin stock", null, null, null);
+        service(f, "Servicio");
+        UUID component = physical(f, "Componente", "50", "0", null);
+        kit(f, "Kit", List.of(component(component, "1")));
+
+        var all = service.list(f.branch(), null, null, null, ALL_TYPES, true, PageRequest.of(0, 20));
+        var firstPage = service.list(f.branch(), null, null, null, ALL_TYPES, true, PageRequest.of(0, 2));
+        var secondPage = service.list(f.branch(), null, null, null, ALL_TYPES, true, PageRequest.of(1, 2));
+        var unfiltered = service.list(f.branch(), null, null, null, PageRequest.of(0, 20));
+
+        assertThat(all.items()).extracting(InventoryStockItemDto::productId)
+                .containsExactly(critical, nearByReorder, nearByFactor);
+        assertThat(all.items()).extracting(InventoryStockItemDto::productType).containsOnly(ProductType.physical);
+        assertThat(all.items()).extracting(InventoryStockItemDto::status)
+                .doesNotContain(InventoryAlertStatus.normal, InventoryAlertStatus.out_of_stock);
+        assertThat(all.totalItems()).isEqualTo(3);
+        assertThat(firstPage.items()).hasSize(2);
+        assertThat(firstPage.totalItems()).isEqualTo(3);
+        assertThat(firstPage.totalPages()).isEqualTo(2);
+        assertThat(secondPage.items()).extracting(InventoryStockItemDto::productId).containsExactly(nearByFactor);
+        // KPI "Stock bajo": mismo conjunto que filas y total de la lista filtrada.
+        assertThat(unfiltered.summary().lowStock()).isEqualTo(3);
+        assertThat(all.summary().lowStock()).isEqualTo(all.totalItems());
+        assertThat(all.summary().activeProducts()).isEqualTo(all.totalItems());
+        assertThat(all.summary().outOfStock()).isZero();
+    }
+
+    @Test
+    void lowStockFilterIsRejectedWhenCombinedWithAnExplicitStatusAndRespectsTenantAndBranch() {
+        Fixture f = fixture();
+        UUID mine = physical(f, "Propio", "2", "0", "10");
+        UUID otherBranch = addBranch(f);
+        jdbc.update("""
+                INSERT INTO product_inventory_settings (tenant_id, branch_id, product_id, min_stock, reorder_point)
+                VALUES (?, ?, ?, 10, NULL)
+                """, f.tenant(), otherBranch, mine);
+        jdbc.update("""
+                INSERT INTO inventory_balances (tenant_id, branch_id, product_id, quantity, reserved_quantity)
+                VALUES (?, ?, ?, 500, 0)
+                """, f.tenant(), otherBranch, mine);
+        Fixture foreign = fixture();
+        physical(foreign, "Ajeno bajo", "1", "0", "10");
+        use(f);
+
+        assertThatThrownBy(() -> service.list(
+                        f.branch(), null, null, InventoryAlertStatus.critical, ALL_TYPES, true, PageRequest.of(0, 20)))
+                .isInstanceOfSatisfying(BusinessException.class, exception -> {
+                    assertThat(exception.getCode()).isEqualTo("INVENTORY_STOCK_FILTERS_INCOMPATIBLE");
+                    assertThat(exception.getStatus().value()).isEqualTo(400);
+                });
+        assertThat(service.list(f.branch(), null, null, null, ALL_TYPES, true, PageRequest.of(0, 20)).items())
+                .extracting(InventoryStockItemDto::productId).containsExactly(mine);
+        assertThat(service.list(otherBranch, null, null, null, ALL_TYPES, true, PageRequest.of(0, 20)).items())
+                .isEmpty();
+    }
+
     // ------------------------------------------------------- batch stock lookup
 
     @Test
@@ -842,6 +945,20 @@ class InventoryStockMixedProductsTest {
                     VALUES (?, ?, ?, ?::numeric, ?::numeric)
                     """, f.tenant(), f.branch(), product, quantity, reserved);
         }
+        return product;
+    }
+
+    private UUID physicalWithReorder(
+            Fixture f, String name, String quantity, String minStock, String reorderPoint) {
+        UUID product = insertProduct(f, f.category(), "physical", name, true);
+        jdbc.update("""
+                INSERT INTO product_inventory_settings (tenant_id, branch_id, product_id, min_stock, reorder_point)
+                VALUES (?, ?, ?, ?::numeric, ?::numeric)
+                """, f.tenant(), f.branch(), product, minStock, reorderPoint);
+        jdbc.update("""
+                INSERT INTO inventory_balances (tenant_id, branch_id, product_id, quantity, reserved_quantity)
+                VALUES (?, ?, ?, ?::numeric, 0)
+                """, f.tenant(), f.branch(), product, quantity);
         return product;
     }
 
