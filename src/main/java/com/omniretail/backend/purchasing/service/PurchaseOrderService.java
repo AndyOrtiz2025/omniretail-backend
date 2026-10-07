@@ -287,20 +287,51 @@ public class PurchaseOrderService {
             List<PurchaseOrderItemRequest> requests,
             Set<UUID> reusableSupplierProductIds) {
         List<ResolvedItem> result = new ArrayList<>(requests.size());
+        // Carga batch (tenant-scoped) antes del loop: productos, relaciones proveedor-producto y unidades.
+        // Los tramos de costo ya se cargan en una sola query en attachSuggestedCosts. Las reglas y el orden
+        // de los errores dentro del loop son los mismos de siempre; solo cambia de dónde se leen los datos.
+        Set<UUID> productIds = requests.stream()
+                .map(PurchaseOrderItemRequest::productId)
+                .filter(java.util.Objects::nonNull)
+                .collect(Collectors.toCollection(java.util.LinkedHashSet::new));
+        Map<UUID, SupplierProduct> supplierProductsByProduct = new HashMap<>();
+        Map<UUID, Product> productsById = new HashMap<>();
+        Map<UUID, Unit> unitsById = new HashMap<>();
+        if (!productIds.isEmpty()) {
+            supplierProductRepository
+                    .findByTenantIdAndSupplierIdAndProductIdIn(tenantId, supplierId, productIds)
+                    .forEach(found -> supplierProductsByProduct.putIfAbsent(found.getProductId(), found));
+            productRepository.findByTenantIdAndIdIn(tenantId, productIds)
+                    .forEach(found -> productsById.put(found.getId(), found));
+            Set<UUID> unitIds = new java.util.HashSet<>();
+            supplierProductsByProduct.values().forEach(found -> unitIds.add(found.getPurchaseUnitId()));
+            productsById.values().forEach(found -> unitIds.add(found.getBaseUnitId()));
+            unitRepository.findByTenantIdAndIdIn(tenantId, unitIds)
+                    .forEach(found -> unitsById.put(found.getId(), found));
+        }
         for (PurchaseOrderItemRequest request : requests) {
-            SupplierProduct supplierProduct = supplierProductRepository
-                    .findByTenantIdAndSupplierIdAndProductId(tenantId, supplierId, request.productId())
-                    .orElseThrow(PurchaseOrderService::supplierProductNotFound);
+            SupplierProduct supplierProduct = request.productId() == null
+                    ? null
+                    : supplierProductsByProduct.get(request.productId());
+            if (supplierProduct == null) {
+                throw supplierProductNotFound();
+            }
             if (!supplierProduct.getActive()
                     && !reusableSupplierProductIds.contains(supplierProduct.getId())) {
                 throw businessError(
                         "PURCHASE_ORDER_SUPPLIER_PRODUCT_INACTIVE",
                         "La relacion comercial del producto no esta activa.");
             }
-            Product product = requireProduct(tenantId, request.productId());
+            Product product = productsById.get(request.productId());
+            if (product == null) {
+                throw new BusinessException(
+                        HttpStatus.NOT_FOUND,
+                        "PURCHASE_ORDER_PRODUCT_NOT_FOUND",
+                        "Producto no encontrado.");
+            }
             requireDirectlyPurchasable(product);
-            Unit purchaseUnit = requireUnit(tenantId, supplierProduct.getPurchaseUnitId());
-            Unit baseUnit = requireUnit(tenantId, product.getBaseUnitId());
+            Unit purchaseUnit = requireLoadedUnit(unitsById, supplierProduct.getPurchaseUnitId());
+            Unit baseUnit = requireLoadedUnit(unitsById, product.getBaseUnitId());
             validateFactor(product, supplierProduct);
             validateQuantity(request.quantity(), purchaseUnit, baseUnit, supplierProduct, product);
             validateMoney(request.unitCost(), "PURCHASE_ORDER_INVALID_COST", "El costo acordado no es valido.");
@@ -457,6 +488,15 @@ public class PurchaseOrderService {
                 .findByTenantIdAndId(tenantId, unitId)
                 .orElseThrow(() -> new BusinessException(
                         HttpStatus.NOT_FOUND, "PURCHASE_ORDER_UNIT_NOT_FOUND", "Unidad no encontrada."));
+    }
+
+    private static Unit requireLoadedUnit(Map<UUID, Unit> unitsById, UUID unitId) {
+        Unit unit = unitsById.get(unitId);
+        if (unit == null) {
+            throw new BusinessException(
+                    HttpStatus.NOT_FOUND, "PURCHASE_ORDER_UNIT_NOT_FOUND", "Unidad no encontrada.");
+        }
+        return unit;
     }
 
     private static void requireBranchAccess(BranchAccess access, UUID branchId) {

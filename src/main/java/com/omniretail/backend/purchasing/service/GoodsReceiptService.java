@@ -164,7 +164,8 @@ public class GoodsReceiptService {
         receipt.setTenantId(tenantId);
         GoodsReceipt savedReceipt = goodsReceiptRepository.saveAndFlush(receipt);
         List<GoodsReceiptItem> savedItems = saveResolvedItems(tenantId, savedReceipt.getId(), resolvedItems);
-        return response(savedReceipt, order, savedItems, purchaseOrderItemsById(resolvedItems));
+        // Una recepción recién creada no puede tener incidencias.
+        return response(savedReceipt, order, savedItems, purchaseOrderItemsById(resolvedItems), 0L);
     }
 
     public GoodsReceiptResponse update(UUID id, UpdateGoodsReceiptRequest request) {
@@ -185,7 +186,9 @@ public class GoodsReceiptService {
         receipt.setNotes(normalize(request.notes()));
         List<GoodsReceiptItem> savedItems = upsertItems(tenantId, receipt.getId(), resolvedItems);
         GoodsReceipt savedReceipt = goodsReceiptRepository.saveAndFlush(receipt);
-        return response(savedReceipt, order, savedItems, purchaseOrderItemsById(resolvedItems));
+        return response(
+                savedReceipt, order, savedItems, purchaseOrderItemsById(resolvedItems),
+                incidentCounts(tenantId, List.of(savedReceipt.getId())).getOrDefault(savedReceipt.getId(), 0L));
     }
 
     /**
@@ -397,7 +400,9 @@ public class GoodsReceiptService {
         recalculatePurchaseOrderStatus(order, resolvedItems, confirmedBefore, tenantId);
         purchaseOrderRepository.save(order);
         GoodsReceipt savedReceipt = goodsReceiptRepository.saveAndFlush(receipt);
-        return response(savedReceipt, order, storedItems, purchaseOrderItemsById(resolvedItems));
+        return response(
+                savedReceipt, order, storedItems, purchaseOrderItemsById(resolvedItems),
+                incidentCounts(tenantId, List.of(savedReceipt.getId())).getOrDefault(savedReceipt.getId(), 0L));
     }
 
     /**
@@ -778,7 +783,16 @@ public class GoodsReceiptService {
                 .findForOrders(tenantId, orderIds)
                 .stream()
                 .collect(Collectors.toMap(PurchaseOrderItem::getId, Function.identity()));
-        return new ResponseContext(itemsByReceipt, ordersById, orderItemsById);
+        return new ResponseContext(
+                itemsByReceipt, ordersById, orderItemsById, incidentCounts(tenantId, receiptIds));
+    }
+
+    /** UNA query agrupada (tenant-scoped) con el total de incidencias por recepción; sin filas = 0. */
+    private Map<UUID, Long> incidentCounts(UUID tenantId, Collection<UUID> receiptIds) {
+        Map<UUID, Long> counts = new HashMap<>();
+        receiptIncidentRepository.countByGoodsReceiptIds(tenantId, receiptIds)
+                .forEach(row -> counts.put(row.getGoodsReceiptId(), row.getTotal()));
+        return counts;
     }
 
     private GoodsReceiptResponse response(GoodsReceipt receipt, ResponseContext context) {
@@ -787,14 +801,16 @@ public class GoodsReceiptService {
                 receipt,
                 order,
                 context.itemsByReceipt().getOrDefault(receipt.getId(), List.of()),
-                context.orderItemsById());
+                context.orderItemsById(),
+                context.incidentCounts().getOrDefault(receipt.getId(), 0L));
     }
 
     private GoodsReceiptResponse response(
             GoodsReceipt receipt,
             PurchaseOrder order,
             List<GoodsReceiptItem> items,
-            Map<UUID, PurchaseOrderItem> orderItemsById) {
+            Map<UUID, PurchaseOrderItem> orderItemsById,
+            long incidentCount) {
         List<GoodsReceiptItemResponse> itemResponses = items.stream()
                 .map(item -> {
                     PurchaseOrderItem orderItem = orderItemsById.get(item.getPurchaseOrderItemId());
@@ -826,7 +842,12 @@ public class GoodsReceiptService {
                 receipt.getReceivedByUserId(),
                 receipt.getCreatedAt(),
                 receipt.getUpdatedAt(),
-                itemResponses);
+                itemResponses,
+                // Suma sobre los items ya cargados (receivedQuantity de la unidad de compra); sin query extra.
+                items.stream()
+                        .map(GoodsReceiptItem::getReceivedQuantity)
+                        .reduce(BigDecimal.ZERO, BigDecimal::add),
+                incidentCount);
     }
 
     private static Map<UUID, PurchaseOrderItem> purchaseOrderItemsById(List<ResolvedItem> items) {
@@ -1068,7 +1089,9 @@ public class GoodsReceiptService {
     private record ResponseContext(
             Map<UUID, List<GoodsReceiptItem>> itemsByReceipt,
             Map<UUID, PurchaseOrder> ordersById,
-            Map<UUID, PurchaseOrderItem> orderItemsById) {
-        private static final ResponseContext EMPTY = new ResponseContext(Map.of(), Map.of(), Map.of());
+            Map<UUID, PurchaseOrderItem> orderItemsById,
+            Map<UUID, Long> incidentCounts) {
+        private static final ResponseContext EMPTY =
+                new ResponseContext(Map.of(), Map.of(), Map.of(), Map.of());
     }
 }

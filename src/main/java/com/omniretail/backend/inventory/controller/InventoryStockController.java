@@ -4,16 +4,21 @@ import com.omniretail.backend.inventory.dto.CrossBranchStockDto;
 import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.inventory.dto.InventoryAlertStatus;
 import com.omniretail.backend.inventory.dto.InventoryKitAvailabilityResponse;
+import com.omniretail.backend.inventory.dto.InventoryStockBatchRequest;
+import com.omniretail.backend.inventory.dto.InventoryStockBatchResponse;
 import com.omniretail.backend.inventory.dto.InventoryStockPageResponse;
 import com.omniretail.backend.inventory.service.InventoryStockQueryService;
 import com.omniretail.backend.shared.security.RequirePermission;
 import io.swagger.v3.oas.annotations.Parameter;
+import jakarta.validation.Valid;
 import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Pageable;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -35,6 +40,12 @@ public class InventoryStockController {
             @RequestParam(required = false) List<ProductType> productTypes,
             @Parameter(hidden = true) Pageable pageable) {
         return stockQueryService.list(branchId, search, categoryId, status, productTypes, pageable);
+    }
+
+    @PostMapping("/batch")
+    @RequirePermission("inventory.stock.read")
+    public InventoryStockBatchResponse batch(@Valid @RequestBody InventoryStockBatchRequest request) {
+        return stockQueryService.batch(request);
     }
 
     @GetMapping("/kits/{kitProductId}/availability")

@@ -523,6 +523,59 @@ public interface ProductInventorySettingsRepository
             @Param("businessDate") LocalDate businessDate);
 
     /**
+     * Stock físico de varios productos de una sucursal en UNA query (sin filtros de estado de producto). Misma
+     * clasificación y reorden sugerido que {@code findStock}; solo productos físicos con control de stock.
+     */
+    @Query(value = """
+            WITH product_stock AS (
+                SELECT p.id AS product_id,
+                       COALESCE(s.min_stock, CAST(0 AS numeric)) AS min_stock,
+                       s.reorder_point AS reorder_point,
+                       COALESCE(SUM(b.quantity), CAST(0 AS numeric)) AS quantity,
+                       COALESCE(SUM(b.reserved_quantity), CAST(0 AS numeric)) AS reserved_quantity,
+                       COALESCE(SUM(b.quantity - b.reserved_quantity), CAST(0 AS numeric)) AS available_quantity
+                FROM products p
+                LEFT JOIN product_inventory_settings s
+                  ON s.tenant_id = p.tenant_id AND s.product_id = p.id AND s.branch_id = :branchId
+                LEFT JOIN inventory_balances b
+                  ON b.tenant_id = p.tenant_id AND b.product_id = p.id AND b.branch_id = :branchId
+                WHERE p.tenant_id = :tenantId
+                  AND p.id IN (:productIds)
+                  AND p.product_type = 'physical'
+                  AND p.tracking_stock = TRUE
+                GROUP BY p.id, s.min_stock, s.reorder_point
+            )
+            SELECT product_id AS "productId", quantity AS quantity, reserved_quantity AS "reservedQuantity",
+                   available_quantity AS "availableQuantity", min_stock AS "minStock",
+                   reorder_point AS "reorderPoint",
+                   CASE
+                       WHEN available_quantity <= 0 THEN 'out_of_stock'
+                       WHEN min_stock > 0 AND available_quantity < min_stock THEN 'critical'
+                       WHEN min_stock > 0 AND available_quantity <= min_stock * 1.25 THEN 'near_minimum'
+                       ELSE 'normal'
+                   END AS "stockStatus",
+                   GREATEST(CAST(0 AS numeric), COALESCE(reorder_point, min_stock) - available_quantity)
+                       AS "suggestedReorder"
+            FROM product_stock
+            ORDER BY product_id
+            """, nativeQuery = true)
+    List<InventoryStockBatchProjection> findStockBatch(
+            @Param("tenantId") UUID tenantId,
+            @Param("branchId") UUID branchId,
+            @Param("productIds") java.util.Collection<UUID> productIds);
+
+    interface InventoryStockBatchProjection {
+        UUID getProductId();
+        BigDecimal getQuantity();
+        BigDecimal getReservedQuantity();
+        BigDecimal getAvailableQuantity();
+        BigDecimal getMinStock();
+        BigDecimal getReorderPoint();
+        String getStockStatus();
+        BigDecimal getSuggestedReorder();
+    }
+
+    /**
      * Componentes de UN kit con su disponibilidad efectiva en la sucursal (misma semántica que el listado de
      * stock: disponible = SUM(quantity - reserved); capacidad = FLOOR(GREATEST(disponible, 0) / quantity_per_kit);
      * un componente que ya no es physical + published + tracking_stock vale 0). Una sola query, orden determinístico.

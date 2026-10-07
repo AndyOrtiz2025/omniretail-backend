@@ -1,6 +1,7 @@
 package com.omniretail.backend.purchasing.dto;
 
 import com.omniretail.backend.purchasing.entity.GoodsReceiptStatus;
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -17,4 +18,6 @@ public record GoodsReceiptResponse(
         UUID receivedByUserId,
         Instant createdAt,
         Instant updatedAt,
-        List<GoodsReceiptItemResponse> items) {}
+        List<GoodsReceiptItemResponse> items,
+        BigDecimal totalReceivedQuantity,
+        long incidentCount) {}
