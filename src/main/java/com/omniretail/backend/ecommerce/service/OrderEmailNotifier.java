@@ -37,6 +37,13 @@ public class OrderEmailNotifier {
                         .formatted(order.getOrderNumber()));
     }
 
+    public void orderCancelled(Order order) {
+        notify(order, EmailPurpose.ORDER_STATUS_CHANGED,
+                "Tu pedido " + order.getOrderNumber() + " fue cancelado",
+                "Hola:\n\nTu pedido %s fue cancelado. Si tienes dudas o ya realizaste un pago, comunícate con la tienda.\n\nGracias."
+                        .formatted(order.getOrderNumber()));
+    }
+
     private void notify(Order order, EmailPurpose purpose, String subject, String body) {
         String recipient = recipientOf(order);
         if (recipient == null) {

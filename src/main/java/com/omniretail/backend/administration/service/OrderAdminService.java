@@ -11,6 +11,7 @@ import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.ecommerce.repository.InventoryReservationRepository;
 import com.omniretail.backend.ecommerce.repository.OrderItemRepository;
 import com.omniretail.backend.ecommerce.repository.OrderRepository;
+import com.omniretail.backend.ecommerce.service.OrderEmailNotifier;
 import com.omniretail.backend.inventory.service.InventoryReservationLifecycleService;
 import com.omniretail.backend.pos.repository.PaymentRepository;
 import com.omniretail.backend.shared.dto.PageResponse;
@@ -38,6 +39,7 @@ public class OrderAdminService {
     private final PaymentRepository paymentRepository;
     private final InventoryReservationRepository reservationRepository;
     private final InventoryReservationLifecycleService reservationLifecycleService;
+    private final OrderEmailNotifier orderEmailNotifier;
     private final CurrentUser currentUser;
     private final JsonMapper jsonMapper;
 
@@ -92,7 +94,11 @@ public class OrderAdminService {
             releaseReservations(tenantId, order.getId());
         }
         order.setStatus(nextStatus);
-        return toResponse(tenantId, orderRepository.save(order));
+        Order saved = orderRepository.save(order);
+        if (nextStatus == OrderStatus.cancelled && current != OrderStatus.cancelled) {
+            orderEmailNotifier.orderCancelled(saved);
+        }
+        return toResponse(tenantId, saved);
     }
 
     private Order findOrder(UUID tenantId, UUID id) {

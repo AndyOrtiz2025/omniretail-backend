@@ -2,12 +2,17 @@ package com.omniretail.backend.administration.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 
 import com.omniretail.backend.TestcontainersConfiguration;
 import com.omniretail.backend.administration.dto.OrderAdminResponse;
 import com.omniretail.backend.administration.entity.UserType;
+import com.omniretail.backend.ecommerce.entity.Order;
 import com.omniretail.backend.ecommerce.entity.OrderStatus;
+import com.omniretail.backend.ecommerce.service.OrderEmailNotifier;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
@@ -31,6 +36,7 @@ class OrderAdminServiceTest {
     @Autowired private OrderAdminService service;
     @Autowired private JdbcTemplate jdbc;
     @MockitoBean private CurrentUser currentUser;
+    @MockitoBean private OrderEmailNotifier orderEmailNotifier;
 
     @Test
     void listIsPaginatedAndNeverReturnsOrdersFromAnotherTenant() {
@@ -81,6 +87,30 @@ class OrderAdminServiceTest {
         assertThat(reservedQuantity(balanceId)).isEqualByComparingTo("2.000");
         assertThat(physicalQuantity(balanceId)).isEqualByComparingTo("10.000");
         assertThat(reservationStatus(orderId)).isEqualTo("released");
+        verify(orderEmailNotifier).orderCancelled(any(Order.class));
+    }
+
+    @Test
+    void confirmingAPendingOrderDoesNotSendACancellationEmail() {
+        Fixture fixture = fixture(false);
+        UUID orderId = order(fixture, "WEB-CONFIRM", "pending");
+        actor(fixture.tenantId());
+
+        OrderAdminResponse response = service.updateStatus(orderId, OrderStatus.confirmed);
+
+        assertThat(response.status()).isEqualTo(OrderStatus.confirmed);
+        verify(orderEmailNotifier, never()).orderCancelled(any(Order.class));
+    }
+
+    @Test
+    void cancellingAnAlreadyCancelledOrderDoesNotSendTheEmailAgain() {
+        Fixture fixture = fixture(false);
+        UUID orderId = order(fixture, "WEB-ALREADY", "cancelled");
+        actor(fixture.tenantId());
+
+        service.updateStatus(orderId, OrderStatus.cancelled);
+
+        verify(orderEmailNotifier, never()).orderCancelled(any(Order.class));
     }
 
     @Test
@@ -116,6 +146,7 @@ class OrderAdminServiceTest {
                 .extracting(exception -> ((BusinessException) exception).getCode())
                 .isEqualTo("INVENTORY_RESERVATION_INCONSISTENT");
         assertThat(orderStatus(orderId)).isEqualTo("confirmed");
+        verify(orderEmailNotifier, never()).orderCancelled(any(Order.class));
         assertThat(activeReservationCount(orderId)).isEqualTo(2);
         assertThat(reservedQuantity(balanceId)).isEqualByComparingTo("6.000");
         assertThat(physicalQuantity(balanceId)).isEqualByComparingTo("10.000");
