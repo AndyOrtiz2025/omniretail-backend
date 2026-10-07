@@ -34,7 +34,11 @@ import org.springframework.transaction.support.TransactionTemplate;
  */
 @SpringBootTest
 @ActiveProfiles("test")
-@Import({TestcontainersConfiguration.class, CapturingEmailSender.Config.class})
+@Import({
+    TestcontainersConfiguration.class,
+    CapturingEmailSender.Config.class,
+    EmailDeliveryServiceIntegrationTest.AttachmentConfig.class
+})
 class EmailDeliveryServiceIntegrationTest {
 
     private static final String SECRET = "abcdEFGH12345678";
@@ -50,6 +54,7 @@ class EmailDeliveryServiceIntegrationTest {
     @Autowired private EmailDeliveryProperties properties;
     @Autowired private CapturingEmailSender platformSender;
     @Autowired private GmailSmtpEmailProvider tenantProvider;
+    @Autowired private FakePdfResolver attachmentResolver;
 
     @MockitoBean private TenantMailSenderFactory senderFactory;
 
@@ -61,6 +66,9 @@ class EmailDeliveryServiceIntegrationTest {
     void setUp() {
         gmailSent.clear();
         gmailFailure = null;
+        attachmentResolver.calls.set(0);
+        attachmentResolver.fail = false;
+        attachmentResolver.lastTenant = null;
         tenant = persistTenant();
         given(senderFactory.create(any(), any())).willReturn(new JavaMailSenderImpl() {
             @Override
@@ -258,6 +266,152 @@ class EmailDeliveryServiceIntegrationTest {
         assertThat(gmailSent).hasSize(3);
         // Segunda corrida: ya no hay nada vencido.
         assertThat(deliveryService.retryDue()).isZero();
+    }
+
+    @Test
+    void attachmentIsResolvedAtSendTimeFromItsReferenceAndAddedToTheMimeMessage() throws Exception {
+        saveConfig(tenant, EmailSenderStatus.VERIFIED);
+        String to = unique();
+        UUID resource = UUID.randomUUID();
+        request(EmailMessage.withAttachments(
+                tenant.getId(), EmailPurpose.PURCHASE_ORDER, to, "Orden OC-1", "Resumen", "<p>Resumen</p>",
+                List.of(new EmailAttachmentReference(FakePdfResolver.TYPE, resource, "OC-1.pdf", "application/pdf"))));
+
+        EmailDelivery delivery = awaitDelivery(to);
+
+        assertThat(delivery.getStatus()).isEqualTo(EmailDeliveryStatus.SENT);
+        assertThat(attachmentResolver.calls.get()).isEqualTo(1);
+        assertThat(attachmentResolver.lastTenant).isEqualTo(tenant.getId());
+        assertThat(gmailSent).singleElement().satisfies(mime -> {
+            assertThat(attachmentNames(mime)).containsExactly("OC-1.pdf");
+            assertThat(attachmentBytes(mime)).isEqualTo(("%PDF-test-" + resource).getBytes());
+        });
+    }
+
+    @Test
+    void failingAttachmentNeverSendsTheEmailWithoutItAndRetriesFromThePersistedReference() throws Exception {
+        saveConfig(tenant, EmailSenderStatus.VERIFIED);
+        attachmentResolver.fail = true;
+        String to = unique();
+        request(EmailMessage.withAttachments(
+                tenant.getId(), EmailPurpose.PURCHASE_ORDER, to, "Orden OC-2", "Resumen", null,
+                List.of(new EmailAttachmentReference(
+                        FakePdfResolver.TYPE, UUID.randomUUID(), "OC-2.pdf", "application/pdf"))));
+
+        EmailDelivery failed = awaitDelivery(to);
+
+        assertThat(failed.getStatus()).isEqualTo(EmailDeliveryStatus.FAILED);
+        assertThat(failed.getErrorCode()).isEqualTo("ATTACHMENT_UNAVAILABLE");
+        assertThat(failed.getNextAttemptAt()).isNotNull();
+        assertThat(gmailSent).isEmpty();
+
+        attachmentResolver.fail = false;
+        makeDue(failed);
+        assertThat(deliveryService.retryDue()).isGreaterThanOrEqualTo(1);
+
+        EmailDelivery retried = deliveries.findById(failed.getId()).orElseThrow();
+        assertThat(retried.getStatus()).isEqualTo(EmailDeliveryStatus.SENT);
+        assertThat(retried.getAttempts()).isEqualTo(2);
+        assertThat(attachmentResolver.calls.get()).isEqualTo(2);
+        assertThat(gmailSent).singleElement().satisfies(mime ->
+                assertThat(attachmentNames(mime)).containsExactly("OC-2.pdf"));
+    }
+
+    @Test
+    void smtpFailureKeepsTheAttachmentReferenceForTheRetry() throws Exception {
+        saveConfig(tenant, EmailSenderStatus.VERIFIED);
+        gmailFailure = new MailSendException("timeout");
+        String to = unique();
+        request(EmailMessage.withAttachments(
+                tenant.getId(), EmailPurpose.PURCHASE_ORDER, to, "Orden OC-3", "Resumen", "<p>x</p>",
+                List.of(new EmailAttachmentReference(
+                        FakePdfResolver.TYPE, UUID.randomUUID(), "OC-3.pdf", "application/pdf"))));
+        EmailDelivery failed = awaitDelivery(to);
+        assertThat(failed.getErrorCode()).isEqualTo("TRANSPORT_ERROR");
+
+        gmailFailure = null;
+        makeDue(failed);
+        deliveryService.retryDue();
+
+        assertThat(deliveries.findById(failed.getId()).orElseThrow().getStatus()).isEqualTo(EmailDeliveryStatus.SENT);
+        assertThat(gmailSent).singleElement().satisfies(mime ->
+                assertThat(attachmentNames(mime)).containsExactly("OC-3.pdf"));
+    }
+
+    @Test
+    void emailsWithoutAttachmentsNeverTouchTheResolvers() {
+        saveConfig(tenant, EmailSenderStatus.VERIFIED);
+        String to = unique();
+        request(EmailMessage.text(tenant.getId(), EmailPurpose.ORDER_CONFIRMATION, to, "Pedido", "Hola"));
+
+        assertThat(awaitDelivery(to).getStatus()).isEqualTo(EmailDeliveryStatus.SENT);
+        assertThat(attachmentResolver.calls.get()).isZero();
+    }
+
+    private static List<String> attachmentNames(MimeMessage mime) {
+        List<String> names = new ArrayList<>();
+        collectAttachments(mime, names, null);
+        return names;
+    }
+
+    private static byte[] attachmentBytes(MimeMessage mime) {
+        List<byte[]> bytes = new ArrayList<>();
+        collectAttachments(mime, null, bytes);
+        return bytes.getFirst();
+    }
+
+    private static void collectAttachments(jakarta.mail.Part part, List<String> names, List<byte[]> bytes) {
+        try {
+            Object content = part.getContent();
+            if (content instanceof jakarta.mail.Multipart multipart) {
+                for (int index = 0; index < multipart.getCount(); index++) {
+                    collectAttachments(multipart.getBodyPart(index), names, bytes);
+                }
+            } else if (part.getFileName() != null) {
+                if (names != null) {
+                    names.add(part.getFileName());
+                }
+                if (bytes != null) {
+                    bytes.add(part.getInputStream().readAllBytes());
+                }
+            }
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    /** Resolver de prueba: genera un "PDF" a partir del resourceId y puede fallar a demanda. */
+    static class FakePdfResolver implements EmailAttachmentResolver {
+
+        static final String TYPE = "TEST_PDF";
+        final java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        volatile boolean fail;
+        volatile UUID lastTenant;
+
+        @Override
+        public boolean supports(String type) {
+            return TYPE.equals(type);
+        }
+
+        @Override
+        public EmailAttachmentContent resolve(UUID tenantId, EmailAttachmentReference reference) {
+            calls.incrementAndGet();
+            lastTenant = tenantId;
+            if (fail) {
+                throw new EmailDeliveryException(EmailDeliveryException.ATTACHMENT_UNAVAILABLE);
+            }
+            return new EmailAttachmentContent(
+                    reference.filename(), reference.mediaType(), ("%PDF-test-" + reference.resourceId()).getBytes());
+        }
+    }
+
+    @org.springframework.boot.test.context.TestConfiguration(proxyBeanMethods = false)
+    static class AttachmentConfig {
+
+        @org.springframework.context.annotation.Bean
+        FakePdfResolver fakePdfResolver() {
+            return new FakePdfResolver();
+        }
     }
 
     private void request(EmailMessage message) {

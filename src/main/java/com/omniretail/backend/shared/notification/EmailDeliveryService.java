@@ -2,6 +2,7 @@ package com.omniretail.backend.shared.notification;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -25,7 +26,8 @@ public class EmailDeliveryService {
 
     private static final int SUBJECT_MAX = 255;
 
-    private record Payload(String subject, String body, String html) {
+    /** Payload cifrado de reintento: solo descriptores de adjuntos, nunca los bytes. */
+    private record Payload(String subject, String body, String html, List<EmailAttachmentReference> attachments) {
     }
 
     private final EmailDeliveryRepository deliveries;
@@ -34,6 +36,7 @@ public class EmailDeliveryService {
     private final EmailCredentialCrypto crypto;
     private final EmailDeliveryProperties properties;
     private final JsonMapper jsonMapper;
+    private final List<EmailAttachmentResolver> attachmentResolvers;
 
     /** Se une a la transaccion de la operacion de negocio: si esta se deshace, el registro tambien. */
     @Transactional
@@ -48,7 +51,8 @@ public class EmailDeliveryService {
                 .createdAt(now);
         if (message.purpose().scope() == EmailPurpose.Scope.TENANT) {
             EmailCredentialCrypto.Encrypted encrypted = crypto.encryptPayload(
-                    jsonMapper.writeValueAsString(new Payload(message.subject(), message.body(), message.html())),
+                    jsonMapper.writeValueAsString(new Payload(
+                            message.subject(), message.body(), message.html(), message.attachments())),
                     message.tenantId());
             delivery.encryptedPayload(encrypted.ciphertext())
                     .payloadIv(encrypted.iv())
@@ -89,7 +93,9 @@ public class EmailDeliveryService {
         Instant now = Instant.now();
         String failure = null;
         try {
-            senderResolver.resolveSender(delivery.getTenantId(), delivery.getPurpose()).send(message);
+            // Los adjuntos se generan en cada intento (también en reintentos) a partir de su descriptor.
+            EmailMessage composed = withResolvedAttachments(delivery.getTenantId(), message);
+            senderResolver.resolveSender(delivery.getTenantId(), delivery.getPurpose()).send(composed);
         } catch (EmailDeliveryException ex) {
             failure = ex.getCode();
         } catch (RuntimeException ex) {
@@ -107,7 +113,8 @@ public class EmailDeliveryService {
         delivery.setStatus(EmailDeliveryStatus.FAILED);
         delivery.setErrorCode(failure);
         // Solo el fallo de transporte es transitorio. Sin cuenta o con credencial rechazada reintentar no sirve.
-        boolean retry = EmailDeliveryException.TRANSPORT_ERROR.equals(failure)
+        boolean retry = (EmailDeliveryException.TRANSPORT_ERROR.equals(failure)
+                        || EmailDeliveryException.ATTACHMENT_UNAVAILABLE.equals(failure))
                 && delivery.getEncryptedPayload() != null
                 && delivery.getAttempts() < properties.maxAttempts();
         delivery.setNextAttemptAt(retry ? now.plus(backoff(delivery.getAttempts())) : null);
@@ -117,6 +124,27 @@ public class EmailDeliveryService {
         }
         log.warn("Correo no enviado tenantId={} purpose={} recipient={} reason={}",
                 delivery.getTenantId(), delivery.getPurpose(), delivery.getRecipient(), failure);
+    }
+
+    private EmailMessage withResolvedAttachments(UUID tenantId, EmailMessage message) {
+        if (message.attachments().isEmpty()) {
+            return message;
+        }
+        List<EmailAttachmentContent> contents = new ArrayList<>(message.attachments().size());
+        for (EmailAttachmentReference reference : message.attachments()) {
+            EmailAttachmentResolver resolver = attachmentResolvers.stream()
+                    .filter(candidate -> candidate.supports(reference.type()))
+                    .findFirst()
+                    .orElseThrow(() -> new EmailDeliveryException(EmailDeliveryException.ATTACHMENT_UNAVAILABLE));
+            try {
+                contents.add(resolver.resolve(tenantId, reference));
+            } catch (EmailDeliveryException ex) {
+                throw ex;
+            } catch (RuntimeException ex) {
+                throw new EmailDeliveryException(EmailDeliveryException.ATTACHMENT_UNAVAILABLE);
+            }
+        }
+        return message.withAttachmentContents(contents);
     }
 
     private void markSenderInError(UUID tenantId, Instant now) {
@@ -138,7 +166,7 @@ public class EmailDeliveryService {
                     delivery.getTenantId());
             Payload payload = jsonMapper.readValue(json, Payload.class);
             return new EmailMessage(delivery.getTenantId(), delivery.getPurpose(), delivery.getRecipient(),
-                    payload.subject(), payload.body(), payload.html());
+                    payload.subject(), payload.body(), payload.html(), payload.attachments(), List.of());
         } catch (RuntimeException ex) {
             log.warn("Correo irrecuperable tenantId={} purpose={} reason={}", delivery.getTenantId(),
                     delivery.getPurpose(), EmailDeliveryException.CREDENTIAL_UNREADABLE);

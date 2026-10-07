@@ -103,7 +103,8 @@ class InventoryAlertServiceTest {
         addBalance(fixture, critical, null, "0.299", "0");
 
         UUID near = addProduct(fixture, "physical", true, "published", "Near");
-        addSettings(fixture, near, "10", "5");
+        // reorderPoint con efecto real: available (12.5) <= reorderPoint (12.5) => near_minimum.
+        addSettings(fixture, near, "10", "12.500");
         addBalance(fixture, near, null, "12.500", "0");
 
         UUID normal = addProduct(fixture, "physical", true, "published", "Normal");

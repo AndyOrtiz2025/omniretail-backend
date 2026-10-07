@@ -38,8 +38,9 @@ public class InventoryStockController {
             @RequestParam(required = false) UUID categoryId,
             @RequestParam(required = false) InventoryAlertStatus status,
             @RequestParam(required = false) List<ProductType> productTypes,
+            @RequestParam(defaultValue = "false") boolean lowStock,
             @Parameter(hidden = true) Pageable pageable) {
-        return stockQueryService.list(branchId, search, categoryId, status, productTypes, pageable);
+        return stockQueryService.list(branchId, search, categoryId, status, productTypes, lowStock, pageable);
     }
 
     @PostMapping("/batch")

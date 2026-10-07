@@ -13,6 +13,8 @@ public class EmailDeliveryException extends RuntimeException {
     public static final String TRANSPORT_ERROR = "TRANSPORT_ERROR";
     public static final String SENDER_NOT_CONFIGURED = "SENDER_NOT_CONFIGURED";
     public static final String CREDENTIAL_UNREADABLE = "CREDENTIAL_UNREADABLE";
+    /** El adjunto no pudo generarse: el correo no se envía sin él y queda FAILED, reintentable. */
+    public static final String ATTACHMENT_UNAVAILABLE = "ATTACHMENT_UNAVAILABLE";
 
     private final String code;
 
