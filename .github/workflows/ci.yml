@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [development, main]
+  push:
+    branches: [development, main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ===========================================================================
+  # Step 1 + Step 2: compilacion, pruebas (Testcontainers) y analisis SonarQube Cloud.
+  # Van en el mismo job para que Sonar reutilice las clases compiladas y el reporte de JaCoCo.
+  # ===========================================================================
+  build-test-sonar:
+    name: Build, tests y SonarQube
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # Sonar necesita el historial completo para detectar codigo nuevo.
+
+      - name: Configurar Java 21 (Temurin)
+        uses: actions/setup-java@v6
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+
+      - name: "[Step 1] Compilar y ejecutar pruebas"
+        run: ./mvnw -B verify
+
+      - name: Publicar reporte de cobertura
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: jacoco-report
+          path: target/site/jacoco/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: "[Step 2] SonarQube Cloud omitido"
+        if: env.SONAR_TOKEN == '' || vars.SONAR_ORGANIZATION == '' || vars.SONAR_PROJECT_KEY == ''
+        run: echo "::warning title=SonarQube::Faltan SONAR_TOKEN (secret) o SONAR_ORGANIZATION / SONAR_PROJECT_KEY (variables). Se omite el analisis."
+
+      - name: "[Step 2] Analisis con SonarQube Cloud"
+        if: env.SONAR_TOKEN != '' && vars.SONAR_ORGANIZATION != '' && vars.SONAR_PROJECT_KEY != ''
+        run: >
+          ./mvnw -B org.sonarsource.scanner.maven:sonar-maven-plugin:sonar
+          -Dsonar.host.url=https://sonarcloud.io
+          -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
+          -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+          -Dsonar.qualitygate.wait=${{ vars.SONAR_QUALITY_GATE_BLOCKING == 'true' }}
+
+  # ===========================================================================
+  # Step 3: revision del PR con IA (Gemini). Comenta en el PR; nunca bloquea.
+  # ===========================================================================
+  ai-review:
+    name: Revision con IA (Gemini)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Configurar Node.js 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: "[Step 3] Revisar diff con Gemini"
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PROJECT_CONTEXT: Backend Spring Boot 4 / Java 21, monolito modular multi-tenant, PostgreSQL con Liquibase, JWT + MFA.
+        run: node .github/scripts/ai-review.mjs

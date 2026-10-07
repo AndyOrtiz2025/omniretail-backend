@@ -37,3 +37,6 @@ build/
 
 ### Media local administrada por la aplicacion ###
 data/media/
+
+### Artefactos locales de herramientas (no se versionan) ###
+.github/modernize/

@@ -1,0 +1,99 @@
+name: CD
+
+# Despliegue a produccion: cada push a main publica la imagen en GHCR y, si hay VPS configurado, la despliega.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: cd-production-backend
+  cancel-in-progress: false # Nunca cortar un despliegue a la mitad.
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: Imagen Docker (GHCR)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login en GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Etiquetas de la imagen
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest
+            type=sha,format=short
+
+      - name: Build y push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Desplegar en VPS
+    needs: image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+
+    steps:
+      - name: VPS no configurado
+        if: vars.VPS_HOST == ''
+        run: echo "::notice title=Deploy::La variable VPS_HOST esta vacia. La imagen quedo publicada en GHCR; el despliegue se omite."
+
+      - name: Checkout
+        if: vars.VPS_HOST != ''
+        uses: actions/checkout@v7
+
+      - name: Copiar archivos de despliegue al VPS
+        if: vars.VPS_HOST != ''
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ vars.VPS_HOST }}
+          port: ${{ vars.VPS_PORT || 22 }}
+          username: ${{ vars.VPS_USER || 'deploy' }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: deploy/docker-compose.prod.yml,deploy/Caddyfile
+          target: ${{ vars.VPS_APP_DIR || '/opt/omniretail' }}
+          strip_components: 1
+
+      - name: Actualizar backend en el VPS
+        if: vars.VPS_HOST != ''
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ vars.VPS_HOST }}
+          port: ${{ vars.VPS_PORT || 22 }}
+          username: ${{ vars.VPS_USER || 'deploy' }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -e
+            cd "${{ vars.VPS_APP_DIR || '/opt/omniretail' }}"
+            docker compose -f docker-compose.prod.yml pull backend
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            docker image prune -f

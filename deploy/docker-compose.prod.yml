@@ -1,0 +1,69 @@
+# Stack de produccion de OmniRetail (backend + web + PostgreSQL + Caddy).
+# Vive en el VPS en /opt/omniretail junto a un `.env` (ver .env.prod.example). El CD del backend copia
+# este archivo y el Caddyfile en cada despliegue; los secretos del `.env` NUNCA salen del VPS.
+name: omniretail
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-omniretail}
+      POSTGRES_USER: ${POSTGRES_USER:-omniretail}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Sin `ports`: la base de datos solo es accesible dentro de la red de Docker.
+
+  backend:
+    image: ${BACKEND_IMAGE:-ghcr.io/andyortiz2025/omniretail-backend}:${BACKEND_TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      MEDIA_STORAGE_PATH: /app/data/media
+    volumes:
+      - media:/app/data/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    image: ${WEB_IMAGE:-ghcr.io/alexander3150/omniretail-web}:${WEB_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      # El frontend habla con el backend por la red interna de Docker, no por internet.
+      OMNIRETAIL_API_URL: http://backend:8080/api/v1
+    depends_on:
+      - backend
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      # Solo IP publica -> ":80" (HTTP). Con dominio -> "tienda.midominio.com" y Caddy saca HTTPS solo.
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+      - backend
+
+volumes:
+  pgdata:
+  media:
+  caddy_data:
+  caddy_config:
