@@ -85,7 +85,8 @@ public interface ProductInventorySettingsRepository
                                CASE
                                    WHEN available_quantity <= 0 THEN 'out_of_stock'
                                    WHEN min_stock > 0 AND available_quantity < min_stock THEN 'critical'
-                                   WHEN min_stock > 0 AND available_quantity <= min_stock * 1.25 THEN 'near_minimum'
+                                   WHEN reorder_point IS NOT NULL AND available_quantity <= reorder_point THEN 'near_minimum'
+                                   WHEN reorder_point IS NULL AND min_stock > 0 AND available_quantity <= min_stock * 1.25 THEN 'near_minimum'
                                    ELSE 'normal'
                                END AS alert_status,
                                GREATEST(
@@ -126,6 +127,7 @@ public interface ProductInventorySettingsRepository
                         SELECT
                             p.id AS product_id,
                             COALESCE(s.min_stock, CAST(0 AS numeric)) AS min_stock,
+                            s.reorder_point AS reorder_point,
                             COALESCE(SUM(b.quantity - b.reserved_quantity), CAST(0 AS numeric)) AS available_quantity
                         FROM products p
                         LEFT JOIN product_inventory_settings s
@@ -140,12 +142,13 @@ public interface ProductInventorySettingsRepository
                           AND p.status = 'published'
                           AND p.product_type = 'physical'
                           AND p.tracking_stock = TRUE
-                        GROUP BY p.id, s.min_stock
+                        GROUP BY p.id, s.min_stock, s.reorder_point
                     ), classified AS (
                         SELECT CASE
                                    WHEN available_quantity <= 0 THEN 'out_of_stock'
                                    WHEN min_stock > 0 AND available_quantity < min_stock THEN 'critical'
-                                   WHEN min_stock > 0 AND available_quantity <= min_stock * 1.25 THEN 'near_minimum'
+                                   WHEN reorder_point IS NOT NULL AND available_quantity <= reorder_point THEN 'near_minimum'
+                                   WHEN reorder_point IS NULL AND min_stock > 0 AND available_quantity <= min_stock * 1.25 THEN 'near_minimum'
                                    ELSE 'normal'
                                END AS alert_status
                         FROM product_stock
@@ -236,7 +239,8 @@ public interface ProductInventorySettingsRepository
                                CASE
                                    WHEN available_quantity <= 0 THEN 'out_of_stock'
                                    WHEN min_stock > 0 AND available_quantity < min_stock THEN 'critical'
-                                   WHEN min_stock > 0 AND available_quantity <= min_stock * 1.25 THEN 'near_minimum'
+                                   WHEN reorder_point IS NOT NULL AND available_quantity <= reorder_point THEN 'near_minimum'
+                                   WHEN reorder_point IS NULL AND min_stock > 0 AND available_quantity <= min_stock * 1.25 THEN 'near_minimum'
                                    ELSE 'normal'
                                END AS stock_status,
                                GREATEST(CAST(0 AS numeric), COALESCE(reorder_point, min_stock) - available_quantity)
@@ -252,6 +256,7 @@ public interface ProductInventorySettingsRepository
                         WHERE p.tenant_id = :tenantId
                           AND :includeService = TRUE
                           AND CAST(:status AS text) IS NULL
+                          AND :lowStock = FALSE
                           AND p.status = 'published'
                           AND p.product_type = 'service'
                           AND (:categoryId IS NULL OR p.category_id = :categoryId)
@@ -296,6 +301,7 @@ public interface ProductInventorySettingsRepository
                         WHERE p.tenant_id = :tenantId
                           AND :includeKit = TRUE
                           AND CAST(:status AS text) IS NULL
+                          AND :lowStock = FALSE
                           AND p.status = 'published'
                           AND p.product_type = 'kit'
                           AND (:categoryId IS NULL OR p.category_id = :categoryId)
@@ -315,6 +321,7 @@ public interface ProductInventorySettingsRepository
                                sale_unit_id
                         FROM classified
                         WHERE stock_status = COALESCE(CAST(:status AS text), stock_status)
+                          AND (:lowStock = FALSE OR stock_status IN ('critical', 'near_minimum'))
                         UNION ALL
                         SELECT product_id, sku, product_name, category_id, category_name, base_unit_id,
                                'service', 'NONE',
@@ -393,6 +400,7 @@ public interface ProductInventorySettingsRepository
                     WITH product_stock AS (
                         SELECT p.id AS product_id,
                                COALESCE(s.min_stock, CAST(0 AS numeric)) AS min_stock,
+                               s.reorder_point AS reorder_point,
                                COALESCE(SUM(b.quantity - b.reserved_quantity), CAST(0 AS numeric)) AS available_quantity
                         FROM products p
                         LEFT JOIN categories c ON c.tenant_id = p.tenant_id AND c.id = p.category_id
@@ -410,11 +418,12 @@ public interface ProductInventorySettingsRepository
                                OR LOWER(p.sku) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%')
                                OR LOWER(COALESCE(c.name, '')) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%')
                                OR LOWER(COALESCE(l.name, '')) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%'))
-                        GROUP BY p.id, s.min_stock
+                        GROUP BY p.id, s.min_stock, s.reorder_point
                     ), classified AS (
                         SELECT CASE WHEN available_quantity <= 0 THEN 'out_of_stock'
                                     WHEN min_stock > 0 AND available_quantity < min_stock THEN 'critical'
-                                    WHEN min_stock > 0 AND available_quantity <= min_stock * 1.25 THEN 'near_minimum'
+                                    WHEN reorder_point IS NOT NULL AND available_quantity <= reorder_point THEN 'near_minimum'
+                                    WHEN reorder_point IS NULL AND min_stock > 0 AND available_quantity <= min_stock * 1.25 THEN 'near_minimum'
                                     ELSE 'normal' END AS stock_status
                         FROM product_stock
                     ), non_physical AS (
@@ -423,6 +432,7 @@ public interface ProductInventorySettingsRepository
                         LEFT JOIN categories c ON c.tenant_id = p.tenant_id AND c.id = p.category_id
                         WHERE p.tenant_id = :tenantId
                           AND CAST(:status AS text) IS NULL
+                          AND :lowStock = FALSE
                           AND p.status = 'published'
                           AND ((:includeService = TRUE AND p.product_type = 'service')
                                OR (:includeKit = TRUE AND p.product_type = 'kit'))
@@ -433,7 +443,8 @@ public interface ProductInventorySettingsRepository
                                OR LOWER(COALESCE(c.name, '')) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%'))
                     )
                     SELECT (SELECT COUNT(*) FROM classified
-                             WHERE stock_status = COALESCE(CAST(:status AS text), stock_status))
+                             WHERE stock_status = COALESCE(CAST(:status AS text), stock_status)
+                               AND (:lowStock = FALSE OR stock_status IN ('critical', 'near_minimum')))
                            + (SELECT COUNT(*) FROM non_physical)
                     WHERE CAST(:sortField AS text) IS NOT NULL AND CAST(:sortDirection AS text) IS NOT NULL
                       AND CAST(:businessDate AS date) IS NOT NULL
@@ -445,6 +456,7 @@ public interface ProductInventorySettingsRepository
             @Param("search") String search,
             @Param("categoryId") UUID categoryId,
             @Param("status") String status,
+            @Param("lowStock") boolean lowStock,
             @Param("includePhysical") boolean includePhysical,
             @Param("includeService") boolean includeService,
             @Param("includeKit") boolean includeKit,
@@ -457,6 +469,7 @@ public interface ProductInventorySettingsRepository
             WITH product_stock AS (
                 SELECT p.id AS product_id,
                        COALESCE(s.min_stock, CAST(0 AS numeric)) AS min_stock,
+                       s.reorder_point AS reorder_point,
                        COALESCE(SUM(b.quantity - b.reserved_quantity), CAST(0 AS numeric)) AS available_quantity
                 FROM products p
                 LEFT JOIN categories c ON c.tenant_id = p.tenant_id AND c.id = p.category_id
@@ -474,7 +487,7 @@ public interface ProductInventorySettingsRepository
                        OR LOWER(p.sku) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%')
                        OR LOWER(COALESCE(c.name, '')) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%')
                        OR LOWER(COALESCE(l.name, '')) LIKE CONCAT('%', LOWER(CAST(:search AS text)), '%'))
-                GROUP BY p.id, s.min_stock
+                GROUP BY p.id, s.min_stock, s.reorder_point
             ), expiration_products AS (
                 SELECT DISTINCT lot.product_id
                 FROM inventory_lots lot
@@ -498,12 +511,14 @@ public interface ProductInventorySettingsRepository
                 SELECT product_id,
                        CASE WHEN available_quantity <= 0 THEN 'out_of_stock'
                             WHEN min_stock > 0 AND available_quantity < min_stock THEN 'critical'
-                            WHEN min_stock > 0 AND available_quantity <= min_stock * 1.25 THEN 'near_minimum'
+                            WHEN reorder_point IS NOT NULL AND available_quantity <= reorder_point THEN 'near_minimum'
+                            WHEN reorder_point IS NULL AND min_stock > 0 AND available_quantity <= min_stock * 1.25 THEN 'near_minimum'
                             ELSE 'normal' END AS stock_status
                 FROM product_stock
             ), filtered AS (
                 SELECT product_id, stock_status FROM classified
                 WHERE stock_status = COALESCE(CAST(:status AS text), stock_status)
+                  AND (:lowStock = FALSE OR stock_status IN ('critical', 'near_minimum'))
             )
             SELECT COUNT(*) AS "activeProducts",
                    COUNT(*) FILTER (WHERE stock_status IN ('critical', 'near_minimum')) AS "lowStock",
@@ -520,6 +535,7 @@ public interface ProductInventorySettingsRepository
             @Param("search") String search,
             @Param("categoryId") UUID categoryId,
             @Param("status") String status,
+            @Param("lowStock") boolean lowStock,
             @Param("businessDate") LocalDate businessDate);
 
     /**
@@ -551,7 +567,8 @@ public interface ProductInventorySettingsRepository
                    CASE
                        WHEN available_quantity <= 0 THEN 'out_of_stock'
                        WHEN min_stock > 0 AND available_quantity < min_stock THEN 'critical'
-                       WHEN min_stock > 0 AND available_quantity <= min_stock * 1.25 THEN 'near_minimum'
+                       WHEN reorder_point IS NOT NULL AND available_quantity <= reorder_point THEN 'near_minimum'
+                       WHEN reorder_point IS NULL AND min_stock > 0 AND available_quantity <= min_stock * 1.25 THEN 'near_minimum'
                        ELSE 'normal'
                    END AS "stockStatus",
                    GREATEST(CAST(0 AS numeric), COALESCE(reorder_point, min_stock) - available_quantity)

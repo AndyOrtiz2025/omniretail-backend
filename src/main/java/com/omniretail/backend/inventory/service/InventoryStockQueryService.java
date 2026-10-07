@@ -78,10 +78,6 @@ public class InventoryStockQueryService {
         return list(branchId, search, categoryId, status, null, requestedPageable);
     }
 
-    /**
-     * Listado mezclado de stock. {@code productTypes} (default physical) elige qué filas se devuelven: physical
-     * (stock real), service (informativa) y kit (disponibilidad derivada). Los KPIs siguen siendo solo físicos.
-     */
     public InventoryStockPageResponse list(
             UUID branchId,
             String search,
@@ -89,9 +85,32 @@ public class InventoryStockQueryService {
             InventoryAlertStatus status,
             Collection<ProductType> productTypes,
             Pageable requestedPageable) {
+        return list(branchId, search, categoryId, status, productTypes, false, requestedPageable);
+    }
+
+    /**
+     * Listado mezclado de stock. {@code productTypes} (default physical) elige qué filas se devuelven: physical
+     * (stock real), service (informativa) y kit (disponibilidad derivada). Los KPIs siguen siendo solo físicos.
+     * {@code lowStock=true} filtra en base de datos stock_status IN (critical, near_minimum) (la misma definición
+     * del KPI "Stock bajo"); no es un estado de dominio y no se combina con {@code status}.
+     */
+    public InventoryStockPageResponse list(
+            UUID branchId,
+            String search,
+            UUID categoryId,
+            InventoryAlertStatus status,
+            Collection<ProductType> productTypes,
+            boolean lowStock,
+            Pageable requestedPageable) {
         AuthenticatedUser actor = currentUser.require();
         tenantCapabilityGuard.ensureTenantCapability(actor.tenantId(), SaasCapability.inventory);
         requireBranchAndAccess(actor, branchId);
+        if (lowStock && status != null) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "INVENTORY_STOCK_FILTERS_INCOMPATIBLE",
+                    "El filtro de stock bajo no puede combinarse con un estado especifico.");
+        }
 
         SortSelection sort = sort(requestedPageable);
         Pageable pageable = PageRequest.of(
@@ -104,13 +123,13 @@ public class InventoryStockQueryService {
                 : EnumSet.copyOf(productTypes);
         LocalDate businessDate = businessDateService.currentDate(actor.tenantId());
         Page<InventoryStockProjection> page = settingsRepository.findStock(
-                actor.tenantId(), branchId, normalizedSearch, categoryId, statusValue,
+                actor.tenantId(), branchId, normalizedSearch, categoryId, statusValue, lowStock,
                 types.contains(ProductType.physical),
                 types.contains(ProductType.service),
                 types.contains(ProductType.kit),
                 businessDate, sort.field(), sort.direction(), pageable);
         InventoryStockSummaryProjection summary = settingsRepository.summarizeStock(
-                actor.tenantId(), branchId, normalizedSearch, categoryId, statusValue, businessDate);
+                actor.tenantId(), branchId, normalizedSearch, categoryId, statusValue, lowStock, businessDate);
         return new InventoryStockPageResponse(
                 page.getContent().stream().map(InventoryStockQueryService::item).toList(),
                 page.getNumber() + 1,
