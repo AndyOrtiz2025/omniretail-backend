@@ -43,11 +43,27 @@ class OrderEmailNotifierTest {
     }
 
     @Test
+    void cancelledOrderEmitsAStatusChangeEmailThatSaysItWasCancelled() {
+        notifier.orderCancelled(order("{\"emailMode\":\"send\",\"email\":\"cliente@example.com\"}"));
+
+        EmailRequestedEvent event = captured();
+        assertThat(event.message().tenantId()).isEqualTo(tenantId);
+        assertThat(event.message().purpose()).isEqualTo(EmailPurpose.ORDER_STATUS_CHANGED);
+        assertThat(event.message().purpose().scope()).isEqualTo(EmailPurpose.Scope.TENANT);
+        assertThat(event.message().to()).isEqualTo("cliente@example.com");
+        assertThat(event.message().subject()).contains("WEB-123").contains("cancelado");
+        assertThat(event.message().body()).contains("WEB-123").contains("cancelado")
+                .doesNotContain("confirmado").doesNotContain("tracking-secreto");
+    }
+
+    @Test
     void nothingIsSentWithoutAnEmailContact() {
         notifier.orderConfirmed(order(null));
         notifier.orderConfirmed(order("{\"emailMode\":\"not_applicable\"}"));
         notifier.orderConfirmed(order("{\"emailMode\":\"send\"}"));
         notifier.orderDispatched(order("no es json"));
+        notifier.orderCancelled(order(null));
+        notifier.orderCancelled(order("{\"emailMode\":\"not_applicable\"}"));
 
         verify(publisher, never()).publishEvent(any(Object.class));
     }
