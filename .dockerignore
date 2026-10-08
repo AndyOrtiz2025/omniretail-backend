@@ -1,0 +1,15 @@
+# Solo el codigo fuente y el wrapper de Maven entran al contexto de build.
+.git
+.github
+.mvn/wrapper/maven-wrapper.jar
+.superpowers
+.idea
+.vscode
+target
+data
+docs
+deploy
+*.md
+.env
+.env.*
+docker-compose.yml

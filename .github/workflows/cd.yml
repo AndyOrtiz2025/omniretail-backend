@@ -1,0 +1,109 @@
+name: CD
+
+# Despliegue a produccion: cada push a main publica la imagen en GHCR y, si hay VPS configurado, la despliega.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: cd-production-backend
+  cancel-in-progress: false # Nunca cortar un despliegue a la mitad.
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: Imagen Docker (GHCR)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Login en GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Etiquetas de la imagen
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest
+            type=sha,format=short
+
+      - name: Build y push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Desplegar en VPS
+    needs: image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    permissions:
+      contents: read
+      packages: read # GITHUB_TOKEN de este run puede descargar la imagen que publico el job anterior.
+
+    steps:
+      - name: VPS no configurado
+        if: vars.VPS_HOST == ''
+        run: echo "::notice title=Deploy::La variable VPS_HOST esta vacia. La imagen quedo publicada en GHCR; el despliegue se omite."
+
+      - name: Checkout
+        if: vars.VPS_HOST != ''
+        uses: actions/checkout@v7
+
+      - name: Copiar archivos de despliegue al VPS
+        if: vars.VPS_HOST != ''
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
+        with:
+          host: ${{ vars.VPS_HOST }}
+          port: ${{ vars.VPS_PORT || 22 }}
+          username: ${{ vars.VPS_USER || 'deploy' }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: deploy/docker-compose.prod.yml,deploy/Caddyfile
+          target: ${{ vars.VPS_APP_DIR || '/opt/omniretail' }}
+          strip_components: 1
+
+      - name: Actualizar backend en el VPS
+        if: vars.VPS_HOST != ''
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
+        with:
+          host: ${{ vars.VPS_HOST }}
+          port: ${{ vars.VPS_PORT || 22 }}
+          username: ${{ vars.VPS_USER || 'deploy' }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          # Token temporal del run (expira al terminar el job): el VPS no necesita guardar un PAT propio.
+          envs: GHCR_USER,GHCR_TOKEN
+          script: |
+            set -e
+            cd "${{ vars.VPS_APP_DIR || '/opt/omniretail' }}"
+            trap 'docker logout ghcr.io > /dev/null 2>&1 || true' EXIT
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+            docker compose -f docker-compose.prod.yml pull backend
+            docker compose -f docker-compose.prod.yml up -d --no-deps postgres backend caddy
+            docker image prune -f

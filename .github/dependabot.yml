@@ -1,0 +1,11 @@
+# Mantiene al dia las acciones de GitHub fijadas por SHA (abre un PR semanal hacia development).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: development
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]

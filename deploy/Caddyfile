@@ -1,0 +1,19 @@
+# Reverse proxy de produccion. SITE_ADDRESS viene del docker-compose (":80" mientras solo haya IP).
+{$SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	# API REST del backend (la usa la app movil directamente; la web pasa por sus propios Route Handlers).
+	handle /api/v1/* {
+		reverse_proxy backend:8080
+	}
+
+	# Archivos de media servidos por el backend.
+	handle /media/* {
+		reverse_proxy backend:8080
+	}
+
+	# Todo lo demas es el frontend Next.js (incluye sus rutas /api/auth, /api/media, etc.).
+	handle {
+		reverse_proxy web:3000
+	}
+}
