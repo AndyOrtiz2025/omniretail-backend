@@ -32,6 +32,8 @@ import com.omniretail.backend.shared.security.CurrentUser;
 import com.omniretail.backend.shared.security.TenantCapabilityGuard;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -54,6 +56,9 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 @ActiveProfiles("test")
 @Import(TestcontainersConfiguration.class)
 class PosTraceabilityServiceTest {
+
+    // Zona del tenant de prueba (tenants.timezone): las fechas de vencimiento se comparan contra este dia.
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("America/Guatemala");
 
     @Autowired private SaleService sales;
     @Autowired private SaleReturnService returns;
@@ -580,7 +585,8 @@ class PosTraceabilityServiceTest {
                 "UPDATE products SET tracking_expiration = true WHERE id = ?",
                 fixture.productId());
         jdbc.update(
-                "UPDATE inventory_lots SET expiration_date = current_date - 1 WHERE id = ?",
+                "UPDATE inventory_lots SET expiration_date = ? WHERE id = ?",
+                businessToday().minusDays(1),
                 fixture.lotId());
 
         assertThatThrownBy(() -> sales.create(saleRequest(
@@ -601,7 +607,8 @@ class PosTraceabilityServiceTest {
                 .isZero();
 
         jdbc.update(
-                "UPDATE inventory_lots SET expiration_date = current_date + 30 WHERE id = ?",
+                "UPDATE inventory_lots SET expiration_date = ? WHERE id = ?",
+                businessToday().plusDays(30),
                 fixture.lotId());
         InventoryTrackingSelectionRequest foreignLocation = new InventoryTrackingSelectionRequest(
                 fixture.productId(),
@@ -1230,4 +1237,9 @@ class PosTraceabilityServiceTest {
             UUID lotId,
             AuthenticatedUser primaryActor,
             AuthenticatedUser secondaryActor) {}
+
+    /** Fecha de negocio del tenant de prueba: la misma zona con la que el servicio decide si un lote vencio. */
+    private static LocalDate businessToday() {
+        return LocalDate.now(BUSINESS_ZONE);
+    }
 }
