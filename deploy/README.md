@@ -38,13 +38,17 @@ ssh-keygen -t ed25519 -C "github-actions-deploy" -f omniretail_deploy -N ""
 
 ## 3. Acceso a las imágenes de GHCR
 
-Los paquetes de GHCR nacen **privados**. Opciones:
+Los paquetes de GHCR nacen **privados** y pueden quedarse así:
 
-- **Hacerlos públicos** (más simple): GitHub → perfil del owner → *Packages* → paquete → *Package settings* → *Change visibility*.
-- **Mantenerlos privados**: crear un PAT (classic) con solo `read:packages` de una cuenta con acceso a ambos repos y en el VPS:
+- **Despliegues automáticos:** no requieren nada. Cada job `deploy` hace `docker login ghcr.io` en el VPS con el `GITHUB_TOKEN` del propio run (permiso `packages: read`, expira al terminar el job), descarga **solo su imagen** y hace `docker logout` al final. El VPS no guarda credenciales.
+- **Operación manual** (rollback, primer arranque a mano): inicia sesión temporalmente con un PAT (classic) con solo `read:packages`:
   ```bash
   echo "<PAT>" | docker login ghcr.io -u <usuario> --password-stdin
+  docker compose -f docker-compose.prod.yml pull
+  docker logout ghcr.io
   ```
+
+Orden del primer despliegue: **backend primero** (copia `docker-compose.prod.yml` y `Caddyfile` al VPS y levanta postgres, backend y Caddy), luego web. Cada CD levanta solo sus servicios (`--no-deps`), así un repo nunca necesita credenciales de la imagen del otro.
 
 ## 4. Archivo de secretos
 

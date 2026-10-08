@@ -61,6 +61,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: production
+    permissions:
+      contents: read
+      packages: read # GITHUB_TOKEN de este run puede descargar la imagen que publico el job anterior.
 
     steps:
       - name: VPS no configurado
@@ -85,15 +88,22 @@ jobs:
 
       - name: Actualizar backend en el VPS
         if: vars.VPS_HOST != ''
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ vars.VPS_HOST }}
           port: ${{ vars.VPS_PORT || 22 }}
           username: ${{ vars.VPS_USER || 'deploy' }}
           key: ${{ secrets.VPS_SSH_KEY }}
+          # Token temporal del run (expira al terminar el job): el VPS no necesita guardar un PAT propio.
+          envs: GHCR_USER,GHCR_TOKEN
           script: |
             set -e
             cd "${{ vars.VPS_APP_DIR || '/opt/omniretail' }}"
+            trap 'docker logout ghcr.io > /dev/null 2>&1 || true' EXIT
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
             docker compose -f docker-compose.prod.yml pull backend
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            docker compose -f docker-compose.prod.yml up -d --no-deps postgres backend caddy
             docker image prune -f
