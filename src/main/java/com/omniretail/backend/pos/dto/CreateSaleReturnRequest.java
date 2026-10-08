@@ -12,12 +12,12 @@ import java.util.UUID;
 
 public record CreateSaleReturnRequest(
         @NotBlank @Size(max = 1000) String reason,
-        @NotEmpty @Valid List<Line> lines) {
+        @NotEmpty List<@NotNull @Valid Line> lines) {
 
     public record Line(
             @NotNull UUID saleItemId,
             @NotNull @DecimalMin(value = "0.001") BigDecimal quantity,
-            List<@Valid InventoryTrackingSelectionRequest> trackingSelections) {
+            List<@NotNull @Valid InventoryTrackingSelectionRequest> trackingSelections) {
 
         public Line(UUID saleItemId, BigDecimal quantity) {
             this(saleItemId, quantity, List.of());

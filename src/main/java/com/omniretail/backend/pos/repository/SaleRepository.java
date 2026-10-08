@@ -25,6 +25,9 @@ public interface SaleRepository extends JpaRepository<Sale, UUID>, JpaSpecificat
 
     Optional<Sale> findByTenantIdAndNumber(UUID tenantId, String number);
 
+    Optional<Sale> findByTenantIdAndBranchIdAndNumber(
+            UUID tenantId, UUID branchId, String number);
+
     Optional<Sale> findByTenantIdAndConfirmationId(UUID tenantId, UUID confirmationId);
 
     List<Sale> findByTenantIdAndBranchIdOrderByCreatedAtDescIdDesc(UUID tenantId, UUID branchId);

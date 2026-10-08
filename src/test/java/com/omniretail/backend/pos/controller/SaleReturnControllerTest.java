@@ -8,6 +8,7 @@ import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
 import com.omniretail.backend.TestcontainersConfiguration;
 import com.omniretail.backend.administration.entity.User;
@@ -65,6 +66,10 @@ class SaleReturnControllerTest {
                 .andExpect(status().isUnauthorized());
         mockMvc.perform(get("/api/v1/pos/returns").param("branchId", UUID.randomUUID().toString()))
                 .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/v1/pos/sales/returns/eligibility")
+                        .param("branchId", UUID.randomUUID().toString())
+                        .param("documentNumber", "POS-RET"))
+                .andExpect(status().isUnauthorized());
     }
 
     @Test
@@ -74,6 +79,24 @@ class SaleReturnControllerTest {
         mockMvc.perform(post("/api/v1/pos/sales/{id}/returns", fixture.saleId())
                         .header("Authorization", fixture.bearer()).contentType(APPLICATION_JSON)
                         .content(returnBody(fixture.saleItemId())))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/v1/pos/sales/returns/eligibility")
+                        .header("Authorization", fixture.bearer())
+                        .param("branchId", fixture.branchId().toString())
+                        .param("documentNumber", "POS-RET"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void eligibilityRequiresPosCapability() throws Exception {
+        given(entitlements.resolve(any()))
+                .willReturn(new TenantEntitlements(true, true, EnumSet.noneOf(SaasCapability.class)));
+        Fixture fixture = fixture();
+
+        mockMvc.perform(get("/api/v1/pos/sales/returns/eligibility")
+                        .header("Authorization", fixture.bearer())
+                        .param("branchId", fixture.branchId().toString())
+                        .param("documentNumber", "POS-RET"))
                 .andExpect(status().isForbidden());
     }
 
@@ -91,6 +114,121 @@ class SaleReturnControllerTest {
         String saleStatus = jdbc.queryForObject("SELECT status FROM sales WHERE id = ?", String.class, fixture.saleId());
         assertThat(stock).isEqualByComparingTo("1.000");
         assertThat(saleStatus).isEqualTo("returned");
+    }
+
+    @Test
+    void eligibilityReturnsRealSaleQuantitiesPaymentsAndDoesNotMutate() throws Exception {
+        Fixture fixture = fixture();
+
+        mockMvc.perform(get("/api/v1/pos/sales/returns/eligibility")
+                        .header("Authorization", fixture.bearer())
+                        .param("branchId", fixture.branchId().toString())
+                        .param("documentNumber", "POS-RET"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sale.id").value(fixture.saleId().toString()))
+                .andExpect(jsonPath("$.sale.documentNumber").value("POS-RET"))
+                .andExpect(jsonPath("$.items[0].soldQuantity").value(1.0))
+                .andExpect(jsonPath("$.items[0].returnedQuantity").value(0))
+                .andExpect(jsonPath("$.items[0].returnableQuantity").value(1.0))
+                .andExpect(jsonPath("$.items[0].canReturn").value(true))
+                .andExpect(jsonPath("$.payments[0].method").value("cash"))
+                .andExpect(jsonPath("$.allowedOperations.voidTotal").value(true))
+                .andExpect(jsonPath("$.allowedOperations.partialReturn").value(true));
+
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM sale_returns WHERE sale_id = ?",
+                        Long.class,
+                        fixture.saleId()))
+                .isZero();
+        assertThat(jdbc.queryForObject(
+                        "SELECT quantity FROM inventory_balances WHERE id = ?",
+                        BigDecimal.class,
+                        fixture.balanceId()))
+                .isEqualByComparingTo("0.000");
+    }
+
+    @Test
+    void idempotentReturnCreatesOnceAndReplaysWithHttp200() throws Exception {
+        Fixture fixture = fixture();
+        UUID key = UUID.randomUUID();
+
+        mockMvc.perform(post("/api/v1/pos/sales/{id}/returns", fixture.saleId())
+                        .header("Authorization", fixture.bearer())
+                        .header("Idempotency-Key", key)
+                        .contentType(APPLICATION_JSON)
+                        .content(returnBody(fixture.saleItemId())))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.idempotent").value(false))
+                .andExpect(jsonPath("$.saleStatus").value("returned"))
+                .andExpect(jsonPath("$.commercialRefundAmount").value(10.0))
+                .andExpect(jsonPath("$.cashMovement.recorded").value(true));
+
+        mockMvc.perform(post("/api/v1/pos/sales/{id}/returns", fixture.saleId())
+                        .header("Authorization", fixture.bearer())
+                        .header("Idempotency-Key", key)
+                        .contentType(APPLICATION_JSON)
+                        .content(returnBody(fixture.saleItemId())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.idempotent").value(true));
+
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM sale_returns WHERE sale_id = ?",
+                        Long.class,
+                        fixture.saleId()))
+                .isOne();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM sale_reversal_operations WHERE tenant_id = ? AND idempotency_key = ?",
+                        Long.class,
+                        fixture.tenantId(),
+                        key))
+                .isOne();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM inventory_movements WHERE tenant_id = ? AND reference_type = 'POS_SALE_RETURN'",
+                        Long.class,
+                        fixture.tenantId()))
+                .isOne();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM cash_movements WHERE tenant_id = ? AND reference_type = 'sale_return'",
+                        Long.class,
+                        fixture.tenantId()))
+                .isOne();
+    }
+
+    @Test
+    void failedIdempotentReturnRollsBackOperationInventoryAndReturn() throws Exception {
+        Fixture fixture = fixture();
+        UUID key = UUID.randomUUID();
+        jdbc.update("UPDATE cash_shifts SET status = 'closed' WHERE id = ?", fixture.shiftId());
+
+        mockMvc.perform(post("/api/v1/pos/sales/{id}/returns", fixture.saleId())
+                        .header("Authorization", fixture.bearer())
+                        .header("Idempotency-Key", key)
+                        .contentType(APPLICATION_JSON)
+                        .content(returnBody(fixture.saleItemId())))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("NO_OPEN_CASH_SHIFT"));
+
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM sale_returns WHERE sale_id = ?",
+                        Long.class,
+                        fixture.saleId()))
+                .isZero();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM sale_reversal_operations WHERE tenant_id = ? AND idempotency_key = ?",
+                        Long.class,
+                        fixture.tenantId(),
+                        key))
+                .isZero();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM inventory_movements WHERE tenant_id = ? AND reference_type = 'POS_SALE_RETURN'",
+                        Long.class,
+                        fixture.tenantId()))
+                .isZero();
+        assertThat(jdbc.queryForObject(
+                        "SELECT quantity FROM inventory_balances WHERE id = ?",
+                        BigDecimal.class,
+                        fixture.balanceId()))
+                .isEqualByComparingTo("0.000");
     }
 
     private Fixture fixture() {
@@ -137,7 +275,14 @@ class SaleReturnControllerTest {
 
         User user = users.findById(userId).orElseThrow();
         Session session = sessions.findById(sessionId).orElseThrow();
-        return new Fixture(saleId, saleItemId, balanceId, "Bearer " + jwtService.generateToken(user, session));
+        return new Fixture(
+                tenantId,
+                branchId,
+                saleId,
+                saleItemId,
+                balanceId,
+                shiftId,
+                "Bearer " + jwtService.generateToken(user, session));
     }
 
     private String returnBody(UUID saleItemId) {
@@ -145,5 +290,12 @@ class SaleReturnControllerTest {
                 + saleItemId + "\",\"quantity\":1.000}]}";
     }
 
-    private record Fixture(UUID saleId, UUID saleItemId, UUID balanceId, String bearer) {}
+    private record Fixture(
+            UUID tenantId,
+            UUID branchId,
+            UUID saleId,
+            UUID saleItemId,
+            UUID balanceId,
+            UUID shiftId,
+            String bearer) {}
 }
