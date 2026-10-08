@@ -36,7 +36,7 @@ services:
         condition: service_healthy
 
   web:
-    image: ${WEB_IMAGE:-ghcr.io/alexander3150/omniretail-web}:${WEB_TAG:-latest}
+    image: ${WEB_IMAGE:-ghcr.io/omniretail-project/omniretail-web}:${WEB_TAG:-latest}
     restart: unless-stopped
     environment:
       # El frontend habla con el backend por la red interna de Docker, no por internet.
