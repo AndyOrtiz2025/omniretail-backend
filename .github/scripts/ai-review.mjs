@@ -64,8 +64,8 @@ async function askGemini(prompt) {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
     body: JSON.stringify({
+      // Sin generationConfig de muestreo: la guia de Gemini 3 pide mantener temperature en su valor por defecto.
       contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.2 },
     }),
   });
   if (!response.ok) {
