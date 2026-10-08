@@ -42,6 +42,8 @@ import com.omniretail.backend.inventory.service.InventoryTraceabilityHistoryServ
 import com.omniretail.backend.inventory.service.InventoryTraceabilityMutationService;
 import com.omniretail.backend.pos.dto.CreateSaleRequest;
 import com.omniretail.backend.pos.dto.InventoryTrackingSelectionRequest;
+import com.omniretail.backend.pos.dto.VoidSaleRequest;
+import com.omniretail.backend.pos.dto.VoidSaleResponse;
 import com.omniretail.backend.pos.entity.CashMovement;
 import com.omniretail.backend.pos.entity.CashMovementType;
 import com.omniretail.backend.pos.entity.CashShift;
@@ -52,11 +54,14 @@ import com.omniretail.backend.pos.entity.Sale;
 import com.omniretail.backend.pos.entity.SaleDocumentType;
 import com.omniretail.backend.pos.entity.SaleItem;
 import com.omniretail.backend.pos.entity.SaleStatus;
+import com.omniretail.backend.pos.entity.SaleReversalOperation;
+import com.omniretail.backend.pos.entity.SaleReversalOperationType;
 import com.omniretail.backend.pos.repository.CashMovementRepository;
 import com.omniretail.backend.pos.repository.CashShiftRepository;
 import com.omniretail.backend.pos.repository.PaymentRepository;
 import com.omniretail.backend.pos.repository.SaleItemRepository;
 import com.omniretail.backend.pos.repository.SaleRepository;
+import com.omniretail.backend.pos.repository.SaleReversalOperationRepository;
 import com.omniretail.backend.logistics.entity.PickingOrder;
 import com.omniretail.backend.logistics.entity.PickingSourceType;
 import com.omniretail.backend.logistics.repository.PickingOrderRepository;
@@ -97,6 +102,7 @@ class SaleServiceTest {
     @Mock BusinessCapabilitiesConfigRepository businessConfig;
     @Mock BankAccountRepository bankAccounts;
     @Mock SaleRepository sales;
+    @Mock SaleReversalOperationRepository reversalOperations;
     @Mock SaleItemRepository items;
     @Mock PaymentRepository payments;
     @Mock CashMovementRepository cashMovements;
@@ -1192,15 +1198,34 @@ class SaleServiceTest {
         InventoryReservation reservation = InventoryReservation.builder()
                 .status(InventoryReservationStatus.active).build();
         ReflectionTestUtils.setField(reservation, "id", UUID.randomUUID());
+        UUID key = UUID.randomUUID();
         when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
+        when(reversalOperations.findByTenantIdAndIdempotencyKey(tenant, key))
+                .thenReturn(Optional.empty());
         when(orders.findByTenantIdAndIdForUpdate(tenant, orderId)).thenReturn(Optional.of(order));
         when(reservations.findByTenantIdAndOrderId(tenant, orderId)).thenReturn(List.of(reservation));
         when(shifts.findByTenantIdAndId(tenant, shiftId)).thenReturn(Optional.empty());
         when(sales.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(reversalOperations.saveAndFlush(any()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
 
-        service.voidSale(sale.getId());
+        VoidSaleResponse first = service.voidSale(
+                sale.getId(), key, new VoidSaleRequest("Pedido cancelado"));
 
-        verify(reservationLifecycle).release(tenant, reservation.getId());
+        ArgumentCaptor<SaleReversalOperation> operationCaptor =
+                ArgumentCaptor.forClass(SaleReversalOperation.class);
+        verify(reversalOperations).saveAndFlush(operationCaptor.capture());
+        when(reversalOperations.findByTenantIdAndIdempotencyKey(tenant, key))
+                .thenReturn(Optional.of(operationCaptor.getValue()));
+        when(jsonMapper.readValue("{}", VoidSaleResponse.class)).thenReturn(first);
+
+        VoidSaleResponse replay = service.voidSale(
+                sale.getId(), key, new VoidSaleRequest("Pedido cancelado"));
+
+        assertThat(first.inventory().inventoryRestored()).isFalse();
+        assertThat(first.inventory().reservationsReleased()).isOne();
+        assertThat(replay.idempotent()).isTrue();
+        verify(reservationLifecycle, times(1)).release(tenant, reservation.getId());
         verify(orders).save(argThat(value -> value.getStatus() == OrderStatus.cancelled));
         verifyNoInteractions(inventory, traceabilityMutation);
         verifyNoInteractions(inventoryMovements);
@@ -1247,6 +1272,194 @@ class SaleServiceTest {
 
         verifyNoInteractions(reservationLifecycle, inventory, inventoryMovements);
         verify(orders, never()).save(any());
+    }
+
+    @Test
+    void idempotentVoidNormalizesReasonAndReportsOnlyRealCashEffect() {
+        Sale sale = sale(SaleStatus.completed);
+        UUID key = UUID.randomUUID();
+        Payment cash = Payment.builder()
+                .method(PaymentMethod.cash)
+                .amount(new BigDecimal("8.00"))
+                .build();
+        Payment card = Payment.builder()
+                .method(PaymentMethod.card)
+                .amount(new BigDecimal("12.00"))
+                .build();
+        when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId()))
+                .thenReturn(Optional.of(sale));
+        when(reversalOperations.findByTenantIdAndIdempotencyKey(tenant, key))
+                .thenReturn(Optional.empty());
+        when(items.findByTenantIdAndSaleId(tenant, sale.getId()))
+                .thenReturn(List.of(saleItem()));
+        when(products.findByTenantIdAndId(tenant, productId))
+                .thenReturn(Optional.of(product()));
+        when(shifts.findByTenantIdAndId(tenant, shiftId)).thenReturn(Optional.of(shift()));
+        when(payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(tenant, sale.getId()))
+                .thenReturn(List.of(cash, card));
+        when(sales.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(reversalOperations.saveAndFlush(any()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        VoidSaleResponse response = service.voidSale(
+                sale.getId(), key, new VoidSaleRequest("  Error   de digitacion  "));
+
+        assertThat(response.reason()).isEqualTo("Error de digitacion");
+        assertThat(response.idempotent()).isFalse();
+        assertThat(response.inventory().inventoryRestored()).isTrue();
+        assertThat(response.inventory().reservationsReleased()).isZero();
+        assertThat(response.cashMovement().recorded()).isTrue();
+        assertThat(response.cashMovement().amount()).isEqualByComparingTo("8.00");
+        verify(cashMovements, times(1)).save(any());
+        verify(reversalOperations).saveAndFlush(argThat(operation ->
+                operation.getReason().equals("Error de digitacion")
+                        && operation.getOperationType() == SaleReversalOperationType.void_sale
+                        && operation.getExecutedByUserId().equals(user)
+                        && operation.getResultPayload().equals("{}")));
+    }
+
+    @Test
+    void idempotentVoidReplaysStoredResultWithoutMutations() {
+        Sale sale = sale(SaleStatus.cancelled);
+        UUID key = UUID.randomUUID();
+        String reason = "Error de digitacion";
+        String fingerprint = ReflectionTestUtils.invokeMethod(
+                service, "voidFingerprint", sale.getId(), reason);
+        UUID operationId = UUID.randomUUID();
+        VoidSaleResponse stored = new VoidSaleResponse(
+                operationId,
+                false,
+                reason,
+                com.omniretail.backend.pos.dto.SaleResponse.from(sale),
+                new VoidSaleResponse.InventoryEffect(true, List.of(UUID.randomUUID()), 0),
+                new VoidSaleResponse.CashMovementEffect(
+                        false, List.of(), null));
+        SaleReversalOperation operation = operation(
+                sale.getId(), key, fingerprint, reason, "snapshot");
+        when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId()))
+                .thenReturn(Optional.of(sale));
+        when(reversalOperations.findByTenantIdAndIdempotencyKey(tenant, key))
+                .thenReturn(Optional.of(operation));
+        when(jsonMapper.readValue("snapshot", VoidSaleResponse.class)).thenReturn(stored);
+
+        VoidSaleResponse replay = service.voidSale(
+                sale.getId(), key, new VoidSaleRequest("  Error de digitacion  "));
+
+        assertThat(replay.operationId()).isEqualTo(operationId);
+        assertThat(replay.idempotent()).isTrue();
+        verifyNoInteractions(inventory, traceabilityMutation, cashMovements, reservationLifecycle);
+        verify(sales, never()).save(any());
+    }
+
+    @Test
+    void idempotentVoidRejectsChangedPayloadAndKeyReusedForAnotherSale() {
+        Sale sale = sale(SaleStatus.completed);
+        UUID key = UUID.randomUUID();
+        UUID anotherSaleId = UUID.randomUUID();
+        SaleReversalOperation changedPayload = operation(
+                sale.getId(),
+                key,
+                ReflectionTestUtils.invokeMethod(
+                        service, "voidFingerprint", sale.getId(), "Original"),
+                "Original",
+                "{}");
+        when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId()))
+                .thenReturn(Optional.of(sale));
+        when(reversalOperations.findByTenantIdAndIdempotencyKey(tenant, key))
+                .thenReturn(Optional.of(changedPayload));
+
+        assertThatThrownBy(() -> service.voidSale(
+                        sale.getId(), key, new VoidSaleRequest("Changed")))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("IDEMPOTENCY_KEY_REUSED"));
+
+        SaleReversalOperation anotherSale = operation(
+                anotherSaleId,
+                key,
+                "unrelated",
+                "Original",
+                "{}");
+        when(reversalOperations.findByTenantIdAndIdempotencyKey(tenant, key))
+                .thenReturn(Optional.of(anotherSale));
+
+        assertThatThrownBy(() -> service.voidSale(
+                        sale.getId(), key, new VoidSaleRequest("Original")))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("IDEMPOTENCY_KEY_REUSED"));
+        verifyNoInteractions(inventory, traceabilityMutation, cashMovements, reservationLifecycle);
+    }
+
+    @Test
+    void idempotentVoidRejectsKeyPreviouslyUsedByAnotherOperationType() {
+        Sale sale = sale(SaleStatus.completed);
+        UUID key = UUID.randomUUID();
+        SaleReversalOperation returnOperation = operation(
+                sale.getId(), key, "unrelated", "Return", "{}");
+        ReflectionTestUtils.setField(
+                returnOperation, "operationType", SaleReversalOperationType.return_sale);
+        when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId()))
+                .thenReturn(Optional.of(sale));
+        when(reversalOperations.findByTenantIdAndIdempotencyKey(tenant, key))
+                .thenReturn(Optional.of(returnOperation));
+
+        assertThatThrownBy(() -> service.voidSale(
+                        sale.getId(), key, new VoidSaleRequest("Return")))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("IDEMPOTENCY_KEY_REUSED"));
+        verifyNoInteractions(inventory, traceabilityMutation, cashMovements, reservationLifecycle);
+    }
+
+    @Test
+    void idempotentVoidRequiresPosCapabilityBeforeReadingOrMutatingSale() {
+        Sale sale = sale(SaleStatus.completed);
+        reset(branchAccess);
+        doThrow(BusinessException.forbidden(
+                        "CAPABILITY_REQUIRED", "La capacidad POS es requerida."))
+                .when(capability)
+                .ensureTenantCapability(tenant, SaasCapability.pos);
+
+        assertThatThrownBy(() -> service.voidSale(
+                        sale.getId(), UUID.randomUUID(), new VoidSaleRequest("Error de digitacion")))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo("CAPABILITY_REQUIRED"));
+
+        verifyNoInteractions(sales, reversalOperations, inventory, cashMovements);
+    }
+
+    @Test
+    void idempotentVoidWithClosedOriginalShiftReportsNoCashMovement() {
+        Sale sale = sale(SaleStatus.completed);
+        UUID key = UUID.randomUUID();
+        CashShift closed = shift();
+        closed.setStatus(CashShiftStatus.closed);
+        when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId()))
+                .thenReturn(Optional.of(sale));
+        when(reversalOperations.findByTenantIdAndIdempotencyKey(tenant, key))
+                .thenReturn(Optional.empty());
+        when(items.findByTenantIdAndSaleId(tenant, sale.getId()))
+                .thenReturn(List.of(saleItem()));
+        when(products.findByTenantIdAndId(tenant, productId))
+                .thenReturn(Optional.of(product()));
+        when(shifts.findByTenantIdAndId(tenant, shiftId)).thenReturn(Optional.of(closed));
+        when(sales.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(reversalOperations.saveAndFlush(any()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        VoidSaleResponse response = service.voidSale(
+                sale.getId(), key, new VoidSaleRequest("Turno ya cerrado"));
+
+        assertThat(response.cashMovement().recorded()).isFalse();
+        assertThat(response.cashMovement().movementIds()).isEmpty();
+        assertThat(response.cashMovement().amount()).isNull();
+        verifyNoInteractions(cashMovements);
     }
 
     @Test
@@ -1496,5 +1709,26 @@ class SaleServiceTest {
                 .subtotal(new BigDecimal("20.00")).build();
         ReflectionTestUtils.setField(item, "id", UUID.randomUUID());
         return item;
+    }
+
+    private SaleReversalOperation operation(
+            UUID saleId,
+            UUID key,
+            String fingerprint,
+            String reason,
+            String resultPayload) {
+        SaleReversalOperation operation = SaleReversalOperation.builder()
+                .tenantId(tenant)
+                .branchId(branch)
+                .saleId(saleId)
+                .operationType(SaleReversalOperationType.void_sale)
+                .idempotencyKey(key)
+                .fingerprint(fingerprint)
+                .reason(reason)
+                .executedByUserId(user)
+                .resultPayload(resultPayload)
+                .build();
+        ReflectionTestUtils.setField(operation, "id", UUID.randomUUID());
+        return operation;
     }
 }

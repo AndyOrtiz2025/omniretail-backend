@@ -8,9 +8,11 @@ import com.omniretail.backend.pos.dto.PosSalesHistoryPageResponse;
 import com.omniretail.backend.pos.dto.SaleConfirmationResponse;
 import com.omniretail.backend.pos.dto.SaleDetailResponse;
 import com.omniretail.backend.pos.dto.SaleResponse;
+import com.omniretail.backend.pos.dto.VoidSaleRequest;
 import com.omniretail.backend.pos.entity.SaleStatus;
 import com.omniretail.backend.pos.service.PosSalesHistoryService;
 import com.omniretail.backend.pos.service.SaleService;
+import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.RequirePermission;
 import jakarta.validation.Valid;
 import java.time.Instant;
@@ -27,6 +29,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
@@ -81,7 +84,25 @@ public class SaleController {
 
     @PostMapping("/{id}/void")
     @RequirePermission("pos.sales.void")
-    public SaleResponse voidSale(@PathVariable UUID id) {
-        return service.voidSale(id);
+    public Object voidSale(
+            @PathVariable UUID id,
+            @RequestHeader(name = "Idempotency-Key", required = false) UUID idempotencyKey,
+            @Valid @RequestBody(required = false) VoidSaleRequest request) {
+        if (idempotencyKey == null && request == null) {
+            return service.voidSale(id);
+        }
+        if (idempotencyKey == null) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "IDEMPOTENCY_KEY_REQUIRED",
+                    "El encabezado Idempotency-Key es requerido.");
+        }
+        if (request == null) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "VOID_REQUEST_REQUIRED",
+                    "El motivo de anulacion es requerido.");
+        }
+        return service.voidSale(id, idempotencyKey, request);
     }
 }

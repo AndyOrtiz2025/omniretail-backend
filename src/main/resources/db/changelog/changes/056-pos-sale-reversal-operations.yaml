@@ -1,0 +1,110 @@
+databaseChangeLog:
+  - changeSet:
+      id: 056-pos-sale-reversal-operations
+      author: rique
+      changes:
+        - createTable:
+            tableName: sale_reversal_operations
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: branch_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: sale_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: operation_type
+                  type: VARCHAR(30)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: idempotency_key
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: fingerprint
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: reason
+                  type: VARCHAR(1000)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: executed_by_user_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: result_payload
+                  type: JSONB
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: sale_reversal_operations
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_sale_reversal_operations_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: sale_reversal_operations
+            baseColumnNames: branch_id
+            referencedTableName: branches
+            referencedColumnNames: id
+            constraintName: fk_sale_reversal_operations_branch
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: sale_reversal_operations
+            baseColumnNames: sale_id
+            referencedTableName: sales
+            referencedColumnNames: id
+            constraintName: fk_sale_reversal_operations_sale
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: sale_reversal_operations
+            baseColumnNames: executed_by_user_id
+            referencedTableName: users
+            referencedColumnNames: id
+            constraintName: fk_sale_reversal_operations_user
+            onDelete: RESTRICT
+        - addUniqueConstraint:
+            tableName: sale_reversal_operations
+            columnNames: tenant_id, idempotency_key
+            constraintName: uk_sale_reversal_operations_tenant_key
+        - sql:
+            sql: "ALTER TABLE sale_reversal_operations ADD CONSTRAINT ck_sale_reversal_operations_type CHECK (operation_type IN ('void_sale', 'return_sale'))"
+        - createIndex:
+            tableName: sale_reversal_operations
+            indexName: idx_sale_reversal_operations_tenant_sale_created
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: sale_id
+              - column:
+                  name: created_at

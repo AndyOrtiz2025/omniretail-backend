@@ -25,6 +25,7 @@ import com.omniretail.backend.pos.dto.CreateSaleRequest;
 import com.omniretail.backend.pos.dto.CreateSaleReturnRequest;
 import com.omniretail.backend.pos.dto.InventoryTrackingSelectionRequest;
 import com.omniretail.backend.pos.dto.SaleConfirmationResponse;
+import com.omniretail.backend.pos.dto.VoidSaleRequest;
 import com.omniretail.backend.pos.entity.PaymentMethod;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
@@ -841,7 +842,8 @@ class PosTraceabilityServiceTest {
                 "UPDATE inventory_serials SET status = 'WRITTEN_OFF' WHERE tenant_id = ? AND serial_number = 'VOID-STATE'",
                 fixture.tenantId());
 
-        assertThatThrownBy(() -> sales.voidSale(sale.id()))
+        assertThatThrownBy(() -> sales.voidSale(
+                        sale.id(), UUID.randomUUID(), new VoidSaleRequest("Estado serial invalido")))
                 .isInstanceOfSatisfying(
                         BusinessException.class,
                         exception -> assertThat(exception.getCode())
@@ -853,6 +855,11 @@ class PosTraceabilityServiceTest {
                 .isEqualTo("completed");
         assertThat(balance(fixture)).isEqualByComparingTo("0.000");
         assertThat(movementCount(fixture, "POS_SALE_VOID", sale.id())).isZero();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM sale_reversal_operations WHERE sale_id = ?",
+                        Long.class,
+                        sale.id()))
+                .isZero();
     }
 
     @Test
@@ -913,6 +920,33 @@ class PosTraceabilityServiceTest {
         assertThat(voidOutcomes).filteredOn(Outcome::success).hasSize(1);
         assertThat(balance(fixture)).isEqualByComparingTo("1.000");
         assertThat(movementCount(fixture, "POS_SALE_VOID", saleId)).isOne();
+    }
+
+    @Test
+    void concurrentIdempotentVoidReplaysAndRestoresOnlyOnce() throws Exception {
+        Fixture fixture = fixture(true, false, BigDecimal.ONE, List.of());
+        SaleConfirmationResponse sale = sales.create(saleRequest(
+                fixture,
+                fixture.shiftId(),
+                "1.000",
+                UUID.randomUUID(),
+                List.of(selection(fixture, fixture.lotId(), "1.000", List.of()))));
+        UUID key = UUID.randomUUID();
+        VoidSaleRequest request = new VoidSaleRequest("Anulacion concurrente");
+
+        List<Outcome> outcomes = race(
+                asActor(fixture.primaryActor(), () -> sales.voidSale(sale.id(), key, request)),
+                asActor(fixture.secondaryActor(), () -> sales.voidSale(sale.id(), key, request)));
+
+        assertThat(outcomes).allMatch(Outcome::success);
+        assertThat(balance(fixture)).isEqualByComparingTo("1.000");
+        assertThat(movementCount(fixture, "POS_SALE_VOID", sale.id())).isOne();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM sale_reversal_operations WHERE tenant_id = ? AND idempotency_key = ?",
+                        Long.class,
+                        fixture.tenantId(),
+                        key))
+                .isOne();
     }
 
     @Test
