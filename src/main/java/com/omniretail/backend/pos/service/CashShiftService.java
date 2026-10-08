@@ -17,6 +17,8 @@ import com.omniretail.backend.shared.security.SaasCapability;
 import com.omniretail.backend.shared.security.TenantCapabilityGuard;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.Optional;
+import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -33,6 +35,19 @@ public class CashShiftService {
     private final BranchAccessResolver branchAccessResolver;
     private final CurrentUser currentUser;
     private final TenantCapabilityGuard tenantCapabilityGuard;
+
+    @Transactional(readOnly = true)
+    public Optional<CashShiftResponse> findOpen(UUID branchId) {
+        AuthenticatedUser actor = requireActor();
+        branchRepository.findByTenantIdAndId(actor.tenantId(), branchId)
+                .filter(branch -> branchAccessResolver.resolve(actor).allows(branch.getId()))
+                .orElseThrow(() -> new BusinessException(
+                        HttpStatus.NOT_FOUND, "BRANCH_NOT_FOUND", "Sucursal no encontrada."));
+        return cashShiftRepository
+                .findByTenantIdAndBranchIdAndUserIdAndStatus(
+                        actor.tenantId(), branchId, actor.userId(), CashShiftStatus.open)
+                .map(CashShiftResponse::from);
+    }
 
     public CashShiftResponse open(OpenCashShiftRequest request) {
         AuthenticatedUser actor = requireActor();

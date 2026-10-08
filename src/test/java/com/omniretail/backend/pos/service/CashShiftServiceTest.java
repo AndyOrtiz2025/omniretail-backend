@@ -82,6 +82,49 @@ class CashShiftServiceTest {
     }
 
     @Test
+    void returnsOnlyCurrentUsersOpenShift() {
+        allowBranch();
+        when(shifts.findByTenantIdAndBranchIdAndUserIdAndStatus(
+                        tenantId, branchId, userId, CashShiftStatus.open))
+                .thenReturn(Optional.of(shift()));
+
+        var result = service.findOpen(branchId);
+
+        assertThat(result).isPresent();
+        assertThat(result.orElseThrow().userId()).isEqualTo(userId);
+        verify(shifts).findByTenantIdAndBranchIdAndUserIdAndStatus(
+                tenantId, branchId, userId, CashShiftStatus.open);
+        verify(capability).ensureTenantCapability(tenantId, SaasCapability.pos);
+    }
+
+    @Test
+    void returnsEmptyWhenCurrentUserHasNoOpenShift() {
+        allowBranch();
+
+        assertThat(service.findOpen(branchId)).isEmpty();
+
+        verify(shifts).findByTenantIdAndBranchIdAndUserIdAndStatus(
+                tenantId, branchId, userId, CashShiftStatus.open);
+    }
+
+    @Test
+    void openShiftLookupRejectsMissingCrossTenantOrUnauthorizedBranch() {
+        assertThatThrownBy(() -> service.findOpen(branchId))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        error -> assertThat(error.getCode()).isEqualTo("BRANCH_NOT_FOUND"));
+
+        allowBranch();
+        when(access.resolve(actor)).thenReturn(new BranchAccess(false, Set.of()));
+        assertThatThrownBy(() -> service.findOpen(branchId))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        error -> assertThat(error.getCode()).isEqualTo("BRANCH_NOT_FOUND"));
+        verify(shifts, never()).findByTenantIdAndBranchIdAndUserIdAndStatus(
+                any(), any(), any(), any());
+    }
+
+    @Test
     void rejectsExistingOpenShiftEvenForAnotherRegister() {
         allowBranch();
         when(shifts.findByTenantIdAndBranchIdAndUserIdAndStatus(

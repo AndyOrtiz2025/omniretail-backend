@@ -69,7 +69,28 @@ public record CreateSaleRequest(
             @NotNull DeliveryMethod deliveryMethod,
             @NotNull TransportMode transportMode,
             @Valid DeliveryAddress deliveryAddress,
-            @Valid NotificationContact notificationContact) {}
+            @Valid NotificationContact notificationContact,
+            @Valid StorePickupContact storePickupContact) {
+
+        public DeferredOrder(
+                String idempotencyKey,
+                DeliveryMethod deliveryMethod,
+                TransportMode transportMode,
+                DeliveryAddress deliveryAddress,
+                NotificationContact notificationContact) {
+            this(
+                    idempotencyKey,
+                    deliveryMethod,
+                    transportMode,
+                    deliveryAddress,
+                    notificationContact,
+                    null);
+        }
+    }
+
+    public record StorePickupContact(
+            @NotBlank @Size(max = 200) String recipientName,
+            @NotBlank @Size(max = 30) @GuatemalaPhone String recipientPhone) {}
 
     public record DeliveryAddress(
             @NotBlank @Size(max = 200) String recipientName,

@@ -15,6 +15,7 @@ import com.omniretail.backend.inventory.entity.InventoryMovement;
 import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
 import com.omniretail.backend.logistics.dto.ConfirmDispatchRequest;
 import com.omniretail.backend.logistics.dto.DispatchResponse;
+import com.omniretail.backend.logistics.dto.PreparedDispatchResponse;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
@@ -101,6 +102,88 @@ class DispatchServiceTest {
         DispatchResponse detail = service.getDetail(fixture.branchId(), fixture.orderId());
         assertThat(detail.dispatchId()).isEqualTo(confirmed.dispatchId());
         assertThat(detail.packages()).extracting(p -> p.number()).containsExactly("PKG-1", "PKG-2");
+    }
+
+    @Test
+    void preparedDetailExposesAuthorizedCompletedPreparationWithoutMutation() {
+        DispatchTestFixture.Data fixture = fixture(2);
+
+        PreparedDispatchResponse result =
+                service.getPreparedDetail(fixture.branchId(), fixture.orderId());
+
+        assertThat(result.orderId()).isEqualTo(fixture.orderId());
+        assertThat(result.orderStatus()).isEqualTo(
+                com.omniretail.backend.ecommerce.entity.OrderStatus.ready_for_dispatch);
+        assertThat(result.recipientName()).isEqualTo("Ana Lopez");
+        assertThat(result.recipientPhone()).isEqualTo("+502 5555-5555");
+        assertThat(result.deliveryAddress().get("line1").asText()).isEqualTo("Zona 1");
+        assertThat(result.pickingStatus()).isEqualTo(
+                com.omniretail.backend.logistics.entity.PickingStatus.completed);
+        assertThat(result.pickingCompletedAt()).isNotNull();
+        assertThat(result.packingId()).isEqualTo(fixture.packingId());
+        assertThat(result.packingStatus()).isEqualTo(
+                com.omniretail.backend.logistics.entity.PackingStatus.finalized);
+        assertThat(result.packingFinalizedAt()).isNotNull();
+        assertThat(result.packageCount()).isEqualTo(2);
+        assertThat(result.labelCode()).isEqualTo(fixture.labelCode());
+        assertUntouched(fixture);
+    }
+
+    @Test
+    void preparedDetailRejectsMissingOrNotReadyOrder() {
+        DispatchTestFixture.Data fixture = fixture(2);
+        assertCode(
+                () -> service.getPreparedDetail(fixture.branchId(), UUID.randomUUID()),
+                "ORDER_NOT_FOUND");
+
+        jdbc.update("UPDATE orders SET status = 'confirmed' WHERE id = ?", fixture.orderId());
+        assertCode(
+                () -> service.getPreparedDetail(fixture.branchId(), fixture.orderId()),
+                "INVALID_ORDER_STATUS_TRANSITION");
+    }
+
+    @Test
+    void preparedDetailRequiresCompletedPicking() {
+        DispatchTestFixture.Data fixture = fixture(2);
+        jdbc.update(
+                "UPDATE picking_orders SET status = 'in_progress', completed_at = NULL WHERE order_id = ?",
+                fixture.orderId());
+
+        assertCode(
+                () -> service.getPreparedDetail(fixture.branchId(), fixture.orderId()),
+                "PICKING_NOT_COMPLETED");
+    }
+
+    @Test
+    void preparedDetailRequiresFinalizedPacking() {
+        DispatchTestFixture.Data fixture = fixture(2);
+        jdbc.update(
+                "UPDATE packings SET status = 'in_progress', finalized_by_user_id = NULL, "
+                        + "finalized_at = NULL WHERE id = ?",
+                fixture.packingId());
+
+        assertCode(
+                () -> service.getPreparedDetail(fixture.branchId(), fixture.orderId()),
+                "PACKING_NOT_FINALIZED");
+    }
+
+    @Test
+    void preparedDetailEnforcesTenantAndBranchBoundaries() {
+        DispatchTestFixture.Data fixture = fixture(2);
+        actor(UUID.randomUUID(), fixture.branchId(), fixture.userId(), true);
+        assertCode(
+                () -> service.getPreparedDetail(fixture.branchId(), fixture.orderId()),
+                "ORDER_NOT_FOUND");
+
+        actor(fixture.tenantId(), fixture.branchId(), fixture.userId(), false);
+        assertCode(
+                () -> service.getPreparedDetail(fixture.branchId(), fixture.orderId()),
+                "BRANCH_ACCESS_DENIED");
+
+        actor(fixture.tenantId(), fixture.branchId(), fixture.userId(), true);
+        assertCode(
+                () -> service.getPreparedDetail(UUID.randomUUID(), fixture.orderId()),
+                "ORDER_NOT_FOUND");
     }
 
     @Test

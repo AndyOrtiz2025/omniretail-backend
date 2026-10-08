@@ -59,10 +59,13 @@ public final class DispatchTestFixture {
         jdbc.update("""
                 INSERT INTO orders
                     (id, tenant_id, branch_id, order_number, source, guest_customer, status,
-                     delivery_method, transport_mode, subtotal, discount_total, shipping_total,
-                     total, tracking_token)
+                     delivery_method, transport_mode, delivery_address, notification_contact,
+                     subtotal, discount_total, shipping_total, total, tracking_token)
                 VALUES (?, ?, ?, ?, 'ecommerce', '{"name":"Cliente"}'::jsonb,
-                        'ready_for_dispatch', 'home_delivery', 'third_party', 50, 0, 0, 50, ?)
+                        'ready_for_dispatch', 'home_delivery', 'third_party',
+                        '{"recipientName":"Ana Lopez","recipientPhone":"+502 5555-5555","line1":"Zona 1"}'::jsonb,
+                        '{"emailMode":"send","email":"ana@example.com"}'::jsonb,
+                        50, 0, 0, 50, ?)
                 """, order, tenant, branch, "WEB-" + order, UUID.randomUUID().toString());
         jdbc.update("""
                 INSERT INTO order_items

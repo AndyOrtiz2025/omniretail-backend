@@ -347,6 +347,7 @@ public class SaleService {
                 .transportMode(deferred.transportMode())
                 .deliveryAddress(json(deferred.deliveryAddress()))
                 .notificationContact(json(deferred.notificationContact()))
+                .storePickupContact(json(deferred.storePickupContact()))
                 .subtotal(subtotal)
                 .discountTotal(discount)
                 .shippingTotal(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP))
@@ -1081,6 +1082,31 @@ public class SaleService {
             putIfNotNull(normalizedAddress, "references", trimToNull(address.references()));
         }
 
+        Map<String, Object> storePickupContact = null;
+        if (input.deliveryMethod() == DeliveryMethod.store_pickup) {
+            CreateSaleRequest.StorePickupContact contact = input.storePickupContact();
+            if (contact == null
+                    || trimToNull(contact.recipientName()) == null
+                    || trimToNull(contact.recipientPhone()) == null) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "STORE_PICKUP_CONTACT_REQUIRED",
+                        "El retiro en tienda requiere un contacto de retiro.");
+            }
+            String phone;
+            try {
+                phone = PhoneNormalizer.normalize(contact.recipientPhone());
+            } catch (IllegalArgumentException exception) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "STORE_PICKUP_PHONE_INVALID",
+                        "El telefono de retiro no es valido.");
+            }
+            storePickupContact = new LinkedHashMap<>();
+            storePickupContact.put("recipientName", contact.recipientName().trim());
+            storePickupContact.put("recipientPhone", phone);
+        }
+
         Map<String, Object> notification = null;
         if (input.notificationContact() != null) {
             String mode = trimToNull(input.notificationContact().emailMode());
@@ -1109,7 +1135,8 @@ public class SaleService {
                 input.deliveryMethod(),
                 input.transportMode(),
                 normalizedAddress,
-                notification);
+                notification,
+                storePickupContact);
     }
 
     private static boolean isSupportedDeferredDeliveryMethod(DeliveryMethod deliveryMethod) {
@@ -1168,7 +1195,8 @@ public class SaleService {
                 + ":" + deferred.deliveryMethod()
                 + ":" + deferred.transportMode()
                 + ":" + deferred.deliveryAddress()
-                + ":" + deferred.notificationContact();
+                + ":" + deferred.notificationContact()
+                + ":" + deferred.storePickupContact();
     }
 
     private static boolean matchesLegacyConfirmation(
@@ -1293,7 +1321,8 @@ public class SaleService {
             DeliveryMethod deliveryMethod,
             com.omniretail.backend.ecommerce.entity.TransportMode transportMode,
             Map<String, Object> deliveryAddress,
-            Map<String, Object> notificationContact) {}
+            Map<String, Object> notificationContact,
+            Map<String, Object> storePickupContact) {}
 
     private record DeferredFulfillment(
             Order order, List<OrderItem> orderItems, PickingOrder picking) {}

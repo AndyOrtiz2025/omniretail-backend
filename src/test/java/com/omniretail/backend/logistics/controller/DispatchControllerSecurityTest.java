@@ -18,6 +18,7 @@ import com.omniretail.backend.administration.repository.UserRepository;
 import com.omniretail.backend.auth.entity.Session;
 import com.omniretail.backend.auth.repository.SessionRepository;
 import com.omniretail.backend.auth.service.JwtService;
+import com.omniretail.backend.logistics.service.DispatchTestFixture;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
@@ -56,6 +57,13 @@ class DispatchControllerSecurityTest {
     }
 
     @Test
+    void preparedDetailRequiresAuthentication() throws Exception {
+        mvc.perform(get(BASE + "/{orderId}/prepared", UUID.randomUUID())
+                        .param("branchId", UUID.randomUUID().toString()))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void queueRequiresReadPermission() throws Exception {
         Actor actor = actor(List.of());
         mvc.perform(get(BASE)
@@ -63,6 +71,45 @@ class DispatchControllerSecurityTest {
                         .header("Authorization", "Bearer " + actor.token()))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+    }
+
+    @Test
+    void preparedDetailRequiresReadPermission() throws Exception {
+        Actor actor = actor(List.of());
+        mvc.perform(get(BASE + "/{orderId}/prepared", UUID.randomUUID())
+                        .param("branchId", actor.branchId().toString())
+                        .header("Authorization", "Bearer " + actor.token()))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+    }
+
+    @Test
+    void preparedDetailReturnsAuthorizedPreparationContract() throws Exception {
+        DispatchTestFixture.Data fixture = DispatchTestFixture.create(jdbc, 2);
+        Actor actor = actorForFixture(fixture, List.of("logistics.dispatch.read"));
+        UUID pickingOrderId = jdbc.queryForObject(
+                "SELECT id FROM picking_orders WHERE order_id = ?", UUID.class, fixture.orderId());
+
+        mvc.perform(get(BASE + "/{orderId}/prepared", fixture.orderId())
+                        .param("branchId", fixture.branchId().toString())
+                        .header("Authorization", "Bearer " + actor.token()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.orderId").value(fixture.orderId().toString()))
+                .andExpect(jsonPath("$.orderReference").value("WEB-" + fixture.orderId()))
+                .andExpect(jsonPath("$.orderStatus").value("ready_for_dispatch"))
+                .andExpect(jsonPath("$.recipientName").value("Ana Lopez"))
+                .andExpect(jsonPath("$.recipientPhone").value("+502 5555-5555"))
+                .andExpect(jsonPath("$.deliveryAddress.line1").value("Zona 1"))
+                .andExpect(jsonPath("$.transportMode").value("third_party"))
+                .andExpect(jsonPath("$.pickingOrderId").value(pickingOrderId.toString()))
+                .andExpect(jsonPath("$.pickingStatus").value("completed"))
+                .andExpect(jsonPath("$.pickingCompletedAt").isNotEmpty())
+                .andExpect(jsonPath("$.packingId").value(fixture.packingId().toString()))
+                .andExpect(jsonPath("$.packingStatus").value("finalized"))
+                .andExpect(jsonPath("$.packingFinalizedAt").isNotEmpty())
+                .andExpect(jsonPath("$.packageCount").value(fixture.packageCount()))
+                .andExpect(jsonPath("$.totalWeight").value(4.5))
+                .andExpect(jsonPath("$.labelCode").value(fixture.labelCode()));
     }
 
     @Test
@@ -139,6 +186,25 @@ class DispatchControllerSecurityTest {
                 .expiresAt(Instant.now().plus(1, ChronoUnit.HOURS))
                 .build());
         return new Actor(branch, jwtService.generateToken(user, session));
+    }
+
+    private Actor actorForFixture(
+            DispatchTestFixture.Data fixture, List<String> permissions) {
+        Role role = Role.builder()
+                .name("Dispatch fixture " + UUID.randomUUID())
+                .permissions(permissions)
+                .build();
+        role.setTenantId(fixture.tenantId());
+        role = roles.saveAndFlush(role);
+        jdbc.update(
+                "UPDATE users SET role_id = ? WHERE tenant_id = ? AND id = ?",
+                role.getId(), fixture.tenantId(), fixture.userId());
+        User user = users.findByTenantIdAndId(fixture.tenantId(), fixture.userId()).orElseThrow();
+        Session session = sessions.save(Session.builder()
+                .userId(user.getId())
+                .expiresAt(Instant.now().plus(1, ChronoUnit.HOURS))
+                .build());
+        return new Actor(fixture.branchId(), jwtService.generateToken(user, session));
     }
 
     private record Actor(UUID branchId, String token) {}

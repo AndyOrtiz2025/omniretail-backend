@@ -361,6 +361,59 @@ class PosTraceabilityServiceTest {
     }
 
     @Test
+    void deferredStorePickupPersistsNormalizedContactAndReplaysIdempotently() {
+        Fixture fixture = fixture(false, false, new BigDecimal("24.000"), List.of());
+        jdbc.update(
+                "UPDATE inventory_balances SET location_id = NULL WHERE tenant_id = ? AND product_id = ?",
+                fixture.tenantId(), fixture.productId());
+        UUID confirmationId = UUID.randomUUID();
+        CreateSaleRequest home = deferredSaleRequest(fixture, confirmationId);
+        CreateSaleRequest request = new CreateSaleRequest(
+                home.branchId(),
+                home.cashShiftId(),
+                home.customerId(),
+                home.taxTotal(),
+                home.items(),
+                home.payments(),
+                home.confirmationId(),
+                home.document(),
+                null,
+                new CreateSaleRequest.DeferredOrder(
+                        home.deferredOrder().idempotencyKey(),
+                        DeliveryMethod.store_pickup,
+                        TransportMode.customer,
+                        null,
+                        home.deferredOrder().notificationContact(),
+                        new CreateSaleRequest.StorePickupContact(
+                                " Cliente Retira ", "+502 5555-5555")));
+
+        SaleConfirmationResponse created = sales.create(request);
+
+        assertThat(created.order().deliveryMethod()).isEqualTo(DeliveryMethod.store_pickup);
+        assertThat(created.order().deliveryAddress()).isNull();
+        assertThat(created.order().storePickupContact().get("recipientName").asText())
+                .isEqualTo("Cliente Retira");
+        assertThat(created.order().storePickupContact().get("recipientPhone").asText())
+                .isEqualTo("+502 5555-5555");
+        assertThat(jdbc.queryForObject(
+                        "SELECT store_pickup_contact ->> 'recipientPhone' FROM orders WHERE id = ?",
+                        String.class,
+                        created.sourceOrderId()))
+                .isEqualTo("+502 5555-5555");
+
+        SaleConfirmationResponse replay = sales.create(request);
+        assertThat(replay.id()).isEqualTo(created.id());
+        assertThat(replay.order().id()).isEqualTo(created.order().id());
+        assertThat(replay.idempotent()).isTrue();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM orders WHERE tenant_id = ? AND idempotency_key = ?",
+                        Long.class,
+                        fixture.tenantId(),
+                        "deferred-" + confirmationId))
+                .isOne();
+    }
+
+    @Test
     void deferredConfirmationRollsBackOrderItemsReservationAndPickingWhenPickingFails() {
         Fixture fixture = fixture(false, false, new BigDecimal("24.000"), List.of());
         jdbc.update(

@@ -912,18 +912,68 @@ class SaleServiceTest {
                         DeliveryMethod.store_pickup,
                         TransportMode.customer,
                         null,
-                        valid.deferredOrder().notificationContact()));
+                        valid.deferredOrder().notificationContact(),
+                        new CreateSaleRequest.StorePickupContact(
+                                " Cliente Retira ", "5555-5555")));
 
         var result = service.create(storePickup);
 
         assertThat(result.order().deliveryMethod()).isEqualTo(DeliveryMethod.store_pickup);
         assertThat(result.order().deliveryAddress()).isNull();
-        assertThat(result.order().storePickupContact()).isNull();
+        ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
+        verify(orders).saveAndFlush(orderCaptor.capture());
+        assertThat(orderCaptor.getValue().getStorePickupContact()).isNotNull();
         assertThat(result.sourceOrderId()).isEqualTo(order.getId());
         assertThat(result.pickingOrder().id()).isEqualTo(picking.getId());
         verify(reservationLifecycle).reserve(any());
         verifyNoInteractions(inventory, traceabilityMutation);
         verifyNoInteractions(inventoryMovements);
+    }
+
+    @Test
+    void rejectsMissingStorePickupContact() {
+        reset(branchAccess);
+        CreateSaleRequest valid = deferredRequest(
+                new BigDecimal("20.00"), BigDecimal.ONE, UUID.randomUUID());
+        CreateSaleRequest request = new CreateSaleRequest(
+                valid.branchId(), valid.cashShiftId(), valid.customerId(), valid.taxTotal(),
+                valid.items(), valid.payments(), valid.confirmationId(), valid.document(), null,
+                new CreateSaleRequest.DeferredOrder(
+                        valid.deferredOrder().idempotencyKey(),
+                        DeliveryMethod.store_pickup,
+                        TransportMode.customer,
+                        null,
+                        valid.deferredOrder().notificationContact(),
+                        null));
+
+        assertThatThrownBy(() -> service.create(request))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        error -> assertThat(error.getCode())
+                                .isEqualTo("STORE_PICKUP_CONTACT_REQUIRED"));
+    }
+
+    @Test
+    void rejectsInvalidStorePickupPhone() {
+        reset(branchAccess);
+        CreateSaleRequest valid = deferredRequest(
+                new BigDecimal("20.00"), BigDecimal.ONE, UUID.randomUUID());
+        CreateSaleRequest request = new CreateSaleRequest(
+                valid.branchId(), valid.cashShiftId(), valid.customerId(), valid.taxTotal(),
+                valid.items(), valid.payments(), valid.confirmationId(), valid.document(), null,
+                new CreateSaleRequest.DeferredOrder(
+                        valid.deferredOrder().idempotencyKey(),
+                        DeliveryMethod.store_pickup,
+                        TransportMode.customer,
+                        null,
+                        valid.deferredOrder().notificationContact(),
+                        new CreateSaleRequest.StorePickupContact("Cliente", "123")));
+
+        assertThatThrownBy(() -> service.create(request))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        error -> assertThat(error.getCode())
+                                .isEqualTo("STORE_PICKUP_PHONE_INVALID"));
     }
 
     @Test
@@ -1015,7 +1065,8 @@ class SaleServiceTest {
                         DeliveryMethod.store_pickup,
                         TransportMode.customer,
                         null,
-                        home.deferredOrder().notificationContact()));
+                        home.deferredOrder().notificationContact(),
+                        new CreateSaleRequest.StorePickupContact("Cliente", "5555-5555")));
 
         String homeFingerprint = ReflectionTestUtils.invokeMethod(service, "fingerprint", home);
         String pickupFingerprint = ReflectionTestUtils.invokeMethod(service, "fingerprint", pickup);
@@ -1038,7 +1089,8 @@ class SaleServiceTest {
                         DeliveryMethod.store_pickup,
                         TransportMode.customer,
                         null,
-                        homeRequest.deferredOrder().notificationContact()));
+                        homeRequest.deferredOrder().notificationContact(),
+                        new CreateSaleRequest.StorePickupContact("Cliente", "5555-5555")));
         when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product));
         stubSalePersistence();
         Order order = stubDeferredOrderPersistence();
