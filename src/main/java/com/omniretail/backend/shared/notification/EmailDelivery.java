@@ -19,8 +19,8 @@ import lombok.Setter;
 /**
  * Registro de un envio. Decision sobre el cuerpo: NUNCA se guarda en claro (los correos de seguridad
  * llevan tokens de reset/activacion). Los de proposito TENANT guardan asunto+cuerpo cifrados
- * ({@code encrypted_payload}) para poder reintentar tras un fallo de transporte; los de plataforma no guardan
- * nada y no se reintentan (el usuario puede pedir otro enlace).
+ * ({@code encrypted_payload}) para poder reintentar tras un fallo de transporte; los de plataforma y los
+ * TENANT_PREFERRED (verificacion de correo) no guardan nada y no se reintentan (el usuario puede pedir otro enlace).
  */
 @Entity
 @Table(name = "email_delivery")
@@ -80,4 +80,17 @@ public class EmailDelivery {
 
     @Column(name = "sent_at")
     private Instant sentAt;
+
+    /** Por donde salio el correo, o por donde se intento por ultima vez si fallo. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "sender_channel")
+    private EmailSenderChannel senderChannel;
+
+    /** El Gmail del negocio fallo y el correo se reenvio por plataforma en el mismo intento. */
+    @Column(name = "fallback_used", nullable = false)
+    private boolean fallbackUsed;
+
+    /** Codigo saneado del fallo del Gmail del negocio que provoco el fallback. */
+    @Column(name = "fallback_reason")
+    private String fallbackReason;
 }

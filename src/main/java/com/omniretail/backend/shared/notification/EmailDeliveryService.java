@@ -17,7 +17,8 @@ import tools.jackson.databind.json.JsonMapper;
  * (tras el commit) y reintentos de los fallos de transporte. Un fallo de correo solo queda en este registro:
  * nunca se propaga a la operacion de negocio.
  *
- * <p>Logs: solo tenantId, purpose, destinatario y codigo de motivo; nunca el cuerpo, tokens ni credenciales.
+ * <p>Logs: solo tenantId, purpose, canal, destinatario enmascarado y codigo de motivo; nunca el cuerpo,
+ * tokens, credenciales ni el correo completo.
  */
 @Slf4j
 @Service
@@ -91,15 +92,16 @@ public class EmailDeliveryService {
 
     private void attempt(EmailDelivery delivery, EmailMessage message) {
         Instant now = Instant.now();
-        String failure = null;
+        String failure;
         try {
             // Los adjuntos se generan en cada intento (también en reintentos) a partir de su descriptor.
             EmailMessage composed = withResolvedAttachments(delivery.getTenantId(), message);
-            senderResolver.resolveSender(delivery.getTenantId(), delivery.getPurpose()).send(composed);
+            failure = delivery.getPurpose().scope() == EmailPurpose.Scope.TENANT_PREFERRED
+                    ? sendPreferringTenant(delivery, composed, now)
+                    : send(delivery, senderResolver.defaultChannel(delivery.getPurpose()), composed);
         } catch (EmailDeliveryException ex) {
+            // Adjunto no disponible: no se intento ningun canal.
             failure = ex.getCode();
-        } catch (RuntimeException ex) {
-            failure = EmailDeliveryException.TRANSPORT_ERROR;
         }
         delivery.setAttempts(delivery.getAttempts() + 1);
         delivery.setLastAttemptAt(now);
@@ -122,8 +124,62 @@ public class EmailDeliveryService {
                 && delivery.getPurpose().scope() == EmailPurpose.Scope.TENANT) {
             markSenderInError(delivery.getTenantId(), now);
         }
-        log.warn("Correo no enviado tenantId={} purpose={} recipient={} reason={}",
-                delivery.getTenantId(), delivery.getPurpose(), delivery.getRecipient(), failure);
+        log.warn("Correo no enviado tenantId={} purpose={} channel={} recipient={} reason={}",
+                delivery.getTenantId(), delivery.getPurpose(), delivery.getSenderChannel(),
+                maskRecipient(delivery.getRecipient()), failure);
+    }
+
+    /**
+     * Gmail del negocio solo si esta VERIFIED (un "Enviar prueba" exitoso; CONFIGURED o ERROR no). Si no, o
+     * si falla por cualquier motivo, se envia por plataforma en este mismo intento: el enlace vence en minutos
+     * y estos correos no se reintentan. Un AUTHENTICATION_FAILED deja el remitente en ERROR, asi los
+     * siguientes van directo a plataforma.
+     *
+     * @return el codigo del fallo final, o null si se envio por algun canal.
+     */
+    private String sendPreferringTenant(EmailDelivery delivery, EmailMessage message, Instant now) {
+        boolean tenantVerified = senderConfigs.findByTenantId(delivery.getTenantId())
+                .map(config -> config.getStatus() == EmailSenderStatus.VERIFIED)
+                .orElse(false);
+        if (tenantVerified) {
+            String tenantFailure = send(delivery, EmailSenderChannel.TENANT, message);
+            if (tenantFailure == null) {
+                return null;
+            }
+            if (EmailDeliveryException.AUTHENTICATION_FAILED.equals(tenantFailure)) {
+                markSenderInError(delivery.getTenantId(), now);
+            }
+            delivery.setFallbackUsed(true);
+            delivery.setFallbackReason(tenantFailure);
+            log.info("Correo enviado por plataforma tras fallar el remitente del negocio tenantId={} purpose={} reason={}",
+                    delivery.getTenantId(), delivery.getPurpose(), tenantFailure);
+        }
+        return send(delivery, EmailSenderChannel.PLATFORM, message);
+    }
+
+    /** @return el codigo saneado del fallo, o null si se envio. */
+    private String send(EmailDelivery delivery, EmailSenderChannel channel, EmailMessage message) {
+        delivery.setSenderChannel(channel);
+        try {
+            senderResolver.sender(channel).send(message);
+            return null;
+        } catch (EmailDeliveryException ex) {
+            return ex.getCode();
+        } catch (RuntimeException ex) {
+            return EmailDeliveryException.TRANSPORT_ERROR;
+        }
+    }
+
+    /** "ana.perez@gmail.com" -> "an***@gmail.com": el log nunca lleva el correo completo. */
+    static String maskRecipient(String recipient) {
+        if (recipient == null) {
+            return null;
+        }
+        int at = recipient.indexOf('@');
+        if (at <= 0) {
+            return "***";
+        }
+        return recipient.substring(0, Math.min(2, at)) + "***" + recipient.substring(at);
     }
 
     private EmailMessage withResolvedAttachments(UUID tenantId, EmailMessage message) {

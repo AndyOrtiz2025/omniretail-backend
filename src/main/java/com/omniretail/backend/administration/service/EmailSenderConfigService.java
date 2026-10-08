@@ -47,7 +47,8 @@ public class EmailSenderConfigService {
             Este es un correo de prueba de OmniRetail.
 
             Si lo recibiste, la cuenta configurada puede enviar los correos operativos de tu negocio \
-            (pedidos, despachos, órdenes de compra y recepciones).
+            (pedidos, despachos, órdenes de compra y recepciones) y la verificación de correo de los \
+            clientes que se registran en tu tienda.
             """;
     private static final Pattern EMAIL = Pattern.compile("^[^@\\s<>\"]+@[^@\\s<>\"]+\\.[^@\\s<>\"]+$");
     private static final Pattern APP_PASSWORD = Pattern.compile("^[A-Za-z0-9]{16}$");
