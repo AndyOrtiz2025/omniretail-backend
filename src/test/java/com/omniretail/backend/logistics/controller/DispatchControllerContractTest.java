@@ -23,6 +23,7 @@ class DispatchControllerContractTest {
     @Test void endpointsUseExistingDispatchPermissions() throws Exception {
         permission("queue", "logistics.dispatch.read", UUID.class);
         permission("detail", "logistics.dispatch.read", UUID.class, UUID.class);
+        permission("preparedDetail", "logistics.dispatch.read", UUID.class, UUID.class);
         permission("confirm", "logistics.dispatch.confirm", UUID.class, UUID.class, ConfirmDispatchRequest.class);
         permission("transferDetail", "logistics.dispatch.read", UUID.class, UUID.class);
         permission(

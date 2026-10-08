@@ -34,6 +34,7 @@ import com.omniretail.backend.logistics.dto.ConfirmTransferDispatchRequest;
 import com.omniretail.backend.logistics.dto.DispatchPackageResponse;
 import com.omniretail.backend.logistics.dto.DispatchQueueResponse;
 import com.omniretail.backend.logistics.dto.DispatchResponse;
+import com.omniretail.backend.logistics.dto.PreparedDispatchResponse;
 import com.omniretail.backend.logistics.entity.Dispatch;
 import com.omniretail.backend.logistics.entity.DispatchOperation;
 import com.omniretail.backend.logistics.entity.DispatchPackage;
@@ -172,6 +173,62 @@ public class DispatchService {
             throw notFound("DISPATCH_NOT_FOUND", "Despacho no encontrado.");
         }
         return response(dispatch, false);
+    }
+
+    public PreparedDispatchResponse getPreparedDetail(UUID branchId, UUID orderId) {
+        AuthenticatedUser actor = actorForBranch(branchId);
+        Order order = orders.findByTenantIdAndId(actor.tenantId(), orderId)
+                .filter(found -> branchId.equals(found.getBranchId()))
+                .orElseThrow(() -> notFound("ORDER_NOT_FOUND", "Pedido no encontrado."));
+        if (order.getDeliveryMethod() != DeliveryMethod.home_delivery) {
+            throw conflict(
+                    "UNSUPPORTED_FULFILLMENT",
+                    "El despacho solo admite entrega a domicilio.");
+        }
+        if (order.getStatus() != OrderStatus.ready_for_dispatch) {
+            throw conflict(
+                    "INVALID_ORDER_STATUS_TRANSITION",
+                    "El pedido no esta listo para despacho.");
+        }
+        PickingOrder picking = pickingOrders
+                .findByTenantIdAndBranchIdAndSourceTypeAndSourceId(
+                        actor.tenantId(), branchId, PickingSourceType.order, orderId)
+                .orElseThrow(() -> conflict(
+                        "PICKING_NOT_FOUND", "El pedido no tiene Picking."));
+        if (picking.getStatus() != PickingStatus.completed || picking.getCompletedAt() == null) {
+            throw conflict("PICKING_NOT_COMPLETED", "El Picking debe estar completado.");
+        }
+        Packing packing = packings
+                .findByTenantIdAndBranchIdAndSourceTypeAndSourceId(
+                        actor.tenantId(), branchId, PackingSourceType.order, orderId)
+                .orElseThrow(() -> conflict("PACKING_NOT_FOUND", "El pedido no tiene Packing."));
+        if (!picking.getId().equals(packing.getPickingOrderId())
+                || packing.getStatus() != PackingStatus.finalized
+                || packing.getFinalizedAt() == null) {
+            throw conflict("PACKING_NOT_FINALIZED", "El Packing debe estar finalizado.");
+        }
+
+        JsonNode deliveryAddress = json(order.getDeliveryAddress());
+        JsonNode guestCustomer = json(order.getGuestCustomer());
+        return new PreparedDispatchResponse(
+                order.getId(),
+                order.getOrderNumber(),
+                order.getCreatedAt(),
+                order.getStatus(),
+                text(deliveryAddress, guestCustomer, "recipientName", "name"),
+                text(deliveryAddress, guestCustomer, "recipientPhone", "phone"),
+                deliveryAddress,
+                json(order.getNotificationContact()),
+                order.getTransportMode(),
+                picking.getId(),
+                picking.getStatus(),
+                picking.getCompletedAt(),
+                packing.getId(),
+                packing.getStatus(),
+                packing.getFinalizedAt(),
+                packing.getPackageCount(),
+                packing.getTotalWeight(),
+                packing.getLabelCode());
     }
 
     public DispatchResponse getTransferDetail(UUID branchId, UUID transferId) {
@@ -710,6 +767,19 @@ public class DispatchService {
 
     private static String trimToNull(String value) {
         return value == null || value.trim().isEmpty() ? null : value.trim();
+    }
+
+    private JsonNode json(String value) {
+        return value == null ? null : jsonMapper.readTree(value);
+    }
+
+    private static String text(
+            JsonNode primary, JsonNode fallback, String primaryField, String fallbackField) {
+        JsonNode value = primary == null ? null : primary.get(primaryField);
+        if (value == null || value.isNull()) {
+            value = fallback == null ? null : fallback.get(fallbackField);
+        }
+        return value == null || value.isNull() ? null : value.asText();
     }
 
     private List<Allocation> transferAllocations(InventoryReservation reservation) {

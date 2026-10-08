@@ -8,9 +8,12 @@ import com.omniretail.backend.shared.security.RequirePermission;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -20,6 +23,14 @@ import org.springframework.web.bind.annotation.RestController;
 public class CashShiftController {
 
     private final CashShiftService cashShiftService;
+
+    @GetMapping("/open")
+    @RequirePermission("pos.cash.read")
+    public ResponseEntity<CashShiftResponse> openShift(@RequestParam java.util.UUID branchId) {
+        return cashShiftService.findOpen(branchId)
+                .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.noContent().build());
+    }
 
     @PostMapping("/open")
     @ResponseStatus(HttpStatus.CREATED)

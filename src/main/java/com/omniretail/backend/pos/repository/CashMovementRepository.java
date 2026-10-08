@@ -2,6 +2,7 @@ package com.omniretail.backend.pos.repository;
 
 import com.omniretail.backend.pos.dto.CashMovementTotals;
 import com.omniretail.backend.pos.entity.CashMovement;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -15,6 +16,9 @@ public interface CashMovementRepository extends JpaRepository<CashMovement, UUID
 
     Optional<CashMovement> findFirstByTenantIdAndReferenceTypeAndReferenceIdOrderByCreatedAtAscIdAsc(
             UUID tenantId, String referenceType, UUID referenceId);
+
+    List<CashMovement> findByTenantIdAndReferenceTypeAndReferenceIdInOrderByCreatedAtAscIdAsc(
+            UUID tenantId, String referenceType, Collection<UUID> referenceIds);
 
     @Query("""
             select new com.omniretail.backend.pos.dto.CashMovementTotals(

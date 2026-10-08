@@ -25,6 +25,7 @@ import com.omniretail.backend.pos.dto.CreateSaleRequest;
 import com.omniretail.backend.pos.dto.CreateSaleReturnRequest;
 import com.omniretail.backend.pos.dto.InventoryTrackingSelectionRequest;
 import com.omniretail.backend.pos.dto.SaleConfirmationResponse;
+import com.omniretail.backend.pos.dto.VoidSaleRequest;
 import com.omniretail.backend.pos.entity.PaymentMethod;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
@@ -361,6 +362,59 @@ class PosTraceabilityServiceTest {
     }
 
     @Test
+    void deferredStorePickupPersistsNormalizedContactAndReplaysIdempotently() {
+        Fixture fixture = fixture(false, false, new BigDecimal("24.000"), List.of());
+        jdbc.update(
+                "UPDATE inventory_balances SET location_id = NULL WHERE tenant_id = ? AND product_id = ?",
+                fixture.tenantId(), fixture.productId());
+        UUID confirmationId = UUID.randomUUID();
+        CreateSaleRequest home = deferredSaleRequest(fixture, confirmationId);
+        CreateSaleRequest request = new CreateSaleRequest(
+                home.branchId(),
+                home.cashShiftId(),
+                home.customerId(),
+                home.taxTotal(),
+                home.items(),
+                home.payments(),
+                home.confirmationId(),
+                home.document(),
+                null,
+                new CreateSaleRequest.DeferredOrder(
+                        home.deferredOrder().idempotencyKey(),
+                        DeliveryMethod.store_pickup,
+                        TransportMode.customer,
+                        null,
+                        home.deferredOrder().notificationContact(),
+                        new CreateSaleRequest.StorePickupContact(
+                                " Cliente Retira ", "+502 5555-5555")));
+
+        SaleConfirmationResponse created = sales.create(request);
+
+        assertThat(created.order().deliveryMethod()).isEqualTo(DeliveryMethod.store_pickup);
+        assertThat(created.order().deliveryAddress()).isNull();
+        assertThat(created.order().storePickupContact().get("recipientName").asText())
+                .isEqualTo("Cliente Retira");
+        assertThat(created.order().storePickupContact().get("recipientPhone").asText())
+                .isEqualTo("+502 5555-5555");
+        assertThat(jdbc.queryForObject(
+                        "SELECT store_pickup_contact ->> 'recipientPhone' FROM orders WHERE id = ?",
+                        String.class,
+                        created.sourceOrderId()))
+                .isEqualTo("+502 5555-5555");
+
+        SaleConfirmationResponse replay = sales.create(request);
+        assertThat(replay.id()).isEqualTo(created.id());
+        assertThat(replay.order().id()).isEqualTo(created.order().id());
+        assertThat(replay.idempotent()).isTrue();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM orders WHERE tenant_id = ? AND idempotency_key = ?",
+                        Long.class,
+                        fixture.tenantId(),
+                        "deferred-" + confirmationId))
+                .isOne();
+    }
+
+    @Test
     void deferredConfirmationRollsBackOrderItemsReservationAndPickingWhenPickingFails() {
         Fixture fixture = fixture(false, false, new BigDecimal("24.000"), List.of());
         jdbc.update(
@@ -447,6 +501,49 @@ class PosTraceabilityServiceTest {
                         returned.id()))
                 .isEqualByComparingTo("12.000");
         assertThat(balance(fixture)).isEqualByComparingTo("12.000");
+    }
+
+    @Test
+    void eligibilityUsesHistoricalLotTracesAndSubtractsPriorReturns() {
+        Fixture fixture = fixture(true, false, new BigDecimal("2.000"), List.of());
+        SaleConfirmationResponse sale = sales.create(saleRequest(
+                fixture,
+                fixture.shiftId(),
+                "2.000",
+                UUID.randomUUID(),
+                List.of(selection(fixture, fixture.lotId(), "2.000", List.of()))));
+        UUID saleItemId = saleItemId(sale.id());
+
+        var before = returns.eligibility(fixture.branchId(), sale.number());
+
+        assertThat(before.items()).singleElement().satisfies(line -> {
+            assertThat(line.returnedQuantity()).isEqualByComparingTo("0.000");
+            assertThat(line.returnableQuantity()).isEqualByComparingTo("2.000");
+            assertThat(line.traceOptions()).singleElement().satisfies(option -> {
+                assertThat(option.locationId()).isEqualTo(fixture.locationId());
+                assertThat(option.lotId()).isEqualTo(fixture.lotId());
+                assertThat(option.returnableQuantity()).isEqualByComparingTo("2.000");
+            });
+        });
+
+        returns.create(
+                sale.id(),
+                UUID.randomUUID(),
+                new CreateSaleReturnRequest(
+                        "Devolucion parcial",
+                        List.of(new CreateSaleReturnRequest.Line(
+                                saleItemId,
+                                BigDecimal.ONE,
+                                List.of(selection(
+                                        fixture, fixture.lotId(), "1.000", List.of()))))));
+
+        var after = returns.eligibility(fixture.branchId(), sale.number());
+        assertThat(after.items()).singleElement().satisfies(line -> {
+            assertThat(line.returnedQuantity()).isEqualByComparingTo("1.000");
+            assertThat(line.returnableQuantity()).isEqualByComparingTo("1.000");
+            assertThat(line.traceOptions()).singleElement().satisfies(option ->
+                    assertThat(option.returnableQuantity()).isEqualByComparingTo("1.000"));
+        });
     }
 
     @Test
@@ -788,7 +885,8 @@ class PosTraceabilityServiceTest {
                 "UPDATE inventory_serials SET status = 'WRITTEN_OFF' WHERE tenant_id = ? AND serial_number = 'VOID-STATE'",
                 fixture.tenantId());
 
-        assertThatThrownBy(() -> sales.voidSale(sale.id()))
+        assertThatThrownBy(() -> sales.voidSale(
+                        sale.id(), UUID.randomUUID(), new VoidSaleRequest("Estado serial invalido")))
                 .isInstanceOfSatisfying(
                         BusinessException.class,
                         exception -> assertThat(exception.getCode())
@@ -800,6 +898,11 @@ class PosTraceabilityServiceTest {
                 .isEqualTo("completed");
         assertThat(balance(fixture)).isEqualByComparingTo("0.000");
         assertThat(movementCount(fixture, "POS_SALE_VOID", sale.id())).isZero();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM sale_reversal_operations WHERE sale_id = ?",
+                        Long.class,
+                        sale.id()))
+                .isZero();
     }
 
     @Test
@@ -863,6 +966,33 @@ class PosTraceabilityServiceTest {
     }
 
     @Test
+    void concurrentIdempotentVoidReplaysAndRestoresOnlyOnce() throws Exception {
+        Fixture fixture = fixture(true, false, BigDecimal.ONE, List.of());
+        SaleConfirmationResponse sale = sales.create(saleRequest(
+                fixture,
+                fixture.shiftId(),
+                "1.000",
+                UUID.randomUUID(),
+                List.of(selection(fixture, fixture.lotId(), "1.000", List.of()))));
+        UUID key = UUID.randomUUID();
+        VoidSaleRequest request = new VoidSaleRequest("Anulacion concurrente");
+
+        List<Outcome> outcomes = race(
+                asActor(fixture.primaryActor(), () -> sales.voidSale(sale.id(), key, request)),
+                asActor(fixture.secondaryActor(), () -> sales.voidSale(sale.id(), key, request)));
+
+        assertThat(outcomes).allMatch(Outcome::success);
+        assertThat(balance(fixture)).isEqualByComparingTo("1.000");
+        assertThat(movementCount(fixture, "POS_SALE_VOID", sale.id())).isOne();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM sale_reversal_operations WHERE tenant_id = ? AND idempotency_key = ?",
+                        Long.class,
+                        fixture.tenantId(),
+                        key))
+                .isOne();
+    }
+
+    @Test
     void concurrentReturnsForSameSerialRestoreItOnlyOnce() throws Exception {
         Fixture fixture = fixture(false, true, BigDecimal.ONE, List.of("RETURN-RACE"));
         SaleConfirmationResponse sale = sales.create(saleRequest(
@@ -891,6 +1021,56 @@ class PosTraceabilityServiceTest {
                         "SELECT count(*) FROM inventory_movements WHERE tenant_id = ? AND reference_type = 'POS_SALE_RETURN'",
                         Long.class,
                         fixture.tenantId()))
+                .isOne();
+    }
+
+    @Test
+    void concurrentIdempotentReturnsReplayAndRestoreOnlyOnce() throws Exception {
+        Fixture fixture = fixture(false, true, BigDecimal.ONE, List.of("RETURN-IDEMPOTENT"));
+        SaleConfirmationResponse sale = sales.create(saleRequest(
+                fixture,
+                fixture.shiftId(),
+                "1.000",
+                UUID.randomUUID(),
+                List.of(selection(
+                        fixture, null, "1.000", List.of("RETURN-IDEMPOTENT")))));
+        UUID saleItemId = saleItemId(sale.id());
+        UUID key = UUID.randomUUID();
+        CreateSaleReturnRequest request = new CreateSaleReturnRequest(
+                "Devolucion idempotente concurrente",
+                List.of(new CreateSaleReturnRequest.Line(
+                        saleItemId,
+                        BigDecimal.ONE,
+                        List.of(selection(
+                                fixture, null, "1.000", List.of("RETURN-IDEMPOTENT"))))));
+
+        List<Outcome> outcomes = race(
+                asActor(fixture.primaryActor(), () -> returns.create(sale.id(), key, request)),
+                asActor(fixture.secondaryActor(), () -> returns.create(sale.id(), key, request)));
+
+        assertThat(outcomes).allMatch(Outcome::success);
+        assertThat(serialStatus(fixture, "RETURN-IDEMPOTENT")).isEqualTo("AVAILABLE");
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM sale_returns WHERE tenant_id = ? AND sale_id = ?",
+                        Long.class,
+                        fixture.tenantId(),
+                        sale.id()))
+                .isOne();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM inventory_movements WHERE tenant_id = ? AND reference_type = 'POS_SALE_RETURN'",
+                        Long.class,
+                        fixture.tenantId()))
+                .isOne();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM cash_movements WHERE tenant_id = ? AND reference_type = 'sale_return'",
+                        Long.class,
+                        fixture.tenantId()))
+                .isOne();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM sale_reversal_operations WHERE tenant_id = ? AND idempotency_key = ?",
+                        Long.class,
+                        fixture.tenantId(),
+                        key))
                 .isOne();
     }
 

@@ -4,6 +4,7 @@ import com.omniretail.backend.logistics.dto.ConfirmDispatchRequest;
 import com.omniretail.backend.logistics.dto.ConfirmTransferDispatchRequest;
 import com.omniretail.backend.logistics.dto.DispatchQueueResponse;
 import com.omniretail.backend.logistics.dto.DispatchResponse;
+import com.omniretail.backend.logistics.dto.PreparedDispatchResponse;
 import com.omniretail.backend.logistics.service.DispatchService;
 import com.omniretail.backend.shared.security.RequirePermission;
 import jakarta.validation.Valid;
@@ -36,6 +37,13 @@ public class DispatchController {
     public DispatchResponse detail(
             @RequestParam UUID branchId, @PathVariable UUID orderId) {
         return dispatchService.getDetail(branchId, orderId);
+    }
+
+    @GetMapping("/{orderId}/prepared")
+    @RequirePermission("logistics.dispatch.read")
+    public PreparedDispatchResponse preparedDetail(
+            @RequestParam UUID branchId, @PathVariable UUID orderId) {
+        return dispatchService.getPreparedDetail(branchId, orderId);
     }
 
     @PostMapping("/{orderId}/confirm")

@@ -18,6 +18,9 @@ import com.omniretail.backend.pos.dto.PosSalesHistoryPageResponse;
 import com.omniretail.backend.pos.dto.PosSalesHistorySummaryResponse;
 import com.omniretail.backend.pos.dto.SaleConfirmationResponse;
 import com.omniretail.backend.pos.dto.SaleDocumentResponse;
+import com.omniretail.backend.pos.dto.SaleResponse;
+import com.omniretail.backend.pos.dto.VoidSaleRequest;
+import com.omniretail.backend.pos.dto.VoidSaleResponse;
 import com.omniretail.backend.pos.entity.SaleDocumentType;
 import com.omniretail.backend.pos.entity.SaleStatus;
 import com.omniretail.backend.pos.service.PosSalesHistoryService;
@@ -55,6 +58,91 @@ class SaleControllerValidationTest {
                 .andExpect(status().isBadRequest());
 
         verifyNoInteractions(historyService);
+    }
+
+    @Test
+    void voidSalePreservesLegacyRequestWithoutBodyOrIdempotencyKey() throws Exception {
+        UUID saleId = UUID.randomUUID();
+        when(service.voidSale(saleId)).thenReturn(saleResponse(saleId));
+
+        mvc.perform(post("/pos/sales/{id}/void", saleId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(saleId.toString()));
+
+        verify(service).voidSale(saleId);
+    }
+
+    @Test
+    void voidSaleNewContractRequiresHeaderAndBodyTogether() throws Exception {
+        UUID saleId = UUID.randomUUID();
+
+        mvc.perform(post("/pos/sales/{id}/void", saleId)
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"reason\":\"Error\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REQUIRED"));
+
+        mvc.perform(post("/pos/sales/{id}/void", saleId)
+                        .header("Idempotency-Key", UUID.randomUUID()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VOID_REQUEST_REQUIRED"));
+    }
+
+    @Test
+    void voidSaleNewContractValidatesReasonAndReturnsEffects() throws Exception {
+        UUID saleId = UUID.randomUUID();
+        UUID operationId = UUID.randomUUID();
+        UUID idempotencyKey = UUID.randomUUID();
+        VoidSaleResponse response = new VoidSaleResponse(
+                operationId,
+                false,
+                "Error de digitacion",
+                saleResponse(saleId),
+                new VoidSaleResponse.InventoryEffect(true, List.of(), 0),
+                new VoidSaleResponse.CashMovementEffect(false, List.of(), null));
+        when(service.voidSale(eq(saleId), eq(idempotencyKey), any(VoidSaleRequest.class)))
+                .thenReturn(response);
+
+        mvc.perform(post("/pos/sales/{id}/void", saleId)
+                        .header("Idempotency-Key", idempotencyKey)
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"reason\":\"Error de digitacion\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.operationId").value(operationId.toString()))
+                .andExpect(jsonPath("$.idempotent").value(false))
+                .andExpect(jsonPath("$.inventory.inventoryRestored").value(true))
+                .andExpect(jsonPath("$.cashMovement.recorded").value(false));
+
+        mvc.perform(post("/pos/sales/{id}/void", saleId)
+                        .header("Idempotency-Key", UUID.randomUUID())
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"reason\":\"   \"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+
+        mvc.perform(post("/pos/sales/{id}/void", saleId)
+                        .header("Idempotency-Key", UUID.randomUUID())
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"reason\":\"" + "x".repeat(1001) + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+    }
+
+    private static SaleResponse saleResponse(UUID saleId) {
+        return new SaleResponse(
+                saleId,
+                "POS-001",
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                new BigDecimal("20.00"),
+                BigDecimal.ZERO.setScale(2),
+                BigDecimal.ZERO.setScale(2),
+                new BigDecimal("20.00"),
+                Instant.parse("2026-10-08T12:00:00Z"),
+                SaleStatus.cancelled,
+                null,
+                null,
+                new SaleDocumentResponse(SaleDocumentType.ticket, null, null, null));
     }
 
     @Test
@@ -192,6 +280,23 @@ class SaleControllerValidationTest {
                              "quantity":0,
                              "serialNumbers":[""]}]}],
                  "payments":[{"method":"cash","amount":1}]}
+                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+        verifyNoInteractions(service);
+    }
+
+    @Test
+    void rejectsInvalidStorePickupContactPhoneBeforeCallingService() throws Exception {
+        mvc.perform(post("/pos/sales").contentType(APPLICATION_JSON).content("""
+                {"branchId":"11111111-1111-1111-1111-111111111111",
+                 "cashShiftId":"22222222-2222-2222-2222-222222222222",
+                 "confirmationId":"33333333-3333-3333-3333-333333333333",
+                 "items":[{"productId":"44444444-4444-4444-4444-444444444444","quantity":1}],
+                 "payments":[{"method":"cash","amount":20}],
+                 "deferredOrder":{"idempotencyKey":"pickup-1","deliveryMethod":"store_pickup",
+                   "transportMode":"customer","storePickupContact":{
+                     "recipientName":"Cliente","recipientPhone":"123"}}}
                 """))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));

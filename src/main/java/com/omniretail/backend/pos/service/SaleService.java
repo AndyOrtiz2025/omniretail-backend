@@ -53,6 +53,8 @@ import com.omniretail.backend.pos.dto.SaleConfirmationResponse;
 import com.omniretail.backend.pos.dto.SaleDetailResponse;
 import com.omniretail.backend.pos.dto.SaleItemResponse;
 import com.omniretail.backend.pos.dto.SaleResponse;
+import com.omniretail.backend.pos.dto.VoidSaleRequest;
+import com.omniretail.backend.pos.dto.VoidSaleResponse;
 import com.omniretail.backend.pos.entity.CashMovement;
 import com.omniretail.backend.pos.entity.CashMovementType;
 import com.omniretail.backend.pos.entity.CashShiftStatus;
@@ -63,11 +65,14 @@ import com.omniretail.backend.pos.entity.Sale;
 import com.omniretail.backend.pos.entity.SaleDocumentType;
 import com.omniretail.backend.pos.entity.SaleItem;
 import com.omniretail.backend.pos.entity.SaleStatus;
+import com.omniretail.backend.pos.entity.SaleReversalOperation;
+import com.omniretail.backend.pos.entity.SaleReversalOperationType;
 import com.omniretail.backend.pos.repository.CashMovementRepository;
 import com.omniretail.backend.pos.repository.CashShiftRepository;
 import com.omniretail.backend.pos.repository.PaymentRepository;
 import com.omniretail.backend.pos.repository.SaleItemRepository;
 import com.omniretail.backend.pos.repository.SaleRepository;
+import com.omniretail.backend.pos.repository.SaleReversalOperationRepository;
 import com.omniretail.backend.logistics.entity.PickingOrder;
 import com.omniretail.backend.logistics.repository.PickingOrderRepository;
 import com.omniretail.backend.logistics.service.PickingService;
@@ -87,6 +92,7 @@ import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.time.Instant;
@@ -113,6 +119,7 @@ public class SaleService {
     private final BusinessCapabilitiesConfigRepository businessConfig;
     private final BankAccountRepository bankAccounts;
     private final SaleRepository sales;
+    private final SaleReversalOperationRepository reversalOperations;
     private final SaleItemRepository items;
     private final PaymentRepository payments;
     private final CashMovementRepository cashMovements;
@@ -347,6 +354,7 @@ public class SaleService {
                 .transportMode(deferred.transportMode())
                 .deliveryAddress(json(deferred.deliveryAddress()))
                 .notificationContact(json(deferred.notificationContact()))
+                .storePickupContact(json(deferred.storePickupContact()))
                 .subtotal(subtotal)
                 .discountTotal(discount)
                 .shippingTotal(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP))
@@ -623,28 +631,94 @@ public class SaleService {
                         .stream().map(PaymentResponse::from).toList());
     }
 
+    /** Contrato legacy: conserva la semantica previa, sin replay ni registro idempotente. */
     public SaleResponse voidSale(UUID id) {
+        AuthenticatedUser actor = requireVoidActor();
+        Sale sale = requireAuthorizedSaleForUpdate(actor, id);
+        return executeVoid(actor, sale).sale();
+    }
+
+    public VoidSaleResponse voidSale(
+            UUID id, UUID idempotencyKey, VoidSaleRequest request) {
+        AuthenticatedUser actor = requireVoidActor();
+        String reason = normalizeVoidReason(request.reason());
+        String fingerprint = voidFingerprint(id, reason);
+
+        reversalOperations.acquireIdempotencyLock(
+                actor.tenantId() + ":" + idempotencyKey);
+        Sale sale = requireAuthorizedSaleForUpdate(actor, id);
+        Optional<SaleReversalOperation> previous =
+                reversalOperations.findByTenantIdAndIdempotencyKey(
+                        actor.tenantId(), idempotencyKey);
+        if (previous.isPresent()) {
+            return replayVoid(previous.get(), sale, fingerprint);
+        }
+
+        VoidExecutionResult executed = executeVoid(actor, sale);
+        UUID operationId = UUID.randomUUID();
+        VoidSaleResponse response = new VoidSaleResponse(
+                operationId,
+                false,
+                reason,
+                executed.sale(),
+                executed.inventory(),
+                executed.cashMovement());
+        SaleReversalOperation operation = SaleReversalOperation.builder()
+                .id(operationId)
+                .tenantId(actor.tenantId())
+                .branchId(sale.getBranchId())
+                .saleId(sale.getId())
+                .operationType(SaleReversalOperationType.void_sale)
+                .idempotencyKey(idempotencyKey)
+                .fingerprint(fingerprint)
+                .reason(reason)
+                .executedByUserId(actor.userId())
+                .resultPayload(jsonMapper.writeValueAsString(response))
+                .build();
+        reversalOperations.saveAndFlush(operation);
+        return response;
+    }
+
+    private AuthenticatedUser requireVoidActor() {
         AuthenticatedUser actor = currentUser.require();
         capability.ensureTenantCapability(actor.tenantId(), SaasCapability.pos);
+        return actor;
+    }
+
+    private Sale requireAuthorizedSaleForUpdate(AuthenticatedUser actor, UUID id) {
         Sale sale = sales.findByTenantIdAndIdForUpdate(actor.tenantId(), id)
                 .orElseThrow(() -> notFound("SALE_NOT_FOUND", "Venta no encontrada."));
         if (!branchAccess.resolve(actor).allows(sale.getBranchId())) {
             throw notFound("SALE_NOT_FOUND", "Venta no encontrada.");
         }
+        return sale;
+    }
+
+    private VoidExecutionResult executeVoid(AuthenticatedUser actor, Sale sale) {
         if (sale.getStatus() == SaleStatus.cancelled) {
-            throw new BusinessException(HttpStatus.CONFLICT, "SALE_ALREADY_VOIDED", "La venta ya está anulada.");
+            throw new BusinessException(
+                    HttpStatus.CONFLICT, "SALE_ALREADY_VOIDED", "La venta ya está anulada.");
         }
         if (sale.getStatus() != SaleStatus.completed) {
-            throw new BusinessException(HttpStatus.CONFLICT, "SALE_NOT_VOIDABLE",
+            throw new BusinessException(
+                    HttpStatus.CONFLICT,
+                    "SALE_NOT_VOIDABLE",
                     "Una venta con devoluciones no puede anularse.");
         }
+
+        List<UUID> restoredMovementIds = new ArrayList<>();
+        int reservationsReleased = 0;
+        boolean inventoryRestored = false;
         if (sale.getSourceOrderId() != null) {
-            cancelDeferredOrder(actor.tenantId(), sale);
+            reservationsReleased = cancelDeferredOrder(actor.tenantId(), sale);
         } else {
-            List<SaleItem> saleItems = items.findByTenantIdAndSaleId(actor.tenantId(), id);
+            List<SaleItem> saleItems =
+                    items.findByTenantIdAndSaleId(actor.tenantId(), sale.getId());
             List<InventoryMovement> originalMovements = inventoryMovements
                     .findByTenantIdAndReferenceTypeInAndReferenceIdOrderByCreatedAtAscIdAsc(
-                            actor.tenantId(), Set.of("POS_SALE", "POS_KIT_SALE"), sale.getId());
+                            actor.tenantId(),
+                            Set.of("POS_SALE", "POS_KIT_SALE"),
+                            sale.getId());
             Map<UUID, List<InventoryHistoricalTraceDetail>> originalHistory =
                     traceabilityHistory.expand(actor.tenantId(), originalMovements);
             List<SaleRestorePlan> restorePlans = new ArrayList<>();
@@ -652,28 +726,87 @@ public class SaleService {
                 restorePlans.addAll(voidPlans(
                         actor.tenantId(), item, originalMovements, originalHistory));
             }
+            inventoryRestored = !restorePlans.isEmpty();
             restorePlans.stream()
                     .sorted(Comparator.comparing((SaleRestorePlan plan) -> plan.product().getId())
-                            .thenComparing(SaleRestorePlan::locationId,
+                            .thenComparing(
+                                    SaleRestorePlan::locationId,
                                     Comparator.nullsFirst(Comparator.naturalOrder()))
                             .thenComparing(plan -> plan.saleItem().getId()))
-                    .forEach(plan -> restoreVoidedInventory(actor, sale, plan));
+                    .map(plan -> restoreVoidedInventory(actor, sale, plan))
+                    .filter(Objects::nonNull)
+                    .map(InventoryMovement::getId)
+                    .filter(Objects::nonNull)
+                    .forEach(restoredMovementIds::add);
         }
+
+        List<UUID> cashMovementIds = new ArrayList<>();
+        BigDecimal cashAmount = BigDecimal.ZERO.setScale(2);
         var shift = shifts.findByTenantIdAndId(actor.tenantId(), sale.getCashShiftId())
                 .filter(found -> found.getStatus() == CashShiftStatus.open);
         if (shift.isPresent()) {
-            payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(actor.tenantId(), id).stream()
-                    .filter(payment -> payment.getMethod() == PaymentMethod.cash)
-                    .forEach(payment -> cashMovements.save(CashMovement.builder().tenantId(actor.tenantId())
-                            .cashShiftId(sale.getCashShiftId()).type(CashMovementType.out).amount(payment.getAmount())
-                            .reason("Anulación venta POS #" + sale.getNumber()).referenceType("sale_void")
-                            .referenceId(sale.getId()).createdByUserId(actor.userId()).build()));
+            for (Payment payment : payments
+                    .findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(
+                            actor.tenantId(), sale.getId())) {
+                if (payment.getMethod() != PaymentMethod.cash) continue;
+                CashMovement movement = cashMovements.save(CashMovement.builder()
+                        .tenantId(actor.tenantId())
+                        .cashShiftId(sale.getCashShiftId())
+                        .type(CashMovementType.out)
+                        .amount(payment.getAmount())
+                        .reason("Anulación venta POS #" + sale.getNumber())
+                        .referenceType("sale_void")
+                        .referenceId(sale.getId())
+                        .createdByUserId(actor.userId())
+                        .build());
+                cashAmount = cashAmount.add(payment.getAmount()).setScale(2, RoundingMode.HALF_UP);
+                if (movement != null && movement.getId() != null) {
+                    cashMovementIds.add(movement.getId());
+                }
+            }
         }
         sale.setStatus(SaleStatus.cancelled);
-        return SaleResponse.from(sales.save(sale));
+        SaleResponse saleResponse = SaleResponse.from(sales.save(sale));
+        return new VoidExecutionResult(
+                saleResponse,
+                new VoidSaleResponse.InventoryEffect(
+                        inventoryRestored, List.copyOf(restoredMovementIds), reservationsReleased),
+                new VoidSaleResponse.CashMovementEffect(
+                        cashAmount.signum() > 0, List.copyOf(cashMovementIds),
+                        cashAmount.signum() > 0 ? cashAmount : null));
     }
 
-    private void cancelDeferredOrder(UUID tenantId, Sale sale) {
+    private VoidSaleResponse replayVoid(
+            SaleReversalOperation operation, Sale sale, String fingerprint) {
+        if (operation.getOperationType() != SaleReversalOperationType.void_sale
+                || !operation.getSaleId().equals(sale.getId())
+                || !operation.getBranchId().equals(sale.getBranchId())
+                || !operation.getFingerprint().equals(fingerprint)) {
+            throw BusinessException.conflict(
+                    "IDEMPOTENCY_KEY_REUSED",
+                    "La clave de idempotencia ya fue utilizada con otra operación.");
+        }
+        return jsonMapper
+                .readValue(operation.getResultPayload(), VoidSaleResponse.class)
+                .asReplay();
+    }
+
+    private static String normalizeVoidReason(String value) {
+        String normalized = value == null ? "" : value.trim().replaceAll("\\s+", " ");
+        if (normalized.isBlank() || normalized.length() > 1000) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "VOID_REASON_INVALID",
+                    "El motivo de anulacion es obligatorio y no puede exceder 1000 caracteres.");
+        }
+        return normalized;
+    }
+
+    private static String voidFingerprint(UUID saleId, String reason) {
+        return sha256(SaleReversalOperationType.void_sale + "|" + saleId + "|" + reason);
+    }
+
+    private int cancelDeferredOrder(UUID tenantId, Sale sale) {
         Order order = orders.findByTenantIdAndIdForUpdate(tenantId, sale.getSourceOrderId())
                 .filter(found -> found.getBranchId().equals(sale.getBranchId())
                         && found.getSource() == OrderSource.pos
@@ -693,13 +826,16 @@ public class SaleService {
                     "DEFERRED_SALE_ALREADY_FULFILLED",
                     "La venta diferida ya consumio inventario y no puede anularse de forma segura.");
         }
+        int released = 0;
         for (InventoryReservation reservation : orderReservations) {
             if (reservation.getStatus() == InventoryReservationStatus.active) {
                 reservationLifecycle.release(tenantId, reservation.getId());
+                released++;
             }
         }
         order.setStatus(OrderStatus.cancelled);
         orders.save(order);
+        return released;
     }
 
     private List<SaleRestorePlan> voidPlans(
@@ -804,7 +940,7 @@ public class SaleService {
         return expected;
     }
 
-    private void restoreVoidedInventory(
+    private InventoryMovement restoreVoidedInventory(
             AuthenticatedUser actor, Sale sale, SaleRestorePlan plan) {
         String referenceType = plan.kitComponent()
                 ? "POS_KIT_SALE_VOID"
@@ -812,7 +948,7 @@ public class SaleService {
         String reason = (plan.kitComponent() ? "Anulacion venta kit POS #" : "Anulación venta POS #")
                 + sale.getNumber();
         if (!plan.traceable()) {
-            inventory.incrementStock(new AddStockCommand(
+            return inventory.incrementStock(new AddStockCommand(
                     actor.tenantId(),
                     sale.getBranchId(),
                     plan.product().getId(),
@@ -822,9 +958,8 @@ public class SaleService {
                     sale.getId(),
                     plan.saleItem().getId(),
                     actor.userId()));
-            return;
         }
-        traceabilityMutation.restore(new InventoryRestoreCommand(
+        return traceabilityMutation.restore(new InventoryRestoreCommand(
                 actor.tenantId(),
                 sale.getBranchId(),
                 plan.product(),
@@ -1081,6 +1216,31 @@ public class SaleService {
             putIfNotNull(normalizedAddress, "references", trimToNull(address.references()));
         }
 
+        Map<String, Object> storePickupContact = null;
+        if (input.deliveryMethod() == DeliveryMethod.store_pickup) {
+            CreateSaleRequest.StorePickupContact contact = input.storePickupContact();
+            if (contact == null
+                    || trimToNull(contact.recipientName()) == null
+                    || trimToNull(contact.recipientPhone()) == null) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "STORE_PICKUP_CONTACT_REQUIRED",
+                        "El retiro en tienda requiere un contacto de retiro.");
+            }
+            String phone;
+            try {
+                phone = PhoneNormalizer.normalize(contact.recipientPhone());
+            } catch (IllegalArgumentException exception) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "STORE_PICKUP_PHONE_INVALID",
+                        "El telefono de retiro no es valido.");
+            }
+            storePickupContact = new LinkedHashMap<>();
+            storePickupContact.put("recipientName", contact.recipientName().trim());
+            storePickupContact.put("recipientPhone", phone);
+        }
+
         Map<String, Object> notification = null;
         if (input.notificationContact() != null) {
             String mode = trimToNull(input.notificationContact().emailMode());
@@ -1109,7 +1269,8 @@ public class SaleService {
                 input.deliveryMethod(),
                 input.transportMode(),
                 normalizedAddress,
-                notification);
+                notification,
+                storePickupContact);
     }
 
     private static boolean isSupportedDeferredDeliveryMethod(DeliveryMethod deliveryMethod) {
@@ -1168,7 +1329,8 @@ public class SaleService {
                 + ":" + deferred.deliveryMethod()
                 + ":" + deferred.transportMode()
                 + ":" + deferred.deliveryAddress()
-                + ":" + deferred.notificationContact();
+                + ":" + deferred.notificationContact()
+                + ":" + deferred.storePickupContact();
     }
 
     private static boolean matchesLegacyConfirmation(
@@ -1293,7 +1455,8 @@ public class SaleService {
             DeliveryMethod deliveryMethod,
             com.omniretail.backend.ecommerce.entity.TransportMode transportMode,
             Map<String, Object> deliveryAddress,
-            Map<String, Object> notificationContact) {}
+            Map<String, Object> notificationContact,
+            Map<String, Object> storePickupContact) {}
 
     private record DeferredFulfillment(
             Order order, List<OrderItem> orderItems, PickingOrder picking) {}
@@ -1318,6 +1481,11 @@ public class SaleService {
             List<InventoryTraceabilitySelection> selections,
             boolean kitComponent,
             boolean traceable) {}
+
+    private record VoidExecutionResult(
+            SaleResponse sale,
+            VoidSaleResponse.InventoryEffect inventory,
+            VoidSaleResponse.CashMovementEffect cashMovement) {}
 
     private record ExpectedInventory(
             Product product, BigDecimal quantity, boolean kitComponent) {}

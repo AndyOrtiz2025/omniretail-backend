@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -79,6 +80,54 @@ class CashShiftControllerTest {
                 .andExpect(jsonPath("$.closedAt").isNotEmpty());
         close(f, id, "125.00").andExpect(status().isConflict());
         open(f, openBody(f)).andExpect(status().isCreated());
+    }
+
+    @Test
+    void returnsCurrentUsersOpenShiftOrNoContent() throws Exception {
+        Fixture fixture = fixture();
+        openShift(fixture).andExpect(status().isNoContent());
+
+        open(fixture, openBody(fixture)).andExpect(status().isCreated());
+
+        openShift(fixture)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.userId").value(fixture.user().toString()))
+                .andExpect(jsonPath("$.branchId").value(fixture.branch().toString()))
+                .andExpect(jsonPath("$.status").value("open"));
+    }
+
+    @Test
+    void openShiftLookupDoesNotExposeAnotherCashiersShift() throws Exception {
+        Fixture fixture = fixture();
+        Fixture other = addUser(fixture.tenant(), fixture.branch());
+        open(other, openBody(other)).andExpect(status().isCreated());
+
+        openShift(fixture).andExpect(status().isNoContent());
+    }
+
+    @Test
+    void openShiftLookupRejectsForeignOrUnauthorizedBranch() throws Exception {
+        Fixture fixture = fixture();
+        Fixture foreign = fixture();
+        openShift(fixture, foreign.branch()).andExpect(status().isNotFound());
+        Fixture unassigned = addUser(fixture.tenant(), null);
+        openShift(unassigned, fixture.branch()).andExpect(status().isNotFound());
+    }
+
+    @Test
+    void openShiftLookupRequiresAuthenticationReadPermissionAndPosCapability() throws Exception {
+        Fixture fixture = fixture();
+        mvc.perform(get(BASE + "/open").param("branchId", fixture.branch().toString()))
+                .andExpect(status().isUnauthorized());
+
+        given(permissions.hasPermission(any(), any(), eq("pos.cash.read"))).willReturn(false);
+        openShift(fixture).andExpect(status().isForbidden());
+        given(permissions.hasPermission(any(), any(), eq("pos.cash.read"))).willReturn(true);
+        given(entitlements.resolve(fixture.tenant())).willReturn(
+                new TenantEntitlements(true, true, EnumSet.of(SaasCapability.inventory)));
+        openShift(fixture)
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("CAPABILITY_REQUIRED"));
     }
 
     @Test
@@ -256,6 +305,16 @@ class CashShiftControllerTest {
                 .contentType(APPLICATION_JSON).content("""
                         {"cashShiftId":"%s","countedAmount":%s}
                         """.formatted(id, counted)));
+    }
+
+    private ResultActions openShift(Fixture fixture) throws Exception {
+        return openShift(fixture, fixture.branch());
+    }
+
+    private ResultActions openShift(Fixture fixture, UUID branchId) throws Exception {
+        return mvc.perform(get(BASE + "/open")
+                .param("branchId", branchId.toString())
+                .header("Authorization", token(fixture)));
     }
 
     private String token(Fixture f) {

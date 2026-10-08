@@ -12,5 +12,8 @@ public interface SaleReturnRepository extends JpaRepository<SaleReturn, UUID> {
 
     List<SaleReturn> findByTenantIdAndIdIn(UUID tenantId, Collection<UUID> ids);
 
+    List<SaleReturn> findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(
+            UUID tenantId, UUID saleId);
+
     Page<SaleReturn> findByTenantIdAndBranchId(UUID tenantId, UUID branchId, Pageable pageable);
 }
