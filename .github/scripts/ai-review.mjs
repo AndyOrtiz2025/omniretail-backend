@@ -58,6 +58,23 @@ function buildPrompt(diff, truncated) {
     .join("\n");
 }
 
+// 429 (cuota por minuto) y 5xx (p. ej. 503 "high demand") suelen ser temporales: vale la pena reintentar.
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+const RETRY_DELAYS_MS = [10_000, 30_000];
+
+async function askGeminiWithRetry(prompt) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await askGemini(prompt);
+    } catch (error) {
+      const delay = RETRY_DELAYS_MS[attempt];
+      if (!error.retryable || delay === undefined) throw error;
+      console.log(`Gemini no disponible (intento ${attempt + 1}); reintentando en ${delay / 1000}s...`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
 async function askGemini(prompt) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`;
   const response = await fetch(url, {
@@ -69,7 +86,9 @@ async function askGemini(prompt) {
     }),
   });
   if (!response.ok) {
-    throw new Error(`Gemini respondio ${response.status}: ${(await response.text()).slice(0, 500)}`);
+    const error = new Error(`Gemini respondio ${response.status}: ${(await response.text()).slice(0, 500)}`);
+    error.retryable = RETRYABLE_STATUS.has(response.status);
+    throw error;
   }
   const data = await response.json();
   const text = data.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("").trim();
@@ -118,7 +137,7 @@ async function main() {
     return;
   }
 
-  const review = await askGemini(buildPrompt(diff, truncated));
+  const review = await askGeminiWithRetry(buildPrompt(diff, truncated));
   const body = [
     MARKER,
     "## 🤖 Revision automatica con IA",
