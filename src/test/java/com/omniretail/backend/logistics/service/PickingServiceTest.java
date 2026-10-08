@@ -28,6 +28,8 @@ import com.omniretail.backend.shared.security.CurrentUser;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -46,6 +48,9 @@ import org.springframework.transaction.annotation.Transactional;
 @Import(TestcontainersConfiguration.class)
 @Transactional
 class PickingServiceTest {
+
+    // Zona del tenant de prueba (tenants.timezone): las fechas de vencimiento se comparan contra este dia.
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("America/Guatemala");
 
     @Autowired private PickingService service;
     @Autowired private PackingRepository packings;
@@ -477,10 +482,10 @@ class PickingServiceTest {
         jdbc.update("""
                 INSERT INTO inventory_lots
                     (id, tenant_id, product_id, lot_number, expiration_date)
-                VALUES (?, ?, ?, 'EXPIRED', CURRENT_DATE - 1),
-                       (?, ?, ?, 'INSUFFICIENT', CURRENT_DATE + 30)
-                """, expiredLot, fixture.tenantId(), fixture.productId(),
-                insufficientLot, fixture.tenantId(), fixture.productId());
+                VALUES (?, ?, ?, 'EXPIRED', ?),
+                       (?, ?, ?, 'INSUFFICIENT', ?)
+                """, expiredLot, fixture.tenantId(), fixture.productId(), businessToday().minusDays(1),
+                insufficientLot, fixture.tenantId(), fixture.productId(), businessToday().plusDays(30));
         jdbc.update("""
                 INSERT INTO inventory_lot_balances
                     (id, tenant_id, branch_id, location_id, lot_id, quantity, reserved_quantity)
@@ -774,4 +779,9 @@ class PickingServiceTest {
             UUID orderItemId,
             UUID balanceId,
             UUID reservationId) {}
+
+    /** Fecha de negocio del tenant de prueba: la misma zona con la que el servicio decide si un lote vencio. */
+    private static LocalDate businessToday() {
+        return LocalDate.now(BUSINESS_ZONE);
+    }
 }
