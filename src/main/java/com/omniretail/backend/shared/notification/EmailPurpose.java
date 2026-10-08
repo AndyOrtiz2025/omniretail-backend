@@ -1,15 +1,24 @@
 package com.omniretail.backend.shared.notification;
 
 /**
- * Motivo de un correo. Su {@link Scope} decide con que remitente sale: los de seguridad usan el
- * remitente de plataforma (MAIL_*) y los operativos la cuenta Gmail del tenant. Ningun modulo elige cuenta.
+ * Motivo de un correo. Su {@link Scope} decide con que remitente sale; ningun modulo elige cuenta.
+ *
+ * <ul>
+ *   <li>{@code PLATFORM}: siempre el remitente de plataforma (MAIL_*). Los enlaces de recuperacion, las
+ *       invitaciones (permiten fijar la contrasena) y los codigos MFA nunca salen por el Gmail del negocio:
+ *       quedarian en su carpeta "Enviados" y quien tenga acceso a ese Gmail podria entrar a cuentas ajenas.</li>
+ *   <li>{@code TENANT_PREFERRED}: el Gmail del negocio si esta VERIFIED; si no, o si falla, la plataforma en
+ *       el mismo intento.</li>
+ *   <li>{@code TENANT}: solo el Gmail del negocio. Nunca caen al remitente de plataforma.</li>
+ * </ul>
  */
 public enum EmailPurpose {
     // Seguridad: remitente de plataforma.
-    EMAIL_VERIFICATION(Scope.PLATFORM),
     PASSWORD_RESET(Scope.PLATFORM),
     EMPLOYEE_INVITATION(Scope.PLATFORM),
     MFA_CODE(Scope.PLATFORM),
+    // Seguridad sin acceso a la cuenta: el Gmail del negocio verificado, con la plataforma de respaldo.
+    EMAIL_VERIFICATION(Scope.TENANT_PREFERRED),
     // Operativos: cuenta Gmail del tenant. Nunca caen al remitente de plataforma.
     ORDER_CONFIRMATION(Scope.TENANT),
     ORDER_STATUS_CHANGED(Scope.TENANT),
@@ -21,6 +30,7 @@ public enum EmailPurpose {
 
     public enum Scope {
         PLATFORM,
+        TENANT_PREFERRED,
         TENANT
     }
 

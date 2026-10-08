@@ -19,10 +19,19 @@ public class CapturingEmailSender implements PlatformEmailSender {
     private static final Duration QUIET_PERIOD = Duration.ofMillis(500);
 
     private final List<EmailMessage> sent = new CopyOnWriteArrayList<>();
+    private volatile RuntimeException failure;
 
     @Override
     public void send(EmailMessage message) {
+        if (failure != null) {
+            throw failure;
+        }
         sent.add(message);
+    }
+
+    /** Hace fallar los envios siguientes con {@code failure} (null vuelve a enviar). El bean es compartido: restablecerlo. */
+    public void failWith(RuntimeException failure) {
+        this.failure = failure;
     }
 
     /** Espera hasta que {@code to} haya recibido {@code count} correos y los devuelve. */

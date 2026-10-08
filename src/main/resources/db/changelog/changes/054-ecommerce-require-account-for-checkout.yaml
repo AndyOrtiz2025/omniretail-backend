@@ -1,0 +1,10 @@
+databaseChangeLog:
+  - changeSet:
+      id: 054-ecommerce-require-account-for-checkout
+      author: codex
+      changes:
+        - sql:
+            sql: |
+              UPDATE ecommerce_configs
+              SET require_account_for_checkout = TRUE
+              WHERE tenant_id = '11111111-1111-1111-1111-111111111111';

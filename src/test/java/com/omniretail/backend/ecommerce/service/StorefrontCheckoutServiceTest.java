@@ -168,9 +168,12 @@ class StorefrontCheckoutServiceTest {
         verify(orderRepository).save(orderCaptor.capture());
         assertThat(orderCaptor.getValue().getIdempotencyFingerprint()).isNotBlank();
         assertThat(orderCaptor.getValue().getNotificationContact()).contains("maria@example.com");
+        assertThat(orderCaptor.getValue().getShippingTotal()).isEqualByComparingTo("25.00");
+        assertThat(orderCaptor.getValue().getTotal()).isEqualByComparingTo("45.00");
         ArgumentCaptor<Payment> paymentCaptor = ArgumentCaptor.forClass(Payment.class);
         verify(paymentRepository).save(paymentCaptor.capture());
         assertThat(paymentCaptor.getValue().getStatus()).isEqualTo(PaymentStatus.approved);
+        assertThat(paymentCaptor.getValue().getAmount()).isEqualByComparingTo("45.00");
         ArgumentCaptor<ReserveInventoryCommand> reservationCaptor =
                 ArgumentCaptor.forClass(ReserveInventoryCommand.class);
         verify(reservationLifecycleService).reserve(reservationCaptor.capture());
@@ -219,7 +222,8 @@ class StorefrontCheckoutServiceTest {
         verify(orderRepository).save(orderCaptor.capture());
         assertThat(orderCaptor.getValue().getSubtotal()).isEqualByComparingTo("24.00");
         assertThat(orderCaptor.getValue().getDiscountTotal()).isEqualByComparingTo("16.00");
-        assertThat(orderCaptor.getValue().getTotal()).isEqualByComparingTo("24.00");
+        assertThat(orderCaptor.getValue().getShippingTotal()).isEqualByComparingTo("25.00");
+        assertThat(orderCaptor.getValue().getTotal()).isEqualByComparingTo("49.00");
         ArgumentCaptor<com.omniretail.backend.ecommerce.entity.OrderItem> itemCaptor =
                 ArgumentCaptor.forClass(com.omniretail.backend.ecommerce.entity.OrderItem.class);
         verify(orderItemRepository).save(itemCaptor.capture());
@@ -231,6 +235,41 @@ class StorefrontCheckoutServiceTest {
             assertThat(item.discount()).isEqualByComparingTo("16.00");
             assertThat(item.promotionId()).isEqualTo(promotionId);
         });
+    }
+
+    @Test
+    void checkoutOffersFreeShippingAtTheThreshold() {
+        Product product = product(false, ProductType.service);
+        when(productRepository.findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
+                tenantId, productId, ProductStatus.published)).thenReturn(Optional.of(product));
+        Order savedOrder = mock(Order.class);
+        UUID orderId = UUID.randomUUID();
+        when(savedOrder.getId()).thenReturn(orderId);
+        when(savedOrder.getOrderNumber()).thenReturn("WEB-FREE");
+        when(savedOrder.getTrackingToken()).thenReturn("free-tracking");
+        when(savedOrder.getTotal()).thenReturn(new BigDecimal("300.00"));
+        when(savedOrder.getStatus()).thenReturn(OrderStatus.confirmed);
+        when(savedOrder.getDeliveryAddress()).thenReturn(
+                "{\"recipientName\":\"Maria\",\"line1\":\"7a Avenida\","
+                        + "\"line2\":null,\"city\":\"Guatemala\","
+                        + "\"stateOrDepartment\":null,\"recipientPhone\":\"55551234\"}");
+        when(savedOrder.getTenantId()).thenReturn(tenantId);
+        when(orderRepository.save(any(Order.class))).thenReturn(savedOrder);
+        Payment payment = mock(Payment.class);
+        when(payment.getStatus()).thenReturn(PaymentStatus.approved);
+        when(paymentRepository.save(any(Payment.class))).thenReturn(payment);
+        when(reservationRepository.findByTenantIdAndOrderId(tenantId, orderId)).thenReturn(List.of());
+
+        service.checkout("ferreteria", "checkout-1", request(new BigDecimal("15")));
+
+        ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
+        verify(orderRepository).save(orderCaptor.capture());
+        assertThat(orderCaptor.getValue().getSubtotal()).isEqualByComparingTo("300.00");
+        assertThat(orderCaptor.getValue().getShippingTotal()).isEqualByComparingTo("0.00");
+        assertThat(orderCaptor.getValue().getTotal()).isEqualByComparingTo("300.00");
+        ArgumentCaptor<Payment> paymentCaptor = ArgumentCaptor.forClass(Payment.class);
+        verify(paymentRepository).save(paymentCaptor.capture());
+        assertThat(paymentCaptor.getValue().getAmount()).isEqualByComparingTo("300.00");
     }
 
     @Test
