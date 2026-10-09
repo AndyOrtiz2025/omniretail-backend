@@ -1,0 +1,24 @@
+databaseChangeLog:
+  - changeSet:
+      id: 999-11-seed-inventory-role-catalog-permissions
+      author: joga17000
+      context: dev
+      comment: Otorga permisos de lectura de catálogo, categorías y unidades al rol de sistema Inventario.
+      changes:
+        # /catalogo/productos consulta categorias y unidades; sin estos permisos el rol Inventario recibe 403.
+        # 999-01 ya esta aplicada y no se edita (regla del master).
+        - sql:
+            sql: |
+              UPDATE roles
+              SET permissions = (
+                SELECT ARRAY(
+                  SELECT DISTINCT permission
+                  FROM unnest(COALESCE(permissions, ARRAY[]::text[])
+                              || ARRAY['catalog.products.read', 'catalog.categories.read', 'catalog.units.read']::text[]) AS permission
+                  ORDER BY permission
+                )
+              )
+              WHERE name = 'Inventario' AND is_system = TRUE;
+      rollback:
+        - sql:
+            sql: SELECT 1

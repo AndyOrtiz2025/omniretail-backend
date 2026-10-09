@@ -28,10 +28,12 @@ import com.omniretail.backend.pos.entity.SaleItem;
 import com.omniretail.backend.pos.entity.SaleStatus;
 import com.omniretail.backend.pos.repository.SaleItemRepository;
 import com.omniretail.backend.pos.repository.SaleRepository;
+import com.omniretail.backend.purchasing.repository.ReceiptIncidentRepository;
 import com.omniretail.backend.shared.security.CurrentUser;
 import java.math.BigDecimal;
 import java.text.Collator;
 import java.time.DateTimeException;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.time.ZoneId;
@@ -75,6 +77,7 @@ public class DashboardAdminService {
     private final OrderRepository orderRepository;
     private final InventoryBalanceRepository inventoryBalanceRepository;
     private final ProductRepository productRepository;
+    private final ReceiptIncidentRepository receiptIncidentRepository;
 
     public DashboardSummaryResponse getDashboardSummary() {
         UUID tenantId = currentUser.require().tenantId();
@@ -86,10 +89,12 @@ public class DashboardAdminService {
                 .sorted(Comparator.comparing(Branch::getName, collator))
                 .toList();
 
+        Instant monthStart = currentMonth.atDay(1).atStartOfDay(zoneId).toInstant();
+        Instant nextMonthStart = currentMonth.plusMonths(1).atDay(1).atStartOfDay(zoneId).toInstant();
+
         // Solo se leen las ventas desde el inicio del mes, no todo el historial del tenant.
         List<Sale> monthSales = saleRepository
-                .findByTenantIdAndStatusNotAndCreatedAtGreaterThanEqual(
-                        tenantId, SaleStatus.cancelled, currentMonth.atDay(1).atStartOfDay(zoneId).toInstant())
+                .findByTenantIdAndStatusNotAndCreatedAtGreaterThanEqual(tenantId, SaleStatus.cancelled, monthStart)
                 .stream()
                 .filter(sale -> YearMonth.from(localDate(sale, zoneId)).equals(currentMonth))
                 .toList();
@@ -112,8 +117,14 @@ public class DashboardAdminService {
                 pendingOrders.size(),
                 pendingOrdersByStatus(pendingOrders),
                 pendingOrdersByBranch(pendingOrders, branches, collator),
-                // Recepción, compras e incidencias todavía no existen en el backend.
-                new IncidentAnalyticsDto(0, List.of(), List.of()),
+                // Solo el total del mes es real. byType/bySupplier y latestIncidents siguen vacíos: sus etiquetas
+                // (typeName, supplierName) no tienen contrato acordado con el frontend, y latestIncidents también
+                // espera incidencias de traslados, que todavía no existen en el backend.
+                new IncidentAnalyticsDto(
+                        receiptIncidentRepository.countByTenantIdAndCreatedAtGreaterThanEqualAndCreatedAtLessThan(
+                                tenantId, monthStart, nextMonthStart),
+                        List.of(),
+                        List.of()),
                 List.of(),
                 topProducts(monthSales, collator));
     }

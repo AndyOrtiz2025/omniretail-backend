@@ -111,6 +111,30 @@ class DashboardAdminControllerTest {
     }
 
     @Test
+    void getDashboardSummaryCountsReceiptIncidentsOfCurrentMonthOnly() throws Exception {
+        Tenant tenant = persistTenant();
+        Tenant otherTenant = persistTenant();
+        String token = tokenFor(tenant, DASHBOARD_READ);
+        Fixture fixture = createFixture(tenant.getId());
+        Fixture otherFixture = createFixture(otherTenant.getId());
+        UUID receipt = insertGoodsReceipt(tenant.getId(), fixture);
+        UUID otherReceipt = insertGoodsReceipt(otherTenant.getId(), otherFixture);
+
+        insertReceiptIncident(tenant.getId(), fixture, receipt, "damaged", "open", Instant.now());
+        insertReceiptIncident(tenant.getId(), fixture, receipt, "missing", "resolved", Instant.now());
+        insertReceiptIncident(tenant.getId(), fixture, receipt, "other", "open",
+                noon(today().withDayOfMonth(1).minusDays(1)));
+        insertReceiptIncident(otherTenant.getId(), otherFixture, otherReceipt, "damaged", "open", Instant.now());
+
+        mockMvc.perform(get(BASE_URL).header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.incidentAnalytics.totalCurrentMonth").value(2))
+                .andExpect(jsonPath("$.incidentAnalytics.byType.length()").value(0))
+                .andExpect(jsonPath("$.incidentAnalytics.bySupplier.length()").value(0))
+                .andExpect(jsonPath("$.latestIncidents.length()").value(0));
+    }
+
+    @Test
     void getDashboardSummaryAggregatesSalesTodayAndMonth() throws Exception {
         Tenant tenant = persistTenant();
         String token = tokenFor(tenant, DASHBOARD_READ);
@@ -380,6 +404,45 @@ class DashboardAdminControllerTest {
                 id, tenantId, "SKU-" + UUID.randomUUID(), name, fixture.categoryId(), fixture.unitId(), status,
                 trackingStock);
         return id;
+    }
+
+    private UUID insertGoodsReceipt(UUID tenantId, Fixture fixture) {
+        UUID supplier = UUID.randomUUID();
+        UUID order = UUID.randomUUID();
+        UUID receipt = UUID.randomUUID();
+        String suffix = UUID.randomUUID().toString().substring(0, 8);
+        jdbcTemplate.update(
+                "INSERT INTO suppliers (id, tenant_id, name, status) VALUES (?, ?, 'Proveedor', 'active')",
+                supplier, tenantId);
+        jdbcTemplate.update(
+                """
+                INSERT INTO purchase_orders (id, tenant_id, branch_id, number, supplier_id, supplier_name_snapshot,
+                                             status, subtotal, total, created_by_user_id)
+                VALUES (?, ?, ?, ?, ?, 'Proveedor', 'approved', 10, 10, ?)
+                """,
+                order, tenantId, fixture.branchA(), "OC-" + suffix, supplier, fixture.userId());
+        jdbcTemplate.update(
+                """
+                INSERT INTO goods_receipts (id, tenant_id, branch_id, purchase_order_id, number, status)
+                VALUES (?, ?, ?, ?, ?, 'draft')
+                """,
+                receipt, tenantId, fixture.branchA(), order, "REC-" + suffix);
+        return receipt;
+    }
+
+    private void insertReceiptIncident(
+            UUID tenantId, Fixture fixture, UUID receipt, String type, String status, Instant createdAt) {
+        boolean resolved = "resolved".equals(status);
+        jdbcTemplate.update(
+                """
+                INSERT INTO receipt_incidents (id, tenant_id, branch_id, goods_receipt_id, incident_type, status,
+                                               notes, created_by_user_id, resolved_by_user_id, resolved_at,
+                                               created_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'Nota', ?, ?, ?, ?)
+                """,
+                UUID.randomUUID(), tenantId, fixture.branchA(), receipt, type, status, fixture.userId(),
+                resolved ? fixture.userId() : null, resolved ? Timestamp.from(Instant.now()) : null,
+                Timestamp.from(createdAt));
     }
 
     private UUID insertBranch(UUID tenantId, String name, String type, String status) {
