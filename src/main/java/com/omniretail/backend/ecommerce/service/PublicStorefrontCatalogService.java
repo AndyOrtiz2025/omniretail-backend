@@ -12,16 +12,19 @@ import com.omniretail.backend.catalog.entity.ProductMedia;
 import com.omniretail.backend.catalog.entity.ProductMediaType;
 import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.entity.Unit;
+import com.omniretail.backend.catalog.entity.UnitConversion;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.ProductMediaRepository;
+import com.omniretail.backend.catalog.repository.UnitConversionRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
 import com.omniretail.backend.catalog.service.ProductPriceResolver;
 import com.omniretail.backend.ecommerce.dto.PublicStorefrontProductResponse;
-import com.omniretail.backend.inventory.entity.InventoryBalance;
-import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
+import com.omniretail.backend.inventory.service.InventoryOperationalLocationService;
 import com.omniretail.backend.shared.exception.BusinessException;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.HashMap;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -44,9 +47,10 @@ public class PublicStorefrontCatalogService {
     private final ProductMediaRepository productMediaRepository;
     private final CategoryRepository categoryRepository;
     private final UnitRepository unitRepository;
+    private final UnitConversionRepository unitConversionRepository;
     private final ProductPriceResolver productPriceResolver;
     private final EcommerceConfigRepository ecommerceConfigRepository;
-    private final InventoryBalanceRepository inventoryBalanceRepository;
+    private final InventoryOperationalLocationService inventoryOperationalLocationService;
 
     public List<PublicStorefrontProductResponse> listProducts(String slug) {
         UUID tenantId = resolveActiveTenant(slug).getId();
@@ -55,16 +59,17 @@ public class PublicStorefrontCatalogService {
                 .collect(java.util.stream.Collectors.toMap(Category::getId, Function.identity()));
         Map<UUID, Unit> units = unitRepository.findByTenantId(tenantId).stream()
                 .collect(java.util.stream.Collectors.toMap(Unit::getId, Function.identity()));
-        Instant pricingAt = Instant.now();
-        Map<UUID, BigDecimal> availableByProduct = availableByProduct(tenantId);
         List<Product> products = productRepository
                 .findByTenantIdAndStatusAndChannelEcommerceTrue(tenantId, ProductStatus.published);
+        Instant pricingAt = Instant.now();
+        Map<UUID, BigDecimal> availableByProduct = availableByProduct(tenantId);
+        Map<UUID, BigDecimal> saleUnitFactors = saleUnitFactors(tenantId, products);
         Map<UUID, ProductMedia> primaryMedia = primaryMediaByProduct(tenantId, products);
 
         return products.stream()
                 .map(product -> toResponse(
                         product, activeCategories, units, tenantId, pricingAt,
-                        availableByProduct, primaryMedia.get(product.getId())))
+                        availableByProduct, saleUnitFactors, primaryMedia.get(product.getId())))
                 .toList();
     }
 
@@ -81,7 +86,10 @@ public class PublicStorefrontCatalogService {
                 .filter(found -> found.getTenantId().equals(tenantId))
                 .map(Unit::getName)
                 .orElse(null);
-        StockAvailability stock = stockAvailability(product, availableByProduct(tenantId));
+        StockAvailability stock = stockAvailability(
+                product,
+                availableByProduct(tenantId),
+                saleUnitFactors(tenantId, List.of(product)));
         ProductMedia primaryMedia = primaryMediaByProduct(tenantId, List.of(product)).get(product.getId());
         return PublicStorefrontProductResponse.from(
                 product,
@@ -103,11 +111,12 @@ public class PublicStorefrontCatalogService {
             UUID tenantId,
             Instant pricingAt,
             Map<UUID, BigDecimal> availableByProduct,
+            Map<UUID, BigDecimal> saleUnitFactors,
             ProductMedia primaryMedia) {
         UUID saleUnitId = product.getSaleUnitId() != null ? product.getSaleUnitId() : product.getBaseUnitId();
         Unit saleUnit = units.get(saleUnitId);
         Category category = categories.get(product.getCategoryId());
-        StockAvailability stock = stockAvailability(product, availableByProduct);
+        StockAvailability stock = stockAvailability(product, availableByProduct, saleUnitFactors);
         return PublicStorefrontProductResponse.from(
                 product,
                 category != null ? category.getName() : null,
@@ -136,29 +145,75 @@ public class PublicStorefrontCatalogService {
     }
 
     /**
-     * Disponible (cantidad - reservado) por producto en la sucursal que atiende el e-commerce,
-     * la misma contra la que el checkout reserva stock. Sin sucursal configurada no hay stock.
+     * Disponible (cantidad - reservado) en unidad base por producto en la sucursal que atiende el
+     * e-commerce. La ubicacion se resuelve por la politica operativa del inventario; el storefront
+     * nunca decide ni suma estantes por su cuenta.
      */
     private Map<UUID, BigDecimal> availableByProduct(UUID tenantId) {
         return ecommerceConfigRepository.findByTenantId(tenantId)
                 .map(EcommerceConfig::getDefaultBranchId)
-                .map(branchId -> inventoryBalanceRepository
-                        .findByTenantIdAndBranchIdAndLocationIdIsNull(tenantId, branchId).stream()
-                        .collect(java.util.stream.Collectors.toMap(
-                                InventoryBalance::getProductId,
-                                balance -> balance.getQuantity().subtract(balance.getReservedQuantity()))))
+                .map(branchId -> inventoryOperationalLocationService.availableByProduct(tenantId, branchId))
                 .orElse(Map.of());
     }
 
-    private static StockAvailability stockAvailability(Product product, Map<UUID, BigDecimal> availableByProduct) {
+    /**
+     * El contrato publico expresa cantidades en la unica unidad de venta del producto. Solo se
+     * publican empaques completos, igual que el checkout que convierte venta -> unidad base antes
+     * de reservar inventario.
+     */
+    private static StockAvailability stockAvailability(
+            Product product,
+            Map<UUID, BigDecimal> availableByProduct,
+            Map<UUID, BigDecimal> saleUnitFactors) {
         if (!Boolean.TRUE.equals(product.getTrackingStock())) {
             return new StockAvailability(true, null);
         }
         BigDecimal available = availableByProduct.getOrDefault(product.getId(), BigDecimal.ZERO);
+        BigDecimal factor = saleUnitFactors.get(product.getId());
+        if (factor == null || factor.signum() <= 0) {
+            return new StockAvailability(false, BigDecimal.ZERO);
+        }
+        available = available.max(BigDecimal.ZERO).divide(factor, 0, RoundingMode.DOWN);
         return new StockAvailability(available.signum() > 0, available.max(BigDecimal.ZERO));
     }
 
+    private Map<UUID, BigDecimal> saleUnitFactors(UUID tenantId, List<Product> products) {
+        Map<ProductUnitPair, UnitConversion> productConversions = new HashMap<>();
+        Map<UnitPair, UnitConversion> tenantConversions = new HashMap<>();
+        for (UnitConversion conversion : unitConversionRepository.findByTenantId(tenantId)) {
+            UnitPair pair = new UnitPair(conversion.getFromUnitId(), conversion.getToUnitId());
+            if (conversion.getProductId() == null) {
+                tenantConversions.put(pair, conversion);
+            } else {
+                productConversions.put(new ProductUnitPair(
+                        conversion.getProductId(), conversion.getFromUnitId(), conversion.getToUnitId()), conversion);
+            }
+        }
+
+        Map<UUID, BigDecimal> factors = new HashMap<>();
+        for (Product product : products) {
+            UUID saleUnitId = product.getSaleUnitId() != null ? product.getSaleUnitId() : product.getBaseUnitId();
+            if (saleUnitId.equals(product.getBaseUnitId())) {
+                factors.put(product.getId(), BigDecimal.ONE);
+                continue;
+            }
+            UnitConversion conversion = productConversions.get(new ProductUnitPair(
+                    product.getId(), saleUnitId, product.getBaseUnitId()));
+            if (conversion == null) {
+                conversion = tenantConversions.get(new UnitPair(saleUnitId, product.getBaseUnitId()));
+            }
+            if (conversion != null && conversion.getFactor() != null && conversion.getFactor().signum() > 0) {
+                factors.put(product.getId(), conversion.getFactor());
+            }
+        }
+        return factors;
+    }
+
     private record StockAvailability(boolean inStock, BigDecimal availableQuantity) {}
+
+    private record UnitPair(UUID fromUnitId, UUID toUnitId) {}
+
+    private record ProductUnitPair(UUID productId, UUID fromUnitId, UUID toUnitId) {}
 
     private Tenant resolveActiveTenant(String slug) {
         return tenantRepository.findBySlug(slug)

@@ -20,13 +20,14 @@ import com.omniretail.backend.catalog.entity.ProductMedia;
 import com.omniretail.backend.catalog.entity.ProductMediaType;
 import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.entity.Unit;
+import com.omniretail.backend.catalog.entity.UnitConversion;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.ProductMediaRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
+import com.omniretail.backend.catalog.repository.UnitConversionRepository;
 import com.omniretail.backend.catalog.service.ProductPriceResolver;
-import com.omniretail.backend.inventory.entity.InventoryBalance;
-import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
+import com.omniretail.backend.inventory.service.InventoryOperationalLocationService;
 import com.omniretail.backend.shared.exception.BusinessException;
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -48,9 +49,10 @@ class PublicStorefrontCatalogServiceTest {
     @Mock private ProductMediaRepository productMediaRepository;
     @Mock private CategoryRepository categoryRepository;
     @Mock private UnitRepository unitRepository;
+    @Mock private UnitConversionRepository unitConversionRepository;
     @Mock private ProductPriceResolver productPriceResolver;
     @Mock private EcommerceConfigRepository ecommerceConfigRepository;
-    @Mock private InventoryBalanceRepository inventoryBalanceRepository;
+    @Mock private InventoryOperationalLocationService inventoryOperationalLocationService;
 
     @InjectMocks private PublicStorefrontCatalogService service;
 
@@ -191,14 +193,14 @@ class PublicStorefrontCatalogServiceTest {
         Product withStock = trackedProduct(UUID.randomUUID(), unitId);
         Product withoutBalance = trackedProduct(UUID.randomUUID(), unitId);
         Product untracked = product(UUID.randomUUID(), UUID.randomUUID(), unitId);
+        UUID withStockId = withStock.getId();
         Tenant tenant = tenant(tenantId);
         when(tenantRepository.findBySlug("ferreteria-los-simpson")).thenReturn(Optional.of(tenant));
         when(productRepository.findByTenantIdAndStatusAndChannelEcommerceTrue(tenantId, ProductStatus.published))
                 .thenReturn(List.of(withStock, withoutBalance, untracked));
         ecommerceBranch(tenantId, branchId);
-        InventoryBalance stockBalance = balance(withStock.getId(), "100.000", "30.000");
-        when(inventoryBalanceRepository.findByTenantIdAndBranchIdAndLocationIdIsNull(tenantId, branchId))
-                .thenReturn(List.of(stockBalance));
+        when(inventoryOperationalLocationService.availableByProduct(tenantId, branchId))
+                .thenReturn(java.util.Map.of(withStockId, new BigDecimal("70.000")));
 
         var response = service.listProducts("ferreteria-los-simpson");
 
@@ -216,16 +218,16 @@ class PublicStorefrontCatalogServiceTest {
         UUID tenantId = UUID.randomUUID();
         UUID branchId = UUID.randomUUID();
         Product product = trackedProduct(UUID.randomUUID(), UUID.randomUUID());
+        UUID productId = product.getId();
         Tenant tenant = tenant(tenantId);
         when(tenantRepository.findBySlug("ferreteria-los-simpson")).thenReturn(Optional.of(tenant));
         when(productRepository.findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
-                tenantId, product.getId(), ProductStatus.published)).thenReturn(Optional.of(product));
+                tenantId, productId, ProductStatus.published)).thenReturn(Optional.of(product));
         ecommerceBranch(tenantId, branchId);
-        InventoryBalance reservedBalance = balance(product.getId(), "5.000", "5.000");
-        when(inventoryBalanceRepository.findByTenantIdAndBranchIdAndLocationIdIsNull(tenantId, branchId))
-                .thenReturn(List.of(reservedBalance));
+        when(inventoryOperationalLocationService.availableByProduct(tenantId, branchId))
+                .thenReturn(java.util.Map.of(productId, BigDecimal.ZERO));
 
-        var response = service.getProduct("ferreteria-los-simpson", product.getId());
+        var response = service.getProduct("ferreteria-los-simpson", productId);
 
         assertThat(response.inStock()).isFalse();
         assertThat(response.availableQuantity()).isEqualByComparingTo("0");
@@ -245,6 +247,37 @@ class PublicStorefrontCatalogServiceTest {
 
         assertThat(response.inStock()).isFalse();
         assertThat(response.availableQuantity()).isEqualByComparingTo("0");
+    }
+
+    @Test
+    void exposesOnlyCompleteSaleUnitsFromTheOperationalLocation() {
+        UUID tenantId = UUID.randomUUID();
+        UUID branchId = UUID.randomUUID();
+        UUID baseUnitId = UUID.randomUUID();
+        UUID saleUnitId = UUID.randomUUID();
+        Product product = trackedProduct(UUID.randomUUID(), baseUnitId);
+        UUID productId = product.getId();
+        when(product.getSaleUnitId()).thenReturn(saleUnitId);
+        Tenant tenant = tenant(tenantId);
+        UnitConversion conversion = mock(UnitConversion.class);
+        when(conversion.getProductId()).thenReturn(productId);
+        when(conversion.getFromUnitId()).thenReturn(saleUnitId);
+        when(conversion.getToUnitId()).thenReturn(baseUnitId);
+        when(conversion.getFactor()).thenReturn(new BigDecimal("10"));
+        when(tenantRepository.findBySlug("ferreteria-los-simpson")).thenReturn(Optional.of(tenant));
+        when(productRepository.findByTenantIdAndStatusAndChannelEcommerceTrue(tenantId, ProductStatus.published))
+                .thenReturn(List.of(product));
+        when(unitConversionRepository.findByTenantId(tenantId)).thenReturn(List.of(conversion));
+        ecommerceBranch(tenantId, branchId);
+        when(inventoryOperationalLocationService.availableByProduct(tenantId, branchId))
+                .thenReturn(java.util.Map.of(productId, new BigDecimal("25")));
+
+        var response = service.listProducts("ferreteria-los-simpson");
+
+        assertThat(response).singleElement().satisfies(item -> {
+            assertThat(item.inStock()).isTrue();
+            assertThat(item.availableQuantity()).isEqualByComparingTo("2");
+        });
     }
 
     @Test
@@ -281,14 +314,6 @@ class PublicStorefrontCatalogServiceTest {
         EcommerceConfig config = mock(EcommerceConfig.class);
         when(config.getDefaultBranchId()).thenReturn(branchId);
         when(ecommerceConfigRepository.findByTenantId(tenantId)).thenReturn(Optional.of(config));
-    }
-
-    private InventoryBalance balance(UUID productId, String quantity, String reserved) {
-        InventoryBalance balance = mock(InventoryBalance.class);
-        when(balance.getProductId()).thenReturn(productId);
-        when(balance.getQuantity()).thenReturn(new BigDecimal(quantity));
-        when(balance.getReservedQuantity()).thenReturn(new BigDecimal(reserved));
-        return balance;
     }
 
     private Product trackedProduct(UUID productId, UUID unitId) {
