@@ -19,6 +19,11 @@ public interface ProductInventorySettingsRepository
     Optional<ProductInventorySettings> findByTenantIdAndBranchIdAndProductId(
             UUID tenantId, UUID branchId, UUID productId);
 
+    List<ProductInventorySettings> findByTenantIdAndBranchId(UUID tenantId, UUID branchId);
+
+    /** true si alguna configuracion de producto usa la ubicacion como su ubicacion asignada. */
+    boolean existsByTenantIdAndDefaultLocationId(UUID tenantId, UUID defaultLocationId);
+
     @Query("""
             select settings from ProductInventorySettings settings
             where settings.tenantId = :tenantId

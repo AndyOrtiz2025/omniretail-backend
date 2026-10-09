@@ -1015,6 +1015,169 @@ class InventoryTransferServiceIntegrationTest {
         assertBalance("10.000", "0.000");
     }
 
+    // ------------------------------- ubicacion operativa unica en la sucursal destino
+
+    @Test
+    void transferToADestinationWithAnAssignedActiveLocationIsApprovedDispatchedAndReceived() {
+        enableLocations();
+        assignDestination(fixture.destinationLocationId());
+
+        InventoryTransferResponse transfer = dispatchedTransfer("loc-ok", "2.000");
+        var receipt = service.receiveTransfer(transfer.id(), receiptRequest(transfer, "loc-ok", "2.000"));
+
+        assertThat(receipt.transferStatus()).isEqualTo(InventoryTransferStatus.received);
+        assertDestinationBalance("2.000", "0.000");
+        assertBalance("8.000", "0.000");
+    }
+
+    @Test
+    void approvalIsRejectedBeforeAnyEffectWhenTheDestinationProductHasNoAssignedLocation() {
+        enableLocations();
+        UUID requestId = createRequest();
+
+        assertCode(
+                () -> service.approve(requestId, new ApproveInventoryTransferRequest("approve-noassign", null)),
+                InventoryOperationalLocationService.TRANSFER_DESTINATION_INVALID_CODE);
+
+        assertThat(requests.findByTenantIdAndId(fixture.tenantId(), requestId).orElseThrow().getStatus())
+                .isEqualTo(InventoryTransferRequestStatus.requested);
+        assertThat(transfers.findByTenantIdAndOperationId(fixture.tenantId(), "approve-noassign")).isEmpty();
+        assertBalance("10.000", "0.000");
+    }
+
+    @Test
+    void approvalIsRejectedWhenTheAssignedDestinationLocationIsInactive() {
+        enableLocations();
+        UUID inactive = insertLocation(
+                fixture.tenantId(), fixture.destinationBranchId(), "INACTIVE", "inactive");
+        assignDestination(inactive);
+        UUID requestId = createRequest();
+
+        assertCode(
+                () -> service.approve(requestId, new ApproveInventoryTransferRequest("approve-inactive", null)),
+                InventoryOperationalLocationService.TRANSFER_DESTINATION_INVALID_CODE);
+
+        assertBalance("10.000", "0.000");
+    }
+
+    @Test
+    void dispatchIsRejectedWhenTheDestinationConfigurationChangedAfterApprovalAndRetrySucceedsOnceFixed() {
+        InventoryTransferResponse transfer = readyTransfer("cfg-change", "2.000").transfer();
+        // Despues de aprobar y preparar, el negocio habilita ubicaciones y el destino no tiene asignacion.
+        enableLocations();
+
+        assertCode(
+                () -> dispatchService.confirmTransfer(
+                        fixture.sourceBranchId(),
+                        transfer.id(),
+                        new ConfirmTransferDispatchRequest("dispatch-cfg-change")),
+                InventoryOperationalLocationService.TRANSFER_DESTINATION_INVALID_CODE);
+
+        // Nada cambio: sigue en preparacion, con su reserva activa y sin mover existencias.
+        assertThat(service.getTransfer(transfer.id()).status()).isEqualTo(InventoryTransferStatus.preparing);
+        assertThat(reservations.findByTenantIdAndSourceTypeAndSourceId(
+                        fixture.tenantId(), InventoryReservationSourceType.transfer, transfer.id()))
+                .singleElement()
+                .satisfies(reservation ->
+                        assertThat(reservation.getStatus()).isEqualTo(InventoryReservationStatus.active));
+        assertBalance("10.000", "2.000");
+
+        // Correccion y reintento con la misma operacion.
+        assignDestination(fixture.destinationLocationId());
+        dispatchService.confirmTransfer(
+                fixture.sourceBranchId(),
+                transfer.id(),
+                new ConfirmTransferDispatchRequest("dispatch-cfg-change"));
+        assertThat(service.getTransfer(transfer.id()).status()).isEqualTo(InventoryTransferStatus.inTransit);
+        assertBalance("8.000", "0.000");
+    }
+
+    @Test
+    void receiptAtTheWrongLocationFailsWithoutEffectsAndPartialReceiptsThenComplete() {
+        enableLocations();
+        assignDestination(fixture.destinationLocationId());
+        UUID other = insertLocation(fixture.tenantId(), fixture.destinationBranchId(), "OTHER", "active");
+        InventoryTransferResponse transfer = dispatchedTransfer("loc-retry", "4.000");
+
+        assertCode(
+                () -> service.receiveTransfer(
+                        transfer.id(), receiptRequest(transfer, "loc-retry-a", "4.000", other)),
+                InventoryOperationalLocationService.LOCATION_MISMATCH_CODE);
+
+        assertThat(service.getTransfer(transfer.id()).status()).isEqualTo(InventoryTransferStatus.inTransit);
+        assertThat(service.getTransfer(transfer.id()).items().getFirst().receivedQuantity())
+                .isEqualByComparingTo("0.000");
+        assertThat(receipts.findByTenantIdAndTransferIdOrderByReceivedAtAsc(
+                        fixture.tenantId(), transfer.id()))
+                .isEmpty();
+        assertThat(inboundMovementCount(transfer.id())).isZero();
+        assertDestinationBalance("0.000", "0.000");
+
+        // Reintento con la misma confirmacion y la ubicacion asignada, en dos recepciones parciales.
+        var first = service.receiveTransfer(
+                transfer.id(), receiptRequest(transfer, "loc-retry-a", "1.000"));
+        assertThat(first.transferStatus()).isEqualTo(InventoryTransferStatus.inTransit);
+        var second = service.receiveTransfer(
+                transfer.id(), receiptRequest(transfer, "loc-retry-b", "3.000"));
+        assertThat(second.transferStatus()).isEqualTo(InventoryTransferStatus.received);
+        assertDestinationBalance("4.000", "0.000");
+    }
+
+    @Test
+    void merchandiseAlreadyInTransitIsRecoveredByAssigningTheDestinationLocationAndRetrying() {
+        InventoryTransferResponse transfer = dispatchedTransfer("in-transit", "2.000");
+        // Despacho anterior a la politica; luego el negocio habilita ubicaciones.
+        enableLocations();
+
+        assertCode(
+                () -> service.receiveTransfer(
+                        transfer.id(), receiptRequest(transfer, "in-transit", "2.000")),
+                InventoryOperationalLocationService.LOCATION_NOT_ASSIGNED_CODE);
+        assertThat(service.getTransfer(transfer.id()).status()).isEqualTo(InventoryTransferStatus.inTransit);
+        assertDestinationBalance("0.000", "0.000");
+
+        assignDestination(fixture.destinationLocationId());
+        var receipt = service.receiveTransfer(
+                transfer.id(), receiptRequest(transfer, "in-transit", "2.000"));
+
+        assertThat(receipt.transferStatus()).isEqualTo(InventoryTransferStatus.received);
+        assertDestinationBalance("2.000", "0.000");
+    }
+
+    @Test
+    void transfersAreUnaffectedWhenLocationsAreDisabled() {
+        InventoryTransferResponse transfer = dispatchedTransfer("loc-off", "2.000");
+
+        var receipt = service.receiveTransfer(transfer.id(), receiptRequest(transfer, "loc-off", "2.000"));
+
+        assertThat(receipt.transferStatus()).isEqualTo(InventoryTransferStatus.received);
+        assertDestinationBalance("2.000", "0.000");
+    }
+
+    private void enableLocations() {
+        jdbc.update(
+                """
+                INSERT INTO business_capabilities_configs (id, tenant_id, preset, supports_multiple_locations)
+                VALUES (?, ?, 'custom', true)
+                """,
+                UUID.randomUUID(),
+                fixture.tenantId());
+    }
+
+    private void assignDestination(UUID locationId) {
+        jdbc.update(
+                """
+                INSERT INTO product_inventory_settings (tenant_id, branch_id, product_id, default_location_id)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (tenant_id, branch_id, product_id)
+                DO UPDATE SET default_location_id = EXCLUDED.default_location_id
+                """,
+                fixture.tenantId(),
+                fixture.destinationBranchId(),
+                fixture.productId(),
+                locationId);
+    }
+
     private ReadyTransfer readyTransfer(String suffix) {
         return readyTransfer(suffix, "2.000");
     }

@@ -16,6 +16,29 @@ public interface InventorySerialRepository extends JpaRepository<InventorySerial
 
     Optional<InventorySerial> findByTenantIdAndId(UUID tenantId, UUID id);
 
+    /**
+     * true si el producto tiene series aun en inventario (disponibles, reservadas o en transito) en la
+     * sucursal fuera de la ubicacion indicada (null = sin ubicacion). Solo lectura.
+     */
+    @Query(
+            value = """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM inventory_serials inv_serial
+                        WHERE inv_serial.tenant_id = :tenantId
+                          AND inv_serial.branch_id = :branchId
+                          AND inv_serial.product_id = :productId
+                          AND inv_serial.status IN ('AVAILABLE', 'RESERVED', 'IN_TRANSIT')
+                          AND inv_serial.location_id IS DISTINCT FROM CAST(:locationId AS uuid)
+                    )
+                    """,
+            nativeQuery = true)
+    boolean existsInStockOutsideLocation(
+            @Param("tenantId") UUID tenantId,
+            @Param("branchId") UUID branchId,
+            @Param("productId") UUID productId,
+            @Param("locationId") UUID locationId);
+
     Optional<InventorySerial> findByTenantIdAndProductIdAndSerialNumber(
             UUID tenantId, UUID productId, String serialNumber);
 

@@ -14,6 +14,7 @@ import com.omniretail.backend.catalog.entity.LocationStatus;
 import com.omniretail.backend.catalog.entity.LocationType;
 import com.omniretail.backend.catalog.repository.LocationRepository;
 import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
+import com.omniretail.backend.inventory.repository.ProductInventorySettingsRepository;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
@@ -39,6 +40,7 @@ public class LocationService {
     private final LocationRepository locationRepository;
     private final BranchRepository branchRepository;
     private final InventoryBalanceRepository inventoryBalanceRepository;
+    private final ProductInventorySettingsRepository productInventorySettingsRepository;
     private final BusinessConfigService businessConfigService;
     private final BranchAccessResolver branchAccessResolver;
     private final CurrentUser currentUser;
@@ -127,6 +129,9 @@ public class LocationService {
         } else if (request.status() == LocationStatus.archived
                 && location.getStatus() != LocationStatus.archived) {
             validateCanArchive(tenantId, location);
+        } else if (request.status() == LocationStatus.inactive
+                && location.getStatus() == LocationStatus.active) {
+            validateNotAssignedToProducts(tenantId, location);
         }
 
         location.setName(request.name().trim());
@@ -251,6 +256,21 @@ public class LocationService {
             throw BusinessException.conflict(
                     "LOCATION_HAS_STOCK",
                     "La ubicación contiene inventario y no puede archivarse.");
+        }
+        validateNotAssignedToProducts(tenantId, location);
+    }
+
+    /**
+     * Una ubicacion asignada como ubicacion operativa de algun producto deja de aceptar entradas y ventas de
+     * esos productos en cuanto sale de "active"; por eso ni se archiva ni se inactiva mientras siga asignada.
+     */
+    private void validateNotAssignedToProducts(UUID tenantId, Location location) {
+        if (productInventorySettingsRepository.existsByTenantIdAndDefaultLocationId(
+                tenantId, location.getId())) {
+            throw BusinessException.conflict(
+                    "LOCATION_ASSIGNED_TO_PRODUCTS",
+                    "La ubicación está asignada a productos y no puede archivarse ni inactivarse. "
+                            + "Asigne otra ubicación a esos productos primero.");
         }
     }
 

@@ -99,7 +99,8 @@ class SaleReturnServiceTest {
 
         assertThat(result.refundAmount()).isEqualByComparingTo("10.00");
         assertThat(sale.getStatus()).isEqualTo(SaleStatus.partially_returned);
-        verify(inventory).incrementStock(argThat(command -> command.qty().compareTo(BigDecimal.ONE) == 0));
+        verify(inventory).restoreSoldStock(
+                argThat(command -> command.qty().compareTo(BigDecimal.ONE) == 0), eq(sale.getId()), eq(itemId));
         verify(movements).save(argThat(m -> m.getType() == CashMovementType.out && m.getAmount().compareTo(new BigDecimal("10.00")) == 0));
     }
 
@@ -135,8 +136,8 @@ class SaleReturnServiceTest {
 
         service.create(sale.getId(), request(BigDecimal.ONE));
 
-        verify(inventory).incrementStock(argThat(command ->
-                command.qty().compareTo(new BigDecimal("12.000")) == 0));
+        verify(inventory).restoreSoldStock(argThat(command ->
+                command.qty().compareTo(new BigDecimal("12.000")) == 0), eq(sale.getId()), eq(itemId));
     }
 
     @Test
@@ -154,8 +155,8 @@ class SaleReturnServiceTest {
 
         service.create(sale.getId(), request(BigDecimal.ONE));
 
-        verify(inventory).incrementStock(argThat(command ->
-                command.qty().compareTo(new BigDecimal("12.000")) == 0));
+        verify(inventory).restoreSoldStock(argThat(command ->
+                command.qty().compareTo(new BigDecimal("12.000")) == 0), eq(sale.getId()), eq(itemId));
         assertThat(sale.getStatus()).isEqualTo(SaleStatus.returned);
     }
 
@@ -173,8 +174,8 @@ class SaleReturnServiceTest {
 
         service.create(sale.getId(), request(new BigDecimal("2.000")));
 
-        verify(inventory).incrementStock(argThat(command ->
-                command.qty().compareTo(new BigDecimal("24.000")) == 0));
+        verify(inventory).restoreSoldStock(argThat(command ->
+                command.qty().compareTo(new BigDecimal("24.000")) == 0), eq(sale.getId()), eq(itemId));
     }
 
     @Test
@@ -222,9 +223,52 @@ class SaleReturnServiceTest {
 
         service.create(sale.getId(), request(BigDecimal.ONE));
 
-        verify(inventory).incrementStock(argThat(command -> command.productId().equals(componentId)
-                && command.qty().compareTo(new BigDecimal("3.000")) == 0));
+        verify(inventory).restoreSoldStock(argThat(command -> command.productId().equals(componentId)
+                && command.qty().compareTo(new BigDecimal("3.000")) == 0), eq(sale.getId()), eq(itemId));
         verify(products, never()).findByTenantIdAndId(tenant, productId);
+    }
+
+    @Test
+    void returnRestoresThroughTheSoldStockContractWithTenantBranchAndProduct() {
+        Sale sale = sale(SaleStatus.completed);
+        when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
+        when(saleItems.findByTenantIdAndSaleId(tenant, sale.getId()))
+                .thenReturn(List.of(item(new BigDecimal("2.000"))));
+        when(payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(tenant, sale.getId()))
+                .thenReturn(List.of());
+
+        service.create(sale.getId(), request(BigDecimal.ONE));
+
+        // Origen verificable: la venta y la linea vendida, nunca el balance NULL por defecto.
+        verify(inventory).restoreSoldStock(
+                argThat(command -> command.tenantId().equals(tenant)
+                        && command.branchId().equals(sale.getBranchId())
+                        && command.productId().equals(productId)
+                        && "POS_SALE_RETURN".equals(command.referenceType())
+                        && command.referenceId() != null
+                        && command.referenceLineId() != null),
+                eq(sale.getId()),
+                eq(itemId));
+        verify(inventory, never()).incrementStock(any());
+        verifyNoInteractions(traceabilityMutation);
+    }
+
+    @Test
+    void returnFailsWithoutCashOrStatusChangeWhenTheSoldOriginCannotBeIdentified() {
+        Sale sale = sale(SaleStatus.completed);
+        when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
+        when(saleItems.findByTenantIdAndSaleId(tenant, sale.getId()))
+                .thenReturn(List.of(item(new BigDecimal("2.000"))));
+        when(inventory.restoreSoldStock(any(), any(), any())).thenThrow(BusinessException.conflict(
+                "INVENTORY_RESTORE_ORIGIN_NOT_FOUND", "No existe la salida original."));
+
+        assertThatThrownBy(() -> service.create(sale.getId(), request(BigDecimal.ONE)))
+                .isInstanceOfSatisfying(BusinessException.class, exception -> assertThat(exception.getCode())
+                        .isEqualTo("INVENTORY_RESTORE_ORIGIN_NOT_FOUND"));
+
+        assertThat(sale.getStatus()).isEqualTo(SaleStatus.completed);
+        verifyNoInteractions(movements);
+        verify(sales, never()).save(any());
     }
 
     @Test
@@ -248,7 +292,7 @@ class SaleReturnServiceTest {
                 .thenReturn(List.of(item(BigDecimal.ONE)));
         when(payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(tenant, sale.getId()))
                 .thenReturn(List.of());
-        when(inventory.incrementStock(any())).thenReturn(restored);
+        when(inventory.restoreSoldStock(any(), any(), any())).thenReturn(restored);
         when(reversalOperations.saveAndFlush(any())).thenAnswer(call -> call.getArgument(0));
 
         var first = service.create(
@@ -276,7 +320,7 @@ class SaleReturnServiceTest {
                         List.of(new CreateSaleReturnRequest.Line(itemId, BigDecimal.ONE))));
 
         assertThat(replay.idempotent()).isTrue();
-        verify(inventory, times(1)).incrementStock(any());
+        verify(inventory, times(1)).restoreSoldStock(any(), any(), any());
         verify(returns, times(2)).save(any());
         verify(returnItems, times(1)).saveAndFlush(any());
     }

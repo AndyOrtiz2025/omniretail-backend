@@ -51,7 +51,7 @@ public class InventoryReservationLifecycleService {
                 .orderItemId(command.orderItemId())
                 .productId(command.productId())
                 .quantity(command.quantity())
-                .allocations(allocationJson(balance.getId(), command.quantity()))
+                .allocations(allocationJson(balance.getId(), balance.getLocationId(), command.quantity()))
                 .build();
         reservation.setTenantId(command.tenantId());
         try {
@@ -186,11 +186,12 @@ public class InventoryReservationLifecycleService {
         }
     }
 
-    private String allocationJson(UUID balanceId, BigDecimal quantity) {
+    /** Registra la ubicacion real del balance reservado (null solo para el balance NULL heredado). */
+    private String allocationJson(UUID balanceId, UUID locationId, BigDecimal quantity) {
         Map<String, Object> allocation = new LinkedHashMap<>();
         allocation.put("id", UUID.randomUUID());
         allocation.put("balanceId", balanceId);
-        allocation.put("locationId", null);
+        allocation.put("locationId", locationId);
         allocation.put("reservedQuantity", quantity);
         allocation.put("consumedQuantity", BigDecimal.ZERO);
         return jsonMapper.writeValueAsString(List.of(allocation));

@@ -26,6 +26,7 @@ import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
 import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferItemRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferRepository;
+import com.omniretail.backend.inventory.service.InventoryOperationalLocationService;
 import com.omniretail.backend.inventory.service.InventoryReservationLifecycleService;
 import com.omniretail.backend.inventory.service.InventoryPhysicalSelectionCodec;
 import com.omniretail.backend.inventory.service.InventoryTraceabilityMutationService;
@@ -95,6 +96,7 @@ public class DispatchService {
     private final InventoryReservationRepository reservations;
     private final InventoryReservationLifecycleService reservationLifecycle;
     private final InventoryTraceabilityMutationService traceabilityMutation;
+    private final InventoryOperationalLocationService operationalLocationService;
     private final InventoryPhysicalSelectionCodec physicalSelectionCodec;
     private final InventoryMovementRepository movements;
     private final ProductRepository products;
@@ -409,6 +411,10 @@ public class DispatchService {
             requireTransferProduct(product);
             transferProducts.put(product.getId(), product);
         }
+        // Ultima barrera antes de dejar mercancia en transito: la configuracion del destino pudo cambiar
+        // desde la aprobacion. 409 sin tocar reservas, estados ni existencias.
+        operationalLocationService.requireTransferDestinationReceivable(
+                actor.tenantId(), transfer.getDestinationBranchId(), transferProducts.keySet());
 
         Instant now = Instant.now();
         Dispatch newDispatch = Dispatch.builder()

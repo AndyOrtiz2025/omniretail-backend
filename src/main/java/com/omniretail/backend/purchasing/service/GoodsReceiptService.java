@@ -13,6 +13,7 @@ import com.omniretail.backend.catalog.repository.UnitRepository;
 import com.omniretail.backend.inventory.dto.InventoryInboundCommand;
 import com.omniretail.backend.inventory.dto.InventoryInboundTraceDetail;
 import com.omniretail.backend.inventory.repository.InventorySerialRepository;
+import com.omniretail.backend.inventory.service.InventoryOperationalLocationService;
 import com.omniretail.backend.inventory.service.InventoryTraceabilityMutationService;
 import com.omniretail.backend.pos.service.DocumentCounterService;
 import com.omniretail.backend.purchasing.dto.CreateGoodsReceiptRequest;
@@ -98,6 +99,7 @@ public class GoodsReceiptService {
     private final UnitRepository unitRepository;
     private final LocationRepository locationRepository;
     private final InventoryTraceabilityMutationService traceabilityMutationService;
+    private final InventoryOperationalLocationService operationalLocationService;
     private final InventorySerialRepository inventorySerialRepository;
     private final DocumentCounterService documentCounterService;
     private final BranchAccessResolver branchAccessResolver;
@@ -369,6 +371,7 @@ public class GoodsReceiptService {
 
         Map<UUID, GoodsReceiptItem> storedByOrderItem = storedItems.stream().collect(
                 Collectors.toMap(GoodsReceiptItem::getPurchaseOrderItemId, Function.identity()));
+        validateInboundLocations(tenantId, order.getBranchId(), resolvedItems, storedByOrderItem);
         List<ResolvedItem> inventoryOrder = resolvedItems.stream()
                 .sorted(Comparator.comparing(
                                 (ResolvedItem item) -> item.purchaseOrderItem().getProductId())
@@ -676,6 +679,46 @@ public class GoodsReceiptService {
                 .unitCost(resolved.purchaseOrderItem().getUnitCost())
                 .trackingDetails(serializeTrackingDetails(resolved.trackingDetails()))
                 .build();
+    }
+
+    /**
+     * Validacion autoritativa previa a cualquier movimiento: con ubicaciones habilitadas cada linea con control
+     * de inventario debe recibirse en la ubicacion operativa de su producto en la sucursal. Las reglas viven
+     * en Inventario ({@code inboundIssues}, modo REQUIRED); aqui solo se evalua cada linea por separado (un
+     * mismo producto puede repetirse) y se rechazan todas las incorrectas juntas, identificandolas. No toma
+     * bloqueos ni escribe: la entrada de cada linea vuelve a validarse al recibirla. Los borradores no se
+     * validan al crearse o editarse para poder corregir borradores existentes antes de confirmar.
+     */
+    private void validateInboundLocations(
+            UUID tenantId,
+            UUID branchId,
+            List<ResolvedItem> resolvedItems,
+            Map<UUID, GoodsReceiptItem> storedByOrderItem) {
+        Map<UUID, ResolvedItem> resolvedByLine = new HashMap<>();
+        List<InventoryOperationalLocationService.InboundTarget> targets = new ArrayList<>();
+        for (ResolvedItem resolved : resolvedItems) {
+            if (!Boolean.TRUE.equals(resolved.product().getTrackingStock())) {
+                continue;
+            }
+            UUID lineId = storedByOrderItem.get(resolved.purchaseOrderItem().getId()).getId();
+            resolvedByLine.put(lineId, resolved);
+            targets.add(new InventoryOperationalLocationService.InboundTarget(
+                    lineId, resolved.product().getId(), resolved.locationId()));
+        }
+        List<InventoryOperationalLocationService.InboundIssue> issues = operationalLocationService
+                .inboundIssues(
+                        tenantId, branchId, targets, InventoryOperationalLocationService.InboundMode.REQUIRED);
+        if (issues.isEmpty()) {
+            return;
+        }
+        String detail = issues.stream()
+                .map(issue -> resolvedByLine.get(issue.lineRef()).product().getSku()
+                        + " (línea " + issue.lineRef() + "): " + issue.message())
+                .collect(Collectors.joining(" | "));
+        throw BusinessException.conflict(
+                "GOODS_RECEIPT_LOCATION_INVALID",
+                "La recepción tiene líneas cuya ubicación no es la operativa del producto en la sucursal: "
+                        + detail);
     }
 
     private void validateDraftLocations(

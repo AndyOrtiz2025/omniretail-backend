@@ -59,6 +59,7 @@ public class InventoryTraceabilityMutationService {
     private final InventorySerialRepository serialRepository;
     private final InventoryMovementRepository movementRepository;
     private final InventoryMovementTraceRepository movementTraceRepository;
+    private final InventoryOperationalLocationService operationalLocations;
 
     public List<InventoryInboundTraceDetail> validateAndNormalize(
             UUID tenantId,
@@ -183,15 +184,35 @@ public class InventoryTraceabilityMutationService {
     }
 
     @Transactional
-    public InventoryMovement receive(InventoryInboundCommand command) {
-        Product product = command.product();
+    public InventoryMovement receive(InventoryInboundCommand requested) {
+        Product product = requested.product();
         if (product == null
-                || !Objects.equals(product.getTenantId(), command.tenantId())
+                || !Objects.equals(product.getTenantId(), requested.tenantId())
                 || product.getProductType() != ProductType.physical
                 || !Boolean.TRUE.equals(product.getTrackingStock())) {
             throw invalidTracking("Solo un producto fisico con control de inventario puede recibirse.");
         }
-        requireLocation(command.tenantId(), command.branchId(), command.locationId());
+        requireLocation(requested.tenantId(), requested.branchId(), requested.locationId());
+        // Con ubicaciones habilitadas la entrada solo puede ir a la ubicacion asignada al producto:
+        // una distinta responde 409 y una omitida se precarga con la asignada. Lotes, series y
+        // vencimientos se validan igual que antes, ya sobre esa ubicacion.
+        InventoryOperationalLocationService.OperationalLocation operational =
+                operationalLocations.resolveForInbound(
+                        requested.tenantId(), requested.branchId(), product.getId(), requested.locationId());
+        InventoryInboundCommand command = Objects.equals(operational.locationId(), requested.locationId())
+                ? requested
+                : new InventoryInboundCommand(
+                        requested.tenantId(),
+                        requested.branchId(),
+                        requested.product(),
+                        operational.locationId(),
+                        requested.baseQuantity(),
+                        requested.trackingDetails(),
+                        requested.reason(),
+                        requested.referenceType(),
+                        requested.referenceId(),
+                        requested.referenceLineId(),
+                        requested.actorUserId());
         List<InventoryInboundTraceDetail> details = validateAndNormalize(
                 command.tenantId(), product, command.baseQuantity(), command.trackingDetails());
 

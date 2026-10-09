@@ -99,6 +99,7 @@ class InventoryTransferServiceTest {
     @Mock private InventoryReservationRepository reservationRepository;
     @Mock private InventoryReservationLifecycleService reservationLifecycleService;
     @Mock private InventoryStockService inventoryStockService;
+    @Mock private InventoryOperationalLocationService operationalLocationService;
     @Mock private InventoryTraceabilityMutationService traceabilityMutationService;
     @Mock private InventoryTraceabilityHistoryService traceabilityHistoryService;
     @Mock private InventoryPhysicalSelectionCodec physicalSelectionCodec;
@@ -233,6 +234,41 @@ class InventoryTransferServiceTest {
         verify(pickingService).ensureForTransfer(TENANT_ID, TRANSFER_ID);
         assertThat(request.getStatus()).isEqualTo(InventoryTransferRequestStatus.approved);
         verify(requestRepository).findForUpdateByTenantIdAndId(TENANT_ID, REQUEST_ID);
+    }
+
+    @Test
+    void approveChecksTheDestinationBranchBeforeCreatingAnythingAndNeverTheSourceBranch() {
+        InventoryTransferRequest request = persistedRequest(InventoryTransferRequestStatus.requested);
+        given(requestRepository.findForUpdateByTenantIdAndId(TENANT_ID, REQUEST_ID))
+                .willReturn(Optional.of(request));
+        given(transferRepository.findByTenantIdAndOperationId(TENANT_ID, "approve-1"))
+                .willReturn(Optional.empty());
+
+        service.approve(REQUEST_ID, new ApproveInventoryTransferRequest("approve-1", null));
+
+        verify(operationalLocationService).requireTransferDestinationReceivable(
+                TENANT_ID, REQUESTING_BRANCH_ID, java.util.List.of(PRODUCT_ID));
+    }
+
+    @Test
+    void approveIsRejectedBeforeAnyTransferOrReservationWhenTheDestinationCannotReceive() {
+        InventoryTransferRequest request = persistedRequest(InventoryTransferRequestStatus.requested);
+        given(requestRepository.findForUpdateByTenantIdAndId(TENANT_ID, REQUEST_ID))
+                .willReturn(Optional.of(request));
+        given(transferRepository.findByTenantIdAndOperationId(TENANT_ID, "approve-1"))
+                .willReturn(Optional.empty());
+        willThrow(BusinessException.conflict(
+                        InventoryOperationalLocationService.TRANSFER_DESTINATION_INVALID_CODE, "Destino invalido."))
+                .given(operationalLocationService)
+                .requireTransferDestinationReceivable(any(), any(), any());
+
+        assertCode(
+                () -> service.approve(REQUEST_ID, new ApproveInventoryTransferRequest("approve-1", null)),
+                InventoryOperationalLocationService.TRANSFER_DESTINATION_INVALID_CODE);
+
+        assertThat(request.getStatus()).isEqualTo(InventoryTransferRequestStatus.requested);
+        verifyNoInteractions(reservationLifecycleService, pickingService);
+        org.mockito.Mockito.verify(transferRepository, org.mockito.Mockito.never()).saveAndFlush(any());
     }
 
     @Test

@@ -610,16 +610,20 @@ public class SaleReturnService {
         String reason = (plan.kitComponent() ? "Devolucion venta kit POS #" : "Devolución venta POS #")
                 + sale.getNumber();
         if (!plan.traceable()) {
-            return inventory.incrementStock(new AddStockCommand(
-                    actor.tenantId(),
-                    sale.getBranchId(),
-                    plan.product().getId(),
-                    plan.quantity(),
-                    reason,
-                    referenceType,
-                    saleReturn.getId(),
-                    plan.returnItem().getId(),
-                    actor.userId()));
+            // La unidad vuelve al balance del que salio la venta original (venta y linea vendida).
+            return inventory.restoreSoldStock(
+                    new AddStockCommand(
+                            actor.tenantId(),
+                            sale.getBranchId(),
+                            plan.product().getId(),
+                            plan.quantity(),
+                            reason,
+                            referenceType,
+                            saleReturn.getId(),
+                            plan.returnItem().getId(),
+                            actor.userId()),
+                    sale.getId(),
+                    plan.returnItem().getSaleItemId());
         }
         return traceabilityMutation.restore(new InventoryRestoreCommand(
                 actor.tenantId(),
