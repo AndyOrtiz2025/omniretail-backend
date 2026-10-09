@@ -47,6 +47,8 @@ import com.omniretail.backend.inventory.repository.InventoryTransferReceiptRepos
 import com.omniretail.backend.inventory.repository.InventoryTransferRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferRequestRepository;
 import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
+import com.omniretail.backend.inventory.service.InventoryReservationLifecycleService.ReservationBalanceLocks;
+import com.omniretail.backend.inventory.service.InventoryTraceabilityMutationService.PhysicalReservationRelease;
 import com.omniretail.backend.pos.service.DocumentCounterService;
 import com.omniretail.backend.logistics.service.PickingService;
 import com.omniretail.backend.logistics.entity.PickingItem;
@@ -358,9 +360,12 @@ public class InventoryTransferService {
             }
             return transferResponse(transfer, items);
         }
+        ReservationBalanceLocks lockedBalances = reservationLifecycleService.lockBalances(
+                actor.tenantId(), orderedReservations);
         releaseTransferPhysicalReservations(actor.tenantId(), transfer, items);
         for (InventoryReservation reservation : orderedReservations) {
-            reservationLifecycleService.release(actor.tenantId(), reservation.getId());
+            reservationLifecycleService.release(
+                    actor.tenantId(), reservation.getId(), lockedBalances);
         }
         transfer.setStatus(InventoryTransferStatus.cancelled);
         transfer.setCancelledByUserId(actor.userId());
@@ -382,30 +387,32 @@ public class InventoryTransferService {
                 .collect(Collectors.toMap(InventoryTransferItem::getId, Function.identity()));
         List<PickingItem> pickingItems = pickingItemRepository
                 .findByTenantIdAndPickingOrderId(tenantId, picking.getId());
-        for (PickingItem pickingItem : pickingItems.stream()
+        List<PhysicalReservationRelease> releases = pickingItems.stream()
                 .sorted(Comparator.comparing(PickingItem::getProductId)
                         .thenComparing(PickingItem::getId))
-                .toList()) {
-            InventoryTransferItem transferItem = transferItemsById.get(
-                    pickingItem.getSourceLineId());
-            if (transferItem == null
-                    || !transferItem.getProductId().equals(pickingItem.getProductId())) {
-                throw inconsistentReservation();
-            }
-            Product product = requireProduct(tenantId, pickingItem.getProductId());
-            if (!isTraceable(product) || pickingItem.getPickedTraces() == null) continue;
-            List<InventoryPhysicalSelection> physical =
-                    physicalSelectionCodec.decode(pickingItem.getPickedTraces());
-            List<InventoryTraceabilitySelection> selections =
-                    physicalSelectionCodec.withoutLocation(
-                            physical, pickingItem.getLocationId());
-            traceabilityMutationService.releasePhysicalReservation(
-                    tenantId,
-                    transfer.getSourceBranchId(),
-                    product,
-                    pickingItem.getLocationId(),
-                    selections);
-        }
+                .map(pickingItem -> {
+                    InventoryTransferItem transferItem = transferItemsById.get(
+                            pickingItem.getSourceLineId());
+                    if (transferItem == null
+                            || !transferItem.getProductId().equals(pickingItem.getProductId())) {
+                        throw inconsistentReservation();
+                    }
+                    Product product = requireProduct(tenantId, pickingItem.getProductId());
+                    if (!isTraceable(product) || pickingItem.getPickedTraces() == null) return null;
+                    List<InventoryPhysicalSelection> physical =
+                            physicalSelectionCodec.decode(pickingItem.getPickedTraces());
+                    List<InventoryTraceabilitySelection> selections =
+                            physicalSelectionCodec.withoutLocation(
+                                    physical, pickingItem.getLocationId());
+                    return new PhysicalReservationRelease(
+                            product,
+                            pickingItem.getLocationId(),
+                            selections);
+                })
+                .filter(Objects::nonNull)
+                .toList();
+        traceabilityMutationService.releasePhysicalReservations(
+                tenantId, transfer.getSourceBranchId(), releases);
     }
 
     @Transactional

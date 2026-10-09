@@ -54,6 +54,18 @@ public interface InventoryBalanceRepository extends JpaRepository<InventoryBalan
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     Optional<InventoryBalance> findByTenantIdAndId(UUID tenantId, UUID id);
 
+    @Query("""
+            select balance.id from InventoryBalance balance
+            where balance.tenantId = :tenantId
+              and balance.branchId = :branchId
+              and balance.productId = :productId
+              and balance.locationId is null
+            """)
+    Optional<UUID> findDefaultBalanceId(
+            @Param("tenantId") UUID tenantId,
+            @Param("branchId") UUID branchId,
+            @Param("productId") UUID productId);
+
     List<InventoryBalance> findByTenantId(UUID tenantId);
 
     List<InventoryBalance> findByTenantIdAndBranchIdAndLocationIdIsNull(UUID tenantId, UUID branchId);

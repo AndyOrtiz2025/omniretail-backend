@@ -22,12 +22,12 @@ import com.omniretail.backend.inventory.entity.InventorySerialStatus;
 import com.omniretail.backend.inventory.entity.InventoryTransfer;
 import com.omniretail.backend.inventory.entity.InventoryTransferItem;
 import com.omniretail.backend.inventory.entity.InventoryTransferStatus;
-import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
 import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferItemRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferRepository;
 import com.omniretail.backend.inventory.service.InventoryOperationalLocationService;
 import com.omniretail.backend.inventory.service.InventoryReservationLifecycleService;
+import com.omniretail.backend.inventory.service.InventoryReservationLifecycleService.ReservationBalanceLocks;
 import com.omniretail.backend.inventory.service.InventoryPhysicalSelectionCodec;
 import com.omniretail.backend.inventory.service.InventoryTraceabilityMutationService;
 import com.omniretail.backend.logistics.dto.ConfirmDispatchRequest;
@@ -100,7 +100,6 @@ public class DispatchService {
     private final InventoryPhysicalSelectionCodec physicalSelectionCodec;
     private final InventoryMovementRepository movements;
     private final ProductRepository products;
-    private final InventoryBalanceRepository balances;
     private final InventoryTransferRepository transfers;
     private final InventoryTransferItemRepository transferItems;
     private final PickingOrderRepository pickingOrders;
@@ -416,6 +415,9 @@ public class DispatchService {
         operationalLocationService.requireTransferDestinationReceivable(
                 actor.tenantId(), transfer.getDestinationBranchId(), transferProducts.keySet());
 
+        ReservationBalanceLocks lockedBalances = reservationLifecycle.lockBalances(
+                actor.tenantId(), foundReservations);
+
         Instant now = Instant.now();
         Dispatch newDispatch = Dispatch.builder()
                 .branchId(branchId)
@@ -437,9 +439,10 @@ public class DispatchService {
             List<Allocation> reservationAllocations = transferAllocations(reservation);
             Product product = transferProducts.get(line.item().getProductId());
             BigDecimal aggregateBefore = isTraceable(product)
-                    ? aggregateQuantity(actor.tenantId(), reservationAllocations)
+                    ? aggregateQuantity(lockedBalances, reservationAllocations)
                     : null;
-            reservationLifecycle.consume(actor.tenantId(), reservation.getId());
+            reservationLifecycle.consume(
+                    actor.tenantId(), reservation.getId(), lockedBalances);
             if (isTraceable(product)) {
                 PickingSelection selection = requirePickingSelection(
                         actor.tenantId(), branchId, PickingSourceType.transfer, transferId,
@@ -461,9 +464,7 @@ public class DispatchService {
                         actor.userId());
             } else {
                 for (Allocation allocation : reservationAllocations) {
-                    var balance = balances.findByTenantIdAndId(
-                                    actor.tenantId(), allocation.balanceId())
-                            .orElseThrow(DispatchService::inconsistentTransferReservation);
+                    var balance = lockedBalances.require(allocation.balanceId());
                     movements.save(InventoryMovement.builder()
                             .tenantId(actor.tenantId())
                             .branchId(branchId)
@@ -718,11 +719,10 @@ public class DispatchService {
         return new PickingSelection(item, selections);
     }
 
-    private BigDecimal aggregateQuantity(UUID tenantId, List<Allocation> allocations) {
+    private BigDecimal aggregateQuantity(
+            ReservationBalanceLocks lockedBalances, List<Allocation> allocations) {
         return allocations.stream()
-                .map(allocation -> balances.findByTenantIdAndId(tenantId, allocation.balanceId())
-                        .orElseThrow(DispatchService::inconsistentTransferReservation)
-                        .getQuantity())
+                .map(allocation -> lockedBalances.require(allocation.balanceId()).getQuantity())
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
