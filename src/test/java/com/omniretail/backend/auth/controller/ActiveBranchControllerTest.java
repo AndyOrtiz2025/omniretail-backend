@@ -47,6 +47,7 @@ class ActiveBranchControllerTest {
     private static final String LOGIN = "/api/v1/auth/login";
     private static final String ME = "/api/v1/auth/me";
     private static final String BRANCH = "/api/v1/auth/session/branch";
+    private static final String BRANCHES = "/api/v1/auth/session/branches";
     private static final String PASSWORD = "Empleado1234!";
     private static final String NOT_ALLOWED_MESSAGE = "La sucursal seleccionada no está autorizada para esta sesión.";
 
@@ -192,6 +193,94 @@ class ActiveBranchControllerTest {
                 .andExpect(status().isUnauthorized());
     }
 
+    // --- GET /auth/session/branches ---
+
+    @Test
+    void sessionBranchesListsOnlyTheAssignedOnesEvenWithAllBranchesScope() throws Exception {
+        Tenant tenant = tenant();
+        Branch centro = branch(tenant, BranchStatus.active, "Sucursal Centro");
+        Branch norte = branch(tenant, BranchStatus.active, "Sucursal Norte");
+        branch(tenant, BranchStatus.active, "Sucursal Sur"); // del tenant pero no asignada
+        // Rol con branchScope=all y sin admin.branches.read: el alcance del rol no amplia el selector.
+        User employee = employee(tenant, BranchScope.all, norte.getId(), List.of(norte.getId(), centro.getId()));
+
+        sessionBranches(login(employee))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2))
+                // Ordenadas por nombre.
+                .andExpect(jsonPath("$[0].id").value(centro.getId().toString()))
+                .andExpect(jsonPath("$[0].code").value(centro.getCode()))
+                .andExpect(jsonPath("$[0].name").value("Sucursal Centro"))
+                .andExpect(jsonPath("$[0].type").value("store"))
+                .andExpect(jsonPath("$[0].status").value("active"))
+                .andExpect(jsonPath("$[1].id").value(norte.getId().toString()))
+                // Solo lo necesario para el selector: sin datos de contacto ni de auditoria.
+                .andExpect(jsonPath("$[0].address").doesNotExist())
+                .andExpect(jsonPath("$[0].phone").doesNotExist())
+                .andExpect(jsonPath("$[0].email").doesNotExist())
+                .andExpect(jsonPath("$[0].tenantId").doesNotExist());
+    }
+
+    @Test
+    void sessionBranchesExcludesInactiveArchivedAndOtherTenantBranches() throws Exception {
+        Tenant tenant = tenant();
+        Branch active = branch(tenant, BranchStatus.active);
+        Branch inactive = branch(tenant, BranchStatus.inactive);
+        Branch archived = branch(tenant, BranchStatus.archived);
+        Branch foreign = branch(tenant(), BranchStatus.active);
+        User employee = employee(tenant, BranchScope.selected, active.getId(),
+                List.of(active.getId(), inactive.getId(), archived.getId(), foreign.getId(), UUID.randomUUID()));
+
+        sessionBranches(login(employee))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].id").value(active.getId().toString()));
+    }
+
+    @Test
+    void sessionBranchesWithoutAssignedBranchesIsEmpty() throws Exception {
+        Tenant tenant = tenant();
+        branch(tenant, BranchStatus.active);
+        User employee = employee(tenant, BranchScope.all, null, List.of());
+
+        sessionBranches(login(employee))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    @Test
+    void sessionBranchesWithoutAssignedListFallsBackToUserBranch() throws Exception {
+        Tenant tenant = tenant();
+        Branch own = branch(tenant, BranchStatus.active);
+        branch(tenant, BranchStatus.active);
+        User employee = employee(tenant, BranchScope.assigned, own.getId(), null);
+
+        sessionBranches(login(employee))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].id").value(own.getId().toString()));
+    }
+
+    @Test
+    void sessionBranchesIsForbiddenForCustomers() throws Exception {
+        Tenant tenant = tenant();
+        Branch branch = branch(tenant, BranchStatus.active);
+        User customer = user(tenant, UserType.customer, null, branch.getId(), List.of(branch.getId()));
+        String body = mockMvc.perform(post(LOGIN)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\": \"%s\", \"password\": \"%s\", \"tenantSlug\": \"%s\"}"
+                                .formatted(customer.getEmail(), PASSWORD, tenant.getSlug())))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        expectNotAllowed(sessionBranches(JsonPath.read(body, "$.token")));
+    }
+
+    @Test
+    void sessionBranchesWithoutTokenIsUnauthorized() throws Exception {
+        mockMvc.perform(get(BRANCHES)).andExpect(status().isUnauthorized());
+    }
+
     // --- Utilidades ---
 
     private ResultActions changeBranch(String token, UUID branchId) throws Exception {
@@ -209,6 +298,10 @@ class ActiveBranchControllerTest {
         result.andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("BRANCH_NOT_ALLOWED"))
                 .andExpect(jsonPath("$.message").value(NOT_ALLOWED_MESSAGE));
+    }
+
+    private ResultActions sessionBranches(String token) throws Exception {
+        return mockMvc.perform(get(BRANCHES).header("Authorization", "Bearer " + token));
     }
 
     private ResultActions me(String token) throws Exception {
@@ -235,9 +328,13 @@ class ActiveBranchControllerTest {
     }
 
     private Branch branch(Tenant tenant, BranchStatus status) {
+        return branch(tenant, status, "Sucursal test");
+    }
+
+    private Branch branch(Tenant tenant, BranchStatus status, String name) {
         Branch branch = Branch.builder()
                 .code("BR-" + UUID.randomUUID().toString().substring(0, 8))
-                .name("Sucursal test")
+                .name(name)
                 .type(BranchType.store)
                 .status(status)
                 .build();

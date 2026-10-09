@@ -7,6 +7,7 @@ import com.omniretail.backend.auth.dto.LoginOutcome;
 import com.omniretail.backend.auth.dto.LoginRequest;
 import com.omniretail.backend.auth.dto.LoginResponse;
 import com.omniretail.backend.auth.dto.MfaChallengeResponse;
+import com.omniretail.backend.auth.dto.SessionBranchResponse;
 import com.omniretail.backend.auth.service.ActiveBranchService;
 import com.omniretail.backend.auth.service.AuthService;
 import com.omniretail.backend.auth.service.CurrentSessionService;
@@ -14,6 +15,7 @@ import com.omniretail.backend.auth.service.PasswordChangeService;
 import com.omniretail.backend.shared.exception.ApiError;
 import com.omniretail.backend.shared.security.CurrentUser;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.ArraySchema;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -21,6 +23,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -31,7 +34,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
-/** {@code /login} es publico; {@code /logout}, {@code /me}, {@code /password/change} y {@code /session/branch} exigen token (ver SecurityConfig). */
+/** {@code /login} es publico; {@code /logout}, {@code /me}, {@code /password/change}, {@code /session/branch} y {@code /session/branches} exigen token (ver SecurityConfig). */
 @RestController
 @RequestMapping("/auth")
 @RequiredArgsConstructor
@@ -183,5 +186,37 @@ public class AuthController {
     })
     public CurrentSessionResponse changeActiveBranch(@RequestBody ChangeActiveBranchRequest request) {
         return activeBranchService.change(currentUser.require(), request);
+    }
+
+    @GetMapping("/session/branches")
+    @Operation(
+            summary = "List session branches",
+            description = """
+                    **Solo empleados.** Devuelve las sucursales que el empleado puede elegir en el selector de la
+                    sesión. No exige `admin.branches.read`: es la lectura operativa para roles sin permiso
+                    administrativo de sucursales.
+
+                    - Solo sucursales activas de la tienda de la sesión que estén entre las asignadas al usuario
+                      (`allowedBranchIds`, o `branchId` si nunca se asignaron). Un rol con `branchScope = all` no
+                      amplía esta lista; es la misma regla de `PATCH /auth/session/branch`.
+                    - Sin sucursales asignadas (`allowedBranchIds` vacío) responde `[]`.
+                    - Ordenadas por nombre y luego por código. No incluye dirección, teléfono ni correo.""")
+    @ApiResponses({
+        @ApiResponse(
+                responseCode = "200",
+                description = "Sucursales de la sesión.",
+                content = @Content(
+                        mediaType = "application/json",
+                        array = @ArraySchema(schema = @Schema(implementation = SessionBranchResponse.class)))),
+        @ApiResponse(
+                responseCode = "401",
+                description = "Sin token, token inválido o vencido, o sesión revocada. Responde sin cuerpo."),
+        @ApiResponse(
+                responseCode = "403",
+                description = "`BRANCH_NOT_ALLOWED`: la sesión no es de un empleado activo de la tienda.",
+                content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
+    })
+    public List<SessionBranchResponse> listSessionBranches() {
+        return activeBranchService.listSessionBranches(currentUser.require());
     }
 }
