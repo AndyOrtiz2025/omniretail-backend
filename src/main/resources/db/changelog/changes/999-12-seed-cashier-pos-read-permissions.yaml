@@ -1,0 +1,32 @@
+databaseChangeLog:
+  - changeSet:
+      id: 999-12-seed-cashier-pos-read-permissions
+      author: AndyOrtiz2025
+      context: dev
+      comment: Otorga al rol de sistema Cajero los permisos de solo lectura que necesita /pos/terminal para cargar.
+      changes:
+        # La terminal POS arma su listado con endpoints de catalogo e inventario; con solo permisos pos.* el
+        # Cajero recibe 403 y ve "No se pudieron cargar los productos disponibles para POS".
+        # 999-01 ya esta aplicada y no se edita (regla del master). Solo lectura: ningun create/update/manage.
+        # - catalog.products.read:   GET /catalog/products (productos publicados para el canal POS) y
+        #                            GET /catalog/products/{id}/price-tiers (precios por cantidad).
+        # - catalog.units.read:      GET /catalog/units y GET /catalog/unit-conversions (unidad base y presentaciones).
+        # - catalog.promotions.read: GET /catalog/promotions (promociones vigentes aplicadas en la venta).
+        # - inventory.stock.read:    GET /inventory/stock, /inventory/lots y /inventory/serials (disponibilidad,
+        #                            lotes y series). Filtrados a las sucursales asignadas del Cajero (branch_scope assigned).
+        - sql:
+            sql: |
+              UPDATE roles
+              SET permissions = (
+                SELECT ARRAY(
+                  SELECT DISTINCT permission
+                  FROM unnest(COALESCE(permissions, ARRAY[]::text[])
+                              || ARRAY['catalog.products.read', 'catalog.units.read', 'catalog.promotions.read',
+                                       'inventory.stock.read']::text[]) AS permission
+                  ORDER BY permission
+                )
+              )
+              WHERE name = 'Cajero' AND is_system = TRUE;
+      rollback:
+        - sql:
+            sql: SELECT 1
