@@ -4,6 +4,7 @@ import com.omniretail.backend.purchasing.entity.ReceiptIncident;
 import com.omniretail.backend.purchasing.entity.ReceiptIncidentStatus;
 import jakarta.persistence.LockModeType;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -128,6 +129,9 @@ public interface ReceiptIncidentRepository extends JpaRepository<ReceiptIncident
                     @Param("branchId") UUID branchId,
                     @Param("status") ReceiptIncidentStatus status,
                     Pageable pageable);
+
+    /** Incidencias creadas en [from, to), abiertas y resueltas. Lo usa el dashboard de administración. */
+    long countByTenantIdAndCreatedAtGreaterThanEqualAndCreatedAtLessThan(UUID tenantId, Instant from, Instant to);
 
     boolean existsByTenantIdAndGoodsReceiptIdAndStatus(
             UUID tenantId, UUID goodsReceiptId, ReceiptIncidentStatus status);
