@@ -85,15 +85,15 @@ class PublicStorefrontCatalogControllerTest {
         mockMvc.perform(get(url))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[?(@.id == '%s')].inStock", inStock.getId()).value(true))
-                .andExpect(jsonPath("$[?(@.id == '%s')].availableQuantity", inStock.getId()).value(75.0))
+                .andExpect(jsonPath("$[?(@.id == '%s')].availableQuantity", inStock.getId()).value(75))
                 .andExpect(jsonPath("$[?(@.id == '%s')].inStock", reserved.getId()).value(false))
-                .andExpect(jsonPath("$[?(@.id == '%s')].availableQuantity", reserved.getId()).value(0.0))
+                .andExpect(jsonPath("$[?(@.id == '%s')].availableQuantity", reserved.getId()).value(0))
                 .andExpect(jsonPath("$[?(@.id == '%s')].inStock", untracked.getId()).value(true));
 
         mockMvc.perform(get(url + "/" + inStock.getId()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.inStock").value(true))
-                .andExpect(jsonPath("$.availableQuantity").value(75.0));
+                .andExpect(jsonPath("$.availableQuantity").value(75));
 
         mockMvc.perform(get(url + "/" + untracked.getId()))
                 .andExpect(status().isOk())
