@@ -11,6 +11,7 @@ import com.omniretail.backend.ecommerce.entity.OrderSource;
 import com.omniretail.backend.ecommerce.entity.OrderStatus;
 import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.ecommerce.repository.OrderRepository;
+import com.omniretail.backend.ecommerce.service.OrderCustomerNameResolver;
 import com.omniretail.backend.inventory.entity.InventoryTransfer;
 import com.omniretail.backend.inventory.entity.InventoryTransferStatus;
 import com.omniretail.backend.inventory.repository.InventoryTransferRepository;
@@ -58,7 +59,6 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -75,6 +75,7 @@ public class PackingService {
     private final InventoryTransferRepository transferRepository;
     private final ProductRepository productRepository;
     private final CustomerRepository customerRepository;
+    private final OrderCustomerNameResolver customerNameResolver;
     private final PickingTraceProjectionService traceProjectionService;
     private final BranchAccessResolver branchAccessResolver;
     private final CurrentUser currentUser;
@@ -597,15 +598,15 @@ public class PackingService {
 
     private String customerName(UUID tenantId, Order order) {
         if (order.getCustomerId() != null) {
-            return customerRepository.findByTenantIdAndId(tenantId, order.getCustomerId())
+            String registeredName = customerRepository.findByTenantIdAndId(tenantId, order.getCustomerId())
                     .map(Customer::getName)
-                    .orElse("Cliente");
+                    .orElse(null);
+            if (registeredName == null) {
+                return "Cliente";
+            }
+            return customerNameResolver.resolve(order, registeredName, "Cliente invitado");
         }
-        if (order.getGuestCustomer() == null) return "Cliente invitado";
-        Map<String, Object> guest = jsonMapper.readValue(
-                order.getGuestCustomer(), new TypeReference<Map<String, Object>>() {});
-        Object name = guest.get("name");
-        return name instanceof String value && !value.isBlank() ? value : "Cliente invitado";
+        return customerNameResolver.resolve(order, null, "Cliente invitado");
     }
 
     private JsonNode json(String value) {

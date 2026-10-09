@@ -349,6 +349,7 @@ public class SaleService {
                 .orderNumber(saleNumber)
                 .source(OrderSource.pos)
                 .customerId(request.customerId())
+                .guestCustomer(json(guestCustomer(request.customerId(), deferred)))
                 .status(OrderStatus.confirmed)
                 .deliveryMethod(deferred.deliveryMethod())
                 .transportMode(deferred.transportMode())
@@ -417,6 +418,25 @@ public class SaleService {
 
     private String json(Object value) {
         return value == null ? null : jsonMapper.writeValueAsString(value);
+    }
+
+    private static Map<String, Object> guestCustomer(
+            UUID customerId, NormalizedDeferredOrder deferred) {
+        if (customerId != null) {
+            return null;
+        }
+
+        Map<String, Object> contact = deferred.deliveryMethod() == DeliveryMethod.store_pickup
+                ? deferred.storePickupContact()
+                : deferred.deliveryAddress();
+        Map<String, Object> guest = new LinkedHashMap<>();
+        guest.put("name", contact.get("recipientName"));
+
+        Map<String, Object> notification = deferred.notificationContact();
+        if (notification != null && "send".equals(notification.get("emailMode"))) {
+            putIfNotNull(guest, "email", notification.get("email"));
+        }
+        return guest;
     }
 
     private static void validateDeferredProduct(Product product, CreateSaleRequest.Item line) {

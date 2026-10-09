@@ -203,6 +203,12 @@ class PosTraceabilityServiceTest {
         assertThat(created.order().id()).isEqualTo(created.sourceOrderId());
         assertThat(created.order().source()).isEqualTo(com.omniretail.backend.ecommerce.entity.OrderSource.pos);
         assertThat(created.order().deliveryMethod()).isEqualTo(DeliveryMethod.home_delivery);
+        assertThat(jdbc.queryForObject(
+                "SELECT guest_customer ->> 'name' FROM orders WHERE id = ?",
+                String.class, created.sourceOrderId())).isEqualTo("Cliente");
+        assertThat(jdbc.queryForObject(
+                "SELECT guest_customer ->> 'email' FROM orders WHERE id = ?",
+                String.class, created.sourceOrderId())).isEqualTo("cliente@example.com");
         assertThat(created.items()).singleElement().satisfies(item ->
                 assertThat(item.quantity()).isEqualByComparingTo("2.000"));
         assertThat(created.order().items()).singleElement().satisfies(item -> {
@@ -232,6 +238,9 @@ class PosTraceabilityServiceTest {
         assertThat(replay.order().id()).isEqualTo(created.order().id());
         assertThat(replay.pickingOrder().id()).isEqualTo(created.pickingOrder().id());
         assertThat(replay.idempotent()).isTrue();
+        assertThat(jdbc.queryForObject(
+                "SELECT guest_customer ->> 'name' FROM orders WHERE id = ?",
+                String.class, replay.order().id())).isEqualTo("Cliente");
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM orders WHERE tenant_id = ? AND idempotency_key = ?",
                 Long.class, fixture.tenantId(), "deferred-" + confirmationId)).isOne();
@@ -396,6 +405,11 @@ class PosTraceabilityServiceTest {
                 .isEqualTo("Cliente Retira");
         assertThat(created.order().storePickupContact().get("recipientPhone").asText())
                 .isEqualTo("+502 5555-5555");
+        assertThat(jdbc.queryForObject(
+                        "SELECT guest_customer ->> 'name' FROM orders WHERE id = ?",
+                        String.class,
+                        created.sourceOrderId()))
+                .isEqualTo("Cliente Retira");
         assertThat(jdbc.queryForObject(
                         "SELECT store_pickup_contact ->> 'recipientPhone' FROM orders WHERE id = ?",
                         String.class,

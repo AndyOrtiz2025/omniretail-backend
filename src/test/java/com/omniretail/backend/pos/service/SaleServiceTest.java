@@ -19,6 +19,7 @@ import com.omniretail.backend.catalog.service.ProductKitService;
 import com.omniretail.backend.catalog.service.ProductUnitConversionResolver;
 import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.ecommerce.entity.DeliveryMethod;
+import com.omniretail.backend.ecommerce.entity.Customer;
 import com.omniretail.backend.ecommerce.entity.InventoryReservation;
 import com.omniretail.backend.ecommerce.entity.InventoryReservationStatus;
 import com.omniretail.backend.ecommerce.entity.Order;
@@ -75,6 +76,7 @@ import com.omniretail.backend.administration.entity.UserType;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -882,6 +884,10 @@ class SaleServiceTest {
         assertThat(result.sourceOrderId()).isEqualTo(order.getId());
         assertThat(result.order().id()).isEqualTo(order.getId());
         assertThat(result.pickingOrder().id()).isEqualTo(picking.getId());
+        verify(jsonMapper).writeValueAsString(argThat(value ->
+                value instanceof Map<?, ?> guest
+                        && "Cliente".equals(guest.get("name"))
+                        && "cliente@example.com".equals(guest.get("email"))));
         verify(orderItems).saveAndFlush(argThat(item ->
                 item.getQuantity().compareTo(new BigDecimal("2")) == 0
                         && item.getInventoryQuantity().compareTo(new BigDecimal("24.000")) == 0
@@ -918,7 +924,7 @@ class SaleServiceTest {
                         DeliveryMethod.store_pickup,
                         TransportMode.customer,
                         null,
-                        valid.deferredOrder().notificationContact(),
+                        new CreateSaleRequest.NotificationContact("not_applicable", null),
                         new CreateSaleRequest.StorePickupContact(
                                 " Cliente Retira ", "5555-5555")));
 
@@ -929,11 +935,45 @@ class SaleServiceTest {
         ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
         verify(orders).saveAndFlush(orderCaptor.capture());
         assertThat(orderCaptor.getValue().getStorePickupContact()).isNotNull();
+        verify(jsonMapper).writeValueAsString(argThat(value ->
+                value instanceof Map<?, ?> guest
+                        && "Cliente Retira".equals(guest.get("name"))
+                        && !guest.containsKey("email")));
         assertThat(result.sourceOrderId()).isEqualTo(order.getId());
         assertThat(result.pickingOrder().id()).isEqualTo(picking.getId());
         verify(reservationLifecycle).reserve(any());
         verifyNoInteractions(inventory, traceabilityMutation);
         verifyNoInteractions(inventoryMovements);
+    }
+
+    @Test
+    void deferredSaleWithRegisteredCustomerDoesNotCreateGuestSnapshot() {
+        UUID customerId = UUID.randomUUID();
+        Customer customer = Customer.builder()
+                .code("C-001")
+                .name("Cliente registrado")
+                .email("cliente@example.com")
+                .build();
+        customer.setTenantId(tenant);
+        when(customers.findByTenantIdAndId(tenant, customerId)).thenReturn(Optional.of(customer));
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+        stubSalePersistence();
+        Order order = stubDeferredOrderPersistence();
+        when(pickingService.ensureForOrder(tenant, order.getId()))
+                .thenReturn(Optional.of(picking(order)));
+        CreateSaleRequest base = deferredRequest(
+                new BigDecimal("20.00"), BigDecimal.ONE, UUID.randomUUID());
+        CreateSaleRequest request = new CreateSaleRequest(
+                base.branchId(), base.cashShiftId(), customerId, base.taxTotal(),
+                base.items(), base.payments(), base.confirmationId(), base.document(),
+                base.sourceOrderId(), base.deferredOrder());
+
+        service.create(request);
+
+        ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
+        verify(orders).saveAndFlush(orderCaptor.capture());
+        assertThat(orderCaptor.getValue().getCustomerId()).isEqualTo(customerId);
+        assertThat(orderCaptor.getValue().getGuestCustomer()).isNull();
     }
 
     @Test
