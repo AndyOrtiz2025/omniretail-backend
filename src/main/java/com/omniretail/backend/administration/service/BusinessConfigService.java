@@ -6,6 +6,7 @@ import com.omniretail.backend.administration.dto.SaveBusinessConfigRequest;
 import com.omniretail.backend.administration.entity.BusinessCapabilitiesConfig;
 import com.omniretail.backend.administration.entity.BusinessPreset;
 import com.omniretail.backend.administration.repository.BusinessCapabilitiesConfigRepository;
+import com.omniretail.backend.inventory.service.InventoryOperationalLocationService;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.CurrentUser;
 import com.omniretail.backend.shared.security.SaasCapability;
@@ -47,6 +48,7 @@ public class BusinessConfigService {
     private final BusinessCapabilitiesConfigRepository configRepository;
     private final TenantCapabilityGuard tenantCapabilityGuard;
     private final CurrentUser currentUser;
+    private final InventoryOperationalLocationService operationalLocationService;
 
     @Transactional(readOnly = true)
     public BusinessConfigResponse getConfig() {
@@ -67,6 +69,10 @@ public class BusinessConfigService {
 
         BusinessCapabilitiesConfig current = configRepository.findByTenantId(tenantId).orElse(null);
         ensureEntitledForNewlyEnabled(tenantId, current, requested);
+        if (!requested.multipleLocations()) {
+            // Solo actua en la transicion habilitado -> deshabilitado: 409 si dejaria stock oculto.
+            operationalLocationService.assertCanDisableLocations(tenantId);
+        }
 
         BusinessCapabilitiesConfig config = current;
         if (config == null) {

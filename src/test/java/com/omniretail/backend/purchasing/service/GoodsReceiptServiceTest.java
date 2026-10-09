@@ -408,6 +408,216 @@ class GoodsReceiptServiceTest {
     }
 
     @Test
+    void oneReceiptReceivesEachProductInItsOwnAssignedLocation() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        enableLocations(fixture);
+        UUID productB = addProductAndOrderItem(fixture, true);
+        UUID productC = addProductAndOrderItem(fixture, true);
+        UUID itemB = orderItemOf(fixture, productB);
+        UUID itemC = orderItemOf(fixture, productC);
+        UUID shelfB = addLocation(fixture.tenant(), fixture.branch(), "active");
+        UUID shelfC = addLocation(fixture.tenant(), fixture.branch(), "active");
+        assignLocation(fixture, fixture.product(), fixture.location());
+        assignLocation(fixture, productB, shelfB);
+        assignLocation(fixture, productC, shelfC);
+        useActor(fixture);
+        GoodsReceiptResponse draft = service.create(new CreateGoodsReceiptRequest(
+                fixture.order(),
+                null,
+                List.of(
+                        line(fixture.orderItem(), "2", fixture.location()),
+                        line(itemB, "3", shelfB),
+                        line(itemC, "4", shelfC))));
+
+        service.confirm(draft.id());
+
+        assertThat(balance(fixture, fixture.product(), fixture.location())).isEqualByComparingTo("2");
+        assertThat(balance(fixture, productB, shelfB)).isEqualByComparingTo("3");
+        assertThat(balance(fixture, productC, shelfC)).isEqualByComparingTo("4");
+        assertThat(count("inventory_balances", fixture.tenant())).isEqualTo(3);
+        assertThat(count("inventory_movements", fixture.tenant())).isEqualTo(3);
+        assertThat(receiptStatus(draft.id())).isEqualTo("confirmed");
+    }
+
+    @Test
+    void confirmRejectsEveryWronglyLocatedLineTogetherAndCreatesNoMovements() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        enableLocations(fixture);
+        UUID productB = addProductAndOrderItem(fixture, true);
+        UUID productC = addProductAndOrderItem(fixture, true);
+        UUID itemB = orderItemOf(fixture, productB);
+        UUID itemC = orderItemOf(fixture, productC);
+        UUID shelfA = fixture.location();
+        UUID other = addLocation(fixture.tenant(), fixture.branch(), "active");
+        UUID shelfC = addLocation(fixture.tenant(), fixture.branch(), "active");
+        assignLocation(fixture, fixture.product(), shelfA);
+        // B no tiene asignacion; C esta bien asignada.
+        assignLocation(fixture, productC, shelfC);
+        useActor(fixture);
+        // Los borradores no se validan al crearse: A queda en una ubicacion que no es la suya.
+        GoodsReceiptResponse draft = service.create(new CreateGoodsReceiptRequest(
+                fixture.order(),
+                null,
+                List.of(
+                        line(fixture.orderItem(), "2", other),
+                        line(itemB, "3", shelfA),
+                        line(itemC, "4", shelfC))));
+
+        assertThatThrownBy(() -> service.confirm(draft.id()))
+                .isInstanceOfSatisfying(BusinessException.class, exception -> {
+                    assertThat(exception.getCode()).isEqualTo("GOODS_RECEIPT_LOCATION_INVALID");
+                    assertThat(exception.getMessage())
+                            .contains("SKU-" + fixture.product(), "SKU-" + productB)
+                            .doesNotContain("SKU-" + productC);
+                });
+
+        assertThat(receiptStatus(draft.id())).isEqualTo("draft");
+        assertThat(orderStatus(fixture.order())).isEqualTo("approved");
+        assertThat(count("inventory_balances", fixture.tenant())).isZero();
+        assertThat(count("inventory_movements", fixture.tenant())).isZero();
+    }
+
+    @Test
+    void aDraftWithAWrongLocationCanBeCorrectedAndThenConfirmed() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        enableLocations(fixture);
+        UUID other = addLocation(fixture.tenant(), fixture.branch(), "active");
+        assignLocation(fixture, fixture.product(), fixture.location());
+        GoodsReceiptResponse draft = create(fixture, fixture.orderItem(), "5", other);
+
+        GoodsReceiptResponse corrected = service.update(
+                draft.id(),
+                new UpdateGoodsReceiptRequest(
+                        "corregida", List.of(line(fixture.orderItem(), "5", fixture.location()))));
+        service.confirm(corrected.id());
+
+        assertThat(balance(fixture, fixture.product(), fixture.location())).isEqualByComparingTo("5");
+        assertThat(count("inventory_balances", fixture.tenant())).isOne();
+    }
+
+    @Test
+    void sameProductOnTwoLinesIsValidatedLineByLine() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        enableLocations(fixture);
+        assignLocation(fixture, fixture.product(), fixture.location());
+        UUID other = addLocation(fixture.tenant(), fixture.branch(), "active");
+        UUID secondItem = addOrderItemForProduct(fixture, fixture.product());
+        useActor(fixture);
+        GoodsReceiptResponse wrong = service.create(new CreateGoodsReceiptRequest(
+                fixture.order(),
+                null,
+                List.of(
+                        line(fixture.orderItem(), "2", fixture.location()),
+                        line(secondItem, "3", other))));
+
+        assertThatThrownBy(() -> service.confirm(wrong.id()))
+                .isInstanceOfSatisfying(BusinessException.class, exception -> {
+                    assertThat(exception.getCode()).isEqualTo("GOODS_RECEIPT_LOCATION_INVALID");
+                    assertThat(exception.getMessage()).contains(receiptItemId(wrong, secondItem).toString());
+                    assertThat(exception.getMessage())
+                            .doesNotContain(receiptItemId(wrong, fixture.orderItem()).toString());
+                });
+        assertThat(count("inventory_movements", fixture.tenant())).isZero();
+
+        service.update(
+                wrong.id(),
+                updateOf(
+                        line(fixture.orderItem(), "2", fixture.location()),
+                        line(secondItem, "3", fixture.location())));
+        service.confirm(wrong.id());
+        assertThat(balance(fixture, fixture.product(), fixture.location())).isEqualByComparingTo("5");
+    }
+
+    @Test
+    void confirmRejectsAProductWithoutAssignmentAndALegacyNullBalanceProduct() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        enableLocations(fixture);
+        UUID legacyProduct = addProductAndOrderItem(fixture, true);
+        UUID legacyItem = orderItemOf(fixture, legacyProduct);
+        jdbc.update("""
+                INSERT INTO inventory_balances
+                    (id, tenant_id, branch_id, product_id, location_id, quantity, reserved_quantity)
+                VALUES (?, ?, ?, ?, NULL, 6, 0)
+                """, UUID.randomUUID(), fixture.tenant(), fixture.branch(), legacyProduct);
+        useActor(fixture);
+        GoodsReceiptResponse unassigned = create(fixture, fixture.orderItem(), "1", fixture.location());
+        GoodsReceiptResponse legacy = create(fixture, legacyItem, "1", fixture.location());
+
+        assertThatThrownBy(() -> service.confirm(unassigned.id()))
+                .isInstanceOfSatisfying(BusinessException.class, exception ->
+                        assertThat(exception.getCode()).isEqualTo("GOODS_RECEIPT_LOCATION_INVALID"));
+        assertThatThrownBy(() -> service.confirm(legacy.id()))
+                .isInstanceOfSatisfying(BusinessException.class, exception ->
+                        assertThat(exception.getCode()).isEqualTo("GOODS_RECEIPT_LOCATION_INVALID"));
+
+        assertThat(count("inventory_movements", fixture.tenant())).isZero();
+        assertThat(jdbc.queryForObject(
+                        "SELECT quantity FROM inventory_balances WHERE tenant_id = ? AND product_id = ?",
+                        BigDecimal.class, fixture.tenant(), legacyProduct))
+                .isEqualByComparingTo("6");
+    }
+
+    @Test
+    void confirmRejectsAnInactiveAssignedLocationWhenTheLineUsesAnotherActiveOne() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        enableLocations(fixture);
+        UUID assigned = addLocation(fixture.tenant(), fixture.branch(), "inactive");
+        assignLocation(fixture, fixture.product(), assigned);
+        GoodsReceiptResponse draft = create(fixture, fixture.orderItem(), "1", fixture.location());
+
+        assertThatThrownBy(() -> service.confirm(draft.id()))
+                .isInstanceOfSatisfying(BusinessException.class, exception -> {
+                    assertThat(exception.getCode()).isEqualTo("GOODS_RECEIPT_LOCATION_INVALID");
+                    assertThat(exception.getMessage()).contains("inactiva");
+                });
+        assertThat(count("inventory_movements", fixture.tenant())).isZero();
+    }
+
+    @Test
+    void lotReceiptInTheAssignedLocationKeepsItsLotTraces() {
+        Fixture fixture = fixture(true, false, true, "approved", "1");
+        enableLocations(fixture);
+        jdbc.update("UPDATE products SET tracking_lot = true WHERE id = ?", fixture.product());
+        assignLocation(fixture, fixture.product(), fixture.location());
+        GoodsReceiptResponse draft = createTracked(
+                fixture,
+                fixture.orderItem(),
+                "10",
+                List.of(
+                        detail("6.000", "LOT-A", null, List.of()),
+                        detail("4.000", "LOT-B", null, List.of())));
+
+        service.confirm(draft.id());
+
+        assertThat(count("inventory_movements", fixture.tenant())).isOne();
+        assertThat(count("inventory_lots", fixture.tenant())).isEqualTo(2);
+        assertThat(jdbc.queryForObject(
+                        "SELECT sum(quantity) FROM inventory_lot_balances WHERE tenant_id = ? AND location_id = ?",
+                        BigDecimal.class, fixture.tenant(), fixture.location()))
+                .isEqualByComparingTo("10.000");
+    }
+
+    @Test
+    void serialReceiptInTheAssignedLocationKeepsItsSerials() {
+        Fixture fixture = fixture(true, true, true, "approved", "1");
+        enableLocations(fixture);
+        assignLocation(fixture, fixture.product(), fixture.location());
+        GoodsReceiptResponse draft = createTracked(
+                fixture,
+                fixture.orderItem(),
+                "2",
+                List.of(detail("2.000", null, null, List.of("SER-2", "SER-1"))));
+
+        service.confirm(draft.id());
+
+        assertThat(jdbc.queryForList(
+                        "SELECT serial_number FROM inventory_serials WHERE tenant_id = ? ORDER BY serial_number",
+                        String.class, fixture.tenant()))
+                .containsExactly("SER-1", "SER-2");
+        assertThat(balance(fixture, fixture.product(), fixture.location())).isEqualByComparingTo("2.000");
+    }
+
+    @Test
     void traceableDraftPersistsReturnsAndReplacesCanonicalDetailsWithoutStockMutation() {
         Fixture fixture = fixture(true, false, true, "approved", "2");
         jdbc.update(
@@ -1534,6 +1744,40 @@ class GoodsReceiptServiceTest {
                 VALUES (?, ?, ?, ?, ?, 'Segundo', 'SKU-2', 10, ?, 'cj', 1, 1, 10)
                 """, item, fixture.tenant(), fixture.order(), supplierProduct, product, fixture.purchaseUnit());
         return product;
+    }
+
+    private void enableLocations(Fixture fixture) {
+        jdbc.update("""
+                INSERT INTO business_capabilities_configs (id, tenant_id, preset, supports_multiple_locations)
+                VALUES (?, ?, 'custom', true)
+                """, UUID.randomUUID(), fixture.tenant());
+    }
+
+    private void assignLocation(Fixture fixture, UUID product, UUID location) {
+        jdbc.update("""
+                INSERT INTO product_inventory_settings (tenant_id, branch_id, product_id, default_location_id)
+                VALUES (?, ?, ?, ?)
+                """, fixture.tenant(), fixture.branch(), product, location);
+    }
+
+    private UUID orderItemOf(Fixture fixture, UUID product) {
+        return jdbc.queryForObject(
+                "SELECT id FROM purchase_order_items WHERE purchase_order_id = ? AND product_id = ?",
+                UUID.class, fixture.order(), product);
+    }
+
+    /** Segunda linea de la orden para un producto que ya esta en ella (cantidad 4). */
+    private UUID addOrderItemForProduct(Fixture fixture, UUID product) {
+        UUID item = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO purchase_order_items
+                    (id, tenant_id, purchase_order_id, supplier_product_id, product_id,
+                     product_name_snapshot, product_sku_snapshot, quantity, unit_id,
+                     unit_symbol_snapshot, purchase_to_base_factor, unit_cost, subtotal)
+                VALUES (?, ?, ?, ?, ?, 'Producto histórico', 'SKU-HIST', 4, ?, 'cj', 1, 9.50, 38)
+                """, item, fixture.tenant(), fixture.order(), fixture.supplierProduct(), product,
+                fixture.purchaseUnit());
+        return item;
     }
 
     private UUID addLocation(UUID tenant, UUID branch, String status) {

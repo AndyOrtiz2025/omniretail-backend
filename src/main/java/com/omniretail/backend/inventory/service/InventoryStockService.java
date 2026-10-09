@@ -29,6 +29,7 @@ public class InventoryStockService {
     private final InventoryBalanceRepository inventoryBalanceRepository;
     private final InventoryMovementRepository inventoryMovementRepository;
     private final LocationRepository locationRepository;
+    private final InventoryOperationalLocationService operationalLocations;
 
     @Transactional
     public InventoryMovement deductStock(
@@ -66,6 +67,55 @@ public class InventoryStockService {
         }
         validateQuantity(command.qty());
 
+        // Una anulacion de POS restaura la venta original: vuelve al balance del que salio.
+        if (command.referenceId() != null
+                && command.referenceLineId() != null
+                && InventoryOperationalLocationService.VOID_REFERENCE_TYPES.contains(command.referenceType())) {
+            return restoreSoldStock(command, command.referenceId(), command.referenceLineId());
+        }
+
+        // Con ubicaciones habilitadas la entrada va a la ubicacion asignada; si no, balance NULL heredado.
+        InventoryOperationalLocationService.OperationalLocation operational =
+                operationalLocations.resolveForInbound(
+                        command.tenantId(), command.branchId(), command.productId(), null);
+        if (operational.enabled() && operational.locationId() != null) {
+            return incrementAtLocation(command, operational.locationId());
+        }
+        return incrementAtNullBalance(command);
+    }
+
+    /**
+     * Restaura stock de un producto sin trazabilidad que una venta de POS descontó (anulacion o devolucion):
+     * lo devuelve al balance del que salio, identificado con la salida original de la venta
+     * ({@code saleId}, {@code saleLineId}) en los movimientos persistidos. No aplica la politica de entradas
+     * de ubicacion unica; si el origen no se puede identificar con ubicaciones habilitadas responde 409.
+     * Las anulaciones llegan aqui por {@link #incrementStock}; las devoluciones deben invocarlo directamente
+     * con la venta y la linea vendida originales.
+     */
+    @Transactional
+    public InventoryMovement restoreSoldStock(AddStockCommand command, UUID saleId, UUID saleLineId) {
+        if (command == null) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "INVALID_STOCK_COMMAND",
+                    "Los datos del incremento son requeridos.");
+        }
+        validateQuantity(command.qty());
+        InventoryOperationalLocationService.OperationalLocation origin =
+                operationalLocations.resolveForRestoration(
+                        command.tenantId(),
+                        command.branchId(),
+                        command.productId(),
+                        saleId,
+                        saleLineId,
+                        command.qty());
+        if (origin.locationId() == null) {
+            return incrementAtNullBalance(command);
+        }
+        return incrementAtLocation(command, origin.locationId());
+    }
+
+    private InventoryMovement incrementAtNullBalance(AddStockCommand command) {
         inventoryBalanceRepository.ensureDefaultLocationBalanceExists(
                 command.tenantId(), command.branchId(), command.productId());
         InventoryBalance balance = inventoryBalanceRepository
@@ -96,12 +146,19 @@ public class InventoryStockService {
         }
         validateQuantity(command.qty());
         Location location = requireActiveLocation(command.tenantId(), command.branchId(), locationId);
-
-        inventoryBalanceRepository.ensureLocationBalanceExists(
+        // Con ubicaciones habilitadas, solo la ubicacion asignada al producto puede recibir stock (409).
+        operationalLocations.resolveForInbound(
                 command.tenantId(), command.branchId(), command.productId(), location.getId());
+
+        return incrementAtLocation(command, location.getId());
+    }
+
+    private InventoryMovement incrementAtLocation(AddStockCommand command, UUID locationId) {
+        inventoryBalanceRepository.ensureLocationBalanceExists(
+                command.tenantId(), command.branchId(), command.productId(), locationId);
         InventoryBalance balance = inventoryBalanceRepository
                 .findByTenantIdAndBranchIdAndProductIdAndLocationId(
-                        command.tenantId(), command.branchId(), command.productId(), location.getId())
+                        command.tenantId(), command.branchId(), command.productId(), locationId)
                 .orElseThrow(() -> new IllegalStateException(
                         "No se pudo inicializar el balance de inventario de la ubicacion."));
 
@@ -115,12 +172,14 @@ public class InventoryStockService {
     public InventoryBalance reserveStock(
             UUID tenantId, UUID branchId, UUID productId, BigDecimal quantity) {
         validateQuantity(quantity);
-        InventoryBalance balance = requireDefaultBalance(
-                tenantId, branchId, productId, InventoryStockService::insufficientStock);
+        InventoryOperationalLocationService.OperationalLocation operational =
+                operationalLocations.resolveForSale(tenantId, branchId, productId);
+        InventoryBalance balance = findOperationalBalance(tenantId, branchId, productId, operational)
+                .orElseThrow(() -> insufficientStockOrConflict(tenantId, branchId, productId, operational));
         try {
             balance.reserve(quantity);
         } catch (IllegalStateException exception) {
-            throw insufficientStock();
+            throw insufficientStockOrConflict(tenantId, branchId, productId, operational);
         }
         return balance;
     }
@@ -207,15 +266,19 @@ public class InventoryStockService {
     private InventoryMovement doDeductStock(DeductStockCommand command) {
         validateQuantity(command.qty());
 
-        InventoryBalance balance = inventoryBalanceRepository
-                .findByTenantIdAndBranchIdAndProductIdAndLocationIdIsNull(
-                        command.tenantId(), command.branchId(), command.productId())
-                .orElseThrow(InventoryStockService::insufficientStock);
+        InventoryOperationalLocationService.OperationalLocation operational =
+                operationalLocations.resolveForSale(
+                        command.tenantId(), command.branchId(), command.productId());
+        InventoryBalance balance = findOperationalBalance(
+                        command.tenantId(), command.branchId(), command.productId(), operational)
+                .orElseThrow(() -> insufficientStockOrConflict(
+                        command.tenantId(), command.branchId(), command.productId(), operational));
 
         BigDecimal availableQuantity =
                 balance.getQuantity().subtract(balance.getReservedQuantity());
         if (command.qty().compareTo(availableQuantity) > 0) {
-            throw insufficientStock();
+            throw insufficientStockOrConflict(
+                    command.tenantId(), command.branchId(), command.productId(), operational);
         }
 
         BigDecimal quantityBefore = balance.getQuantity();
@@ -270,6 +333,30 @@ public class InventoryStockService {
 
     private static BusinessException insufficientStock() {
         return BusinessException.conflict(INSUFFICIENT_STOCK_CODE, INSUFFICIENT_STOCK_MESSAGE);
+    }
+
+    /** "Stock insuficiente", o el conflicto de ubicacion unica si hay saldo en otra ubicacion. */
+    private BusinessException insufficientStockOrConflict(
+            UUID tenantId,
+            UUID branchId,
+            UUID productId,
+            InventoryOperationalLocationService.OperationalLocation operational) {
+        return operationalLocations.insufficientStockFailure(
+                tenantId, branchId, productId, operational, InventoryStockService::insufficientStock);
+    }
+
+    /** Balance operativo bloqueado: el de la ubicacion asignada, o el NULL heredado. */
+    private java.util.Optional<InventoryBalance> findOperationalBalance(
+            UUID tenantId,
+            UUID branchId,
+            UUID productId,
+            InventoryOperationalLocationService.OperationalLocation operational) {
+        if (operational.locationId() == null) {
+            return inventoryBalanceRepository.findByTenantIdAndBranchIdAndProductIdAndLocationIdIsNull(
+                    tenantId, branchId, productId);
+        }
+        return inventoryBalanceRepository.findByTenantIdAndBranchIdAndProductIdAndLocationId(
+                tenantId, branchId, productId, operational.locationId());
     }
 
     private InventoryBalance requireDefaultBalance(

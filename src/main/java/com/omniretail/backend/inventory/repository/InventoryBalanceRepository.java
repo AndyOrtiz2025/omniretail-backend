@@ -61,6 +61,9 @@ public interface InventoryBalanceRepository extends JpaRepository<InventoryBalan
     List<InventoryBalance> findByTenantIdAndBranchIdAndProductId(
             UUID tenantId, UUID branchId, UUID productId);
 
+    /** Todos los balances de la sucursal (solo lectura, sin bloqueo). */
+    List<InventoryBalance> findByTenantIdAndBranchId(UUID tenantId, UUID branchId);
+
     @Query(
             value = """
                     SELECT EXISTS (

@@ -105,6 +105,7 @@ public class InventoryTransferService {
     private final InventoryReservationRepository reservationRepository;
     private final InventoryReservationLifecycleService reservationLifecycleService;
     private final InventoryStockService inventoryStockService;
+    private final InventoryOperationalLocationService operationalLocationService;
     private final InventoryTraceabilityMutationService traceabilityMutationService;
     private final InventoryTraceabilityHistoryService traceabilityHistoryService;
     private final InventoryPhysicalSelectionCodec physicalSelectionCodec;
@@ -202,6 +203,9 @@ public class InventoryTransferService {
         requireOperationalBranch(actor.tenantId(), request.getSourceBranchId());
         Product product = requireProduct(actor.tenantId(), request.getProductId());
         requireTransferable(product);
+        // La ubicacion exacta se elige al recibir; aqui solo se exige que el destino pueda recibir el producto.
+        operationalLocationService.requireTransferDestinationReceivable(
+                actor.tenantId(), request.getRequestingBranchId(), List.of(request.getProductId()));
         BigDecimal quantity = requireQuantity(request.getRequestedQuantity());
         Instant now = Instant.now();
 

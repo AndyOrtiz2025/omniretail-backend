@@ -46,6 +46,7 @@ public class InventorySettingsService {
     private final UnitRepository unitRepository;
     private final LocationRepository locationRepository;
     private final ProductInventorySettingsRepository settingsRepository;
+    private final InventoryOperationalLocationService operationalLocationService;
 
     @Transactional(readOnly = true)
     public PageResponse<ProductInventorySettingsResponse> list(
@@ -71,6 +72,12 @@ public class InventorySettingsService {
                 .map(ProductInventorySettingsResponse::from);
     }
 
+    /**
+     * Reemplazo completo (PUT): {@code defaultLocationId} null limpia la ubicacion asignada, igual que antes de
+     * la politica de ubicacion unica, porque el contrato no distingue "omitido" de "null". Con ubicaciones
+     * habilitadas, limpiar o cambiar la asignacion se rechaza (409) si deja saldo, reservas, lotes o series
+     * fuera de la nueva ubicacion; reenviar la misma ubicacion solo actualiza los umbrales.
+     */
     public ProductInventorySettingsResponse upsert(
             UUID branchId, UUID productId, UpdateInventorySettingsRequest request) {
         AuthenticatedUser actor = requireInventoryActor();
@@ -88,6 +95,10 @@ public class InventorySettingsService {
         BigDecimal reorderPoint = validateQuantity(request.reorderPoint(), baseUnit, true);
         UUID defaultLocationId = validateLocation(
                 actor.tenantId(), branchId, request.defaultLocationId());
+        // Con ubicaciones habilitadas la ubicacion asignada no puede cambiar si deja saldo, reservas,
+        // lotes o series en otra ubicacion. Toma el mismo bloqueo de producto que reservas y entradas.
+        operationalLocationService.assertAssignmentChangeAllowed(
+                actor.tenantId(), branchId, productId, defaultLocationId);
 
         settingsRepository.upsert(
                 actor.tenantId(),

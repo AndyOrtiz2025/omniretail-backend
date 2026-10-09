@@ -17,6 +17,31 @@ public interface InventoryLotBalanceRepository extends JpaRepository<InventoryLo
 
     Optional<InventoryLotBalance> findByTenantIdAndId(UUID tenantId, UUID id);
 
+    /**
+     * true si el producto tiene saldo o reserva de lote en la sucursal fuera de la ubicacion indicada
+     * (null = balance sin ubicacion). Solo lectura: no mueve ni consolida nada.
+     */
+    @Query(
+            value = """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM inventory_lot_balances lot_balance
+                        JOIN inventory_lots lot
+                          ON lot.tenant_id = lot_balance.tenant_id AND lot.id = lot_balance.lot_id
+                        WHERE lot_balance.tenant_id = :tenantId
+                          AND lot_balance.branch_id = :branchId
+                          AND lot.product_id = :productId
+                          AND (lot_balance.quantity > 0 OR lot_balance.reserved_quantity > 0)
+                          AND lot_balance.location_id IS DISTINCT FROM CAST(:locationId AS uuid)
+                    )
+                    """,
+            nativeQuery = true)
+    boolean existsStockedOutsideLocation(
+            @Param("tenantId") UUID tenantId,
+            @Param("branchId") UUID branchId,
+            @Param("productId") UUID productId,
+            @Param("locationId") UUID locationId);
+
     @Modifying
     @Query(
             value = """
