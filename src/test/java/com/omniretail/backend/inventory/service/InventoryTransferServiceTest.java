@@ -41,6 +41,7 @@ import com.omniretail.backend.inventory.repository.InventoryTransferReceiptRepos
 import com.omniretail.backend.inventory.repository.InventoryTransferRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferRequestRepository;
 import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
+import com.omniretail.backend.inventory.service.InventoryReservationLifecycleService.ReservationBalanceLocks;
 import com.omniretail.backend.pos.service.DocumentCounterService;
 import com.omniretail.backend.logistics.service.PickingService;
 import com.omniretail.backend.logistics.repository.PickingItemRepository;
@@ -56,6 +57,7 @@ import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -362,12 +364,17 @@ class InventoryTransferServiceTest {
         given(reservationRepository.findByTenantIdAndSourceTypeAndSourceId(
                         TENANT_ID, InventoryReservationSourceType.transfer, TRANSFER_ID))
                 .willReturn(List.of(reservation));
+        ReservationBalanceLocks lockedBalances =
+                new ReservationBalanceLocks(TENANT_ID, Map.of(), Map.of());
+        given(reservationLifecycleService.lockBalances(TENANT_ID, List.of(reservation)))
+                .willReturn(lockedBalances);
 
         InventoryTransferResponse response = service.cancelTransfer(
                 TRANSFER_ID, new CancelInventoryTransferRequest("cancelada"));
 
         assertThat(response.status()).isEqualTo(InventoryTransferStatus.cancelled);
-        verify(reservationLifecycleService).release(TENANT_ID, reservation.getId());
+        verify(reservationLifecycleService)
+                .release(TENANT_ID, reservation.getId(), lockedBalances);
     }
 
     @Test

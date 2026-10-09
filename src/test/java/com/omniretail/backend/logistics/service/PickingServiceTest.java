@@ -200,6 +200,81 @@ class PickingServiceTest {
     }
 
     @Test
+    void queueExcludesLegacyPendingPickingWhoseOrderIsCancelled() {
+        Fixture fixture = readyFixture();
+        jdbc.update("UPDATE orders SET status = 'cancelled' WHERE id = ?", fixture.orderId());
+        entityManager.flush();
+        entityManager.clear();
+
+        assertThat(service.getQueue(fixture.branchId())).isEmpty();
+        assertThat(pickingStatus(pickingId(fixture))).isEqualTo("pending");
+    }
+
+    @Test
+    void assignmentRetryByTheSameUserRejectsACancelledOrder() {
+        Fixture fixture = readyFixture();
+        UUID pickingId = pickingId(fixture);
+        service.assign(fixture.branchId(), pickingId);
+        jdbc.update("UPDATE orders SET status = 'cancelled' WHERE id = ?", fixture.orderId());
+        entityManager.flush();
+        entityManager.clear();
+
+        assertCode(
+                () -> service.assign(fixture.branchId(), pickingId),
+                "INVALID_ORDER_STATUS_TRANSITION");
+        assertThat(pickingStatus(pickingId)).isEqualTo("assigned");
+    }
+
+    @Test
+    void mutablePickingOperationsRejectACancelledOrder() {
+        Fixture fixture = readyFixture();
+        UUID pickingId = pickingId(fixture);
+        UUID itemId = itemId(fixture, pickingId);
+        service.assign(fixture.branchId(), pickingId);
+        UUID incidentId = service.createIncident(
+                        fixture.branchId(),
+                        pickingId,
+                        new CreatePickingIncidentRequest(
+                                itemId,
+                                PickingIncidentType.quantity_difference,
+                                BigDecimal.ONE,
+                                "Incidencia previa"))
+                .id();
+        jdbc.update("UPDATE orders SET status = 'cancelled' WHERE id = ?", fixture.orderId());
+        entityManager.flush();
+        entityManager.clear();
+
+        assertCode(
+                () -> service.updateItem(
+                        fixture.branchId(),
+                        pickingId,
+                        itemId,
+                        new UpdatePickingItemRequest(BigDecimal.ONE, null, "cancelled-order")),
+                "INVALID_ORDER_STATUS_TRANSITION");
+        assertCode(
+                () -> service.release(fixture.branchId(), pickingId, "Pedido cancelado"),
+                "INVALID_ORDER_STATUS_TRANSITION");
+        assertCode(
+                () -> service.createIncident(
+                        fixture.branchId(),
+                        pickingId,
+                        new CreatePickingIncidentRequest(
+                                itemId,
+                                PickingIncidentType.quantity_difference,
+                                BigDecimal.ONE,
+                                "Pedido cancelado")),
+                "INVALID_ORDER_STATUS_TRANSITION");
+        assertCode(
+                () -> service.resolveIncident(fixture.branchId(), pickingId, incidentId),
+                "INVALID_ORDER_STATUS_TRANSITION");
+        assertCode(
+                () -> service.complete(fixture.branchId(), pickingId),
+                "INVALID_ORDER_STATUS_TRANSITION");
+        assertThat(itemQuantity(itemId)).isEqualByComparingTo("0.000");
+        assertThat(operationCount(fixture)).isZero();
+    }
+
+    @Test
     void rejectsAssignmentByAnotherActorAndIsolatesTenantAndBranchReads() {
         Fixture first = readyFixture();
         UUID pickingId = pickingId(first);

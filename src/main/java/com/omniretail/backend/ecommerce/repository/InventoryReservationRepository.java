@@ -7,13 +7,13 @@ import jakarta.persistence.LockModeType;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 public interface InventoryReservationRepository extends JpaRepository<InventoryReservation, UUID> {
 
-    @Lock(LockModeType.PESSIMISTIC_WRITE)
     List<InventoryReservation> findByTenantIdAndOrderId(UUID tenantId, UUID orderId);
 
     List<InventoryReservation> findByTenantIdAndSourceTypeAndSourceId(
@@ -36,4 +36,12 @@ public interface InventoryReservationRepository extends JpaRepository<InventoryR
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     Optional<InventoryReservation> findByTenantIdAndId(UUID tenantId, UUID id);
+
+    @Query("""
+            select reservation from InventoryReservation reservation
+            where reservation.tenantId = :tenantId
+              and reservation.id = :id
+            """)
+    Optional<InventoryReservation> findSnapshotByTenantIdAndId(
+            @Param("tenantId") UUID tenantId, @Param("id") UUID id);
 }

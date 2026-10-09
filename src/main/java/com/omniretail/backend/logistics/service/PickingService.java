@@ -95,6 +95,8 @@ public class PickingService {
 
     private static final List<PickingStatus> QUEUE_STATUSES =
             List.of(PickingStatus.pending, PickingStatus.assigned, PickingStatus.in_progress);
+    private static final List<OrderStatus> OPERATIONAL_ORDER_STATUSES =
+            List.of(OrderStatus.confirmed, OrderStatus.preparing, OrderStatus.picking);
     private static final TypeReference<List<ReservationAllocation>> ALLOCATIONS_TYPE =
             new TypeReference<>() {};
 
@@ -279,10 +281,15 @@ public class PickingService {
     public List<PickingQueueResponse> getQueue(UUID branchId) {
         AuthenticatedUser actor = actorForBranch(branchId);
         return pickingOrderRepository
-                .findByTenantIdAndBranchIdAndStatusInOrderByCreatedAtAsc(
-                        actor.tenantId(), branchId, QUEUE_STATUSES)
+                .findOperationalQueue(
+                        actor.tenantId(),
+                        branchId,
+                        QUEUE_STATUSES,
+                        PickingSourceType.order,
+                        OPERATIONAL_ORDER_STATUSES,
+                        PickingSourceType.transfer,
+                        InventoryTransferStatus.preparing)
                 .stream()
-                .filter(picking -> queueSourceIsActive(actor.tenantId(), picking))
                 .map(picking -> queueResponse(actor.tenantId(), picking))
                 .toList();
     }
@@ -330,7 +337,8 @@ public class PickingService {
         AuthenticatedUser actor = actorForBranch(branchId);
         PickingOrder picking = lockScoped(actor.tenantId(), branchId, pickingOrderId);
         requireNonTerminal(picking);
-        lockSource(picking);
+        SourceContext source = lockSource(picking);
+        requireOperationalOrder(source);
         if (!actor.userId().equals(picking.getAssignedUserId())) {
             throw conflict("PICKING_NOT_ASSIGNED_TO_ACTOR", "Solo el usuario asignado puede liberar el Picking.");
         }
@@ -379,6 +387,7 @@ public class PickingService {
         requireNonTerminal(picking);
         requireAssignedActor(picking, actor);
         SourceContext source = lockSource(picking);
+        requireOperationalOrder(source);
         Product product = requireProduct(actor.tenantId(), item.getProductId());
 
         BigDecimal target = request.pickedQuantity();
@@ -482,7 +491,8 @@ public class PickingService {
         PickingOrder picking = lockScoped(actor.tenantId(), branchId, pickingOrderId);
         requireNonTerminal(picking);
         requireAssignedActor(picking, actor);
-        lockSource(picking);
+        SourceContext source = lockSource(picking);
+        requireOperationalOrder(source);
         if (request.pickingLineId() != null) {
             PickingItem item = pickingItemRepository
                     .findByScopeAndId(actor.tenantId(), branchId, request.pickingLineId())
@@ -513,7 +523,8 @@ public class PickingService {
         PickingOrder picking = lockScoped(actor.tenantId(), branchId, pickingOrderId);
         requireNonTerminal(picking);
         requireAssignedActor(picking, actor);
-        lockSource(picking);
+        SourceContext source = lockSource(picking);
+        requireOperationalOrder(source);
         PickingIncident incident = pickingIncidentRepository
                 .findByScopeAndIdForUpdate(actor.tenantId(), branchId, pickingOrderId, incidentId)
                 .orElseThrow(() -> notFound("PICKING_INCIDENT_NOT_FOUND", "Incidencia no encontrada."));
@@ -539,6 +550,7 @@ public class PickingService {
             return action(picking, source, true);
         }
         requireNonTerminal(picking);
+        requireOperationalOrder(source);
         requireAssignedActor(picking, actor);
         if (picking.getStatus() != PickingStatus.in_progress) {
             throw conflict("INVALID_PICKING_STATE", "El Picking debe estar en progreso para completarse.");
@@ -701,6 +713,15 @@ public class PickingService {
         requireNonTerminal(picking);
         if (source.order() != null && !isEligibleOrderSource(source.order())) {
             throw conflict("PICKING_ORDER_NOT_ELIGIBLE", "El pedido no admite Picking.");
+        }
+        requireOperationalOrder(source);
+    }
+
+    private static void requireOperationalOrder(SourceContext source) {
+        if (source.order() != null && !OPERATIONAL_ORDER_STATUSES.contains(source.order().getStatus())) {
+            throw conflict(
+                    "INVALID_ORDER_STATUS_TRANSITION",
+                    "El pedido no se encuentra en un estado operativo para Picking.");
         }
     }
 
@@ -892,15 +913,6 @@ public class PickingService {
                 PickingSourceType.order,
                 order.getId(),
                 order.getOrderNumber());
-    }
-
-    private boolean queueSourceIsActive(UUID tenantId, PickingOrder picking) {
-        if (picking.getSourceType() == PickingSourceType.order) return true;
-        return picking.getSourceType() == PickingSourceType.transfer
-                && transferRepository.findByTenantIdAndId(tenantId, picking.getSourceId())
-                        .filter(transfer -> transfer.getStatus() == InventoryTransferStatus.preparing)
-                        .filter(transfer -> transfer.getSourceBranchId().equals(picking.getBranchId()))
-                        .isPresent();
     }
 
     private PickingDetailResponse detail(UUID tenantId, PickingOrder picking) {

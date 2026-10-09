@@ -434,6 +434,81 @@ class InventoryTransferServiceIntegrationTest {
     }
 
     @Test
+    void traceableCancellationAndDispatchUseCompatibleInventoryLockOrder() throws Exception {
+        TraceableTransfer traceable = readyTraceableTransfer("trace-cancel-vs-dispatch");
+        InventoryTransferResponse transfer = traceable.transfer();
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            Future<Boolean> dispatch = executor.submit(() -> {
+                ready.countDown();
+                if (!start.await(10, TimeUnit.SECONDS)) return false;
+                try {
+                    dispatchService.confirmTransfer(
+                            fixture.sourceBranchId(),
+                            transfer.id(),
+                            new ConfirmTransferDispatchRequest("trace-race-dispatch"));
+                    return true;
+                } catch (BusinessException exception) {
+                    return false;
+                }
+            });
+            Future<Boolean> cancellation = executor.submit(() -> {
+                ready.countDown();
+                if (!start.await(10, TimeUnit.SECONDS)) return false;
+                try {
+                    service.cancelTransfer(
+                            transfer.id(),
+                            new CancelInventoryTransferRequest("trace-race-cancel"));
+                    return true;
+                } catch (BusinessException exception) {
+                    return false;
+                }
+            });
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            assertThat(List.of(
+                            dispatch.get(20, TimeUnit.SECONDS),
+                            cancellation.get(20, TimeUnit.SECONDS)))
+                    .containsExactlyInAnyOrder(true, false);
+            InventoryTransferStatus status = transfers
+                    .findByTenantIdAndId(fixture.tenantId(), transfer.id())
+                    .orElseThrow()
+                    .getStatus();
+            if (status == InventoryTransferStatus.inTransit) {
+                assertBalance("8.000", "0.000");
+                assertLotBalance(
+                        fixture.sourceBranchId(), traceable.sourceLocationId(), traceable.lotId(),
+                        "0.000", "0.000");
+                assertSerial(
+                        "TRACE-A", "IN_TRANSIT", fixture.sourceBranchId(), traceable.sourceLocationId());
+                assertSerial(
+                        "TRACE-B", "IN_TRANSIT", fixture.sourceBranchId(), traceable.sourceLocationId());
+            } else {
+                assertThat(status).isEqualTo(InventoryTransferStatus.cancelled);
+                assertBalance("10.000", "0.000");
+                assertLotBalance(
+                        fixture.sourceBranchId(), traceable.sourceLocationId(), traceable.lotId(),
+                        "2.000", "0.000");
+                assertSerial(
+                        "TRACE-A", "AVAILABLE", fixture.sourceBranchId(), traceable.sourceLocationId());
+                assertSerial(
+                        "TRACE-B", "AVAILABLE", fixture.sourceBranchId(), traceable.sourceLocationId());
+            }
+            assertThat(jdbc.queryForObject(
+                            "SELECT picked_traces IS NOT NULL FROM picking_items "
+                                    + "WHERE source_line_id = ?",
+                            Boolean.class,
+                            transfer.items().getFirst().id()))
+                    .isTrue();
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
     void traceableTransferDispatchAndPartialReceivePreserveExactLotAndSerials() {
         TraceableTransfer traceable = readyTraceableTransfer("trace-partial");
         InventoryTransferResponse transfer = traceable.transfer();

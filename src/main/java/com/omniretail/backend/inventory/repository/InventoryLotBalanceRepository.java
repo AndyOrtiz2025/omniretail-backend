@@ -17,6 +17,9 @@ public interface InventoryLotBalanceRepository extends JpaRepository<InventoryLo
 
     Optional<InventoryLotBalance> findByTenantIdAndId(UUID tenantId, UUID id);
 
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    Optional<InventoryLotBalance> findForUpdateByTenantIdAndId(UUID tenantId, UUID id);
+
     /**
      * true si el producto tiene saldo o reserva de lote en la sucursal fuera de la ubicacion indicada
      * (null = balance sin ubicacion). Solo lectura: no mueve ni consolida nada.
@@ -94,6 +97,23 @@ public interface InventoryLotBalanceRepository extends JpaRepository<InventoryLo
               and lot.productId = :productId
             """)
     Optional<InventoryLotBalance> findForUpdateAtLocation(
+            @Param("tenantId") UUID tenantId,
+            @Param("branchId") UUID branchId,
+            @Param("productId") UUID productId,
+            @Param("lotId") UUID lotId,
+            @Param("locationId") UUID locationId);
+
+    @Query("""
+            select balance.id from InventoryLotBalance balance, InventoryLot lot
+            where balance.tenantId = :tenantId
+              and balance.branchId = :branchId
+              and balance.lotId = :lotId
+              and balance.locationId = :locationId
+              and lot.id = balance.lotId
+              and lot.tenantId = :tenantId
+              and lot.productId = :productId
+            """)
+    Optional<UUID> findIdAtLocation(
             @Param("tenantId") UUID tenantId,
             @Param("branchId") UUID branchId,
             @Param("productId") UUID productId,

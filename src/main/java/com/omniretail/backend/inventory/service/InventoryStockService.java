@@ -204,7 +204,20 @@ public class InventoryStockService {
         validateQuantity(quantity);
         InventoryBalance balance = inventoryBalanceRepository.findByTenantIdAndId(tenantId, balanceId)
                 .orElseThrow(InventoryStockService::inconsistentReservation);
-        if (!balance.getBranchId().equals(branchId) || !balance.getProductId().equals(productId)) {
+        consumeReservedStock(tenantId, branchId, productId, balance, quantity);
+    }
+
+    void consumeReservedStock(
+            UUID tenantId,
+            UUID branchId,
+            UUID productId,
+            InventoryBalance balance,
+            BigDecimal quantity) {
+        validateQuantity(quantity);
+        if (balance == null
+                || !balance.getTenantId().equals(tenantId)
+                || !balance.getBranchId().equals(branchId)
+                || !balance.getProductId().equals(productId)) {
             throw inconsistentReservation();
         }
         try {
@@ -233,7 +246,20 @@ public class InventoryStockService {
         validateQuantity(quantity);
         InventoryBalance balance = inventoryBalanceRepository.findByTenantIdAndId(tenantId, balanceId)
                 .orElseThrow(InventoryStockService::inconsistentReservation);
-        if (!balance.getBranchId().equals(branchId) || !balance.getProductId().equals(productId)) {
+        releaseReservedStock(tenantId, branchId, productId, balance, quantity);
+    }
+
+    void releaseReservedStock(
+            UUID tenantId,
+            UUID branchId,
+            UUID productId,
+            InventoryBalance balance,
+            BigDecimal quantity) {
+        validateQuantity(quantity);
+        if (balance == null
+                || !balance.getTenantId().equals(tenantId)
+                || !balance.getBranchId().equals(branchId)
+                || !balance.getProductId().equals(productId)) {
             throw inconsistentReservation();
         }
         try {

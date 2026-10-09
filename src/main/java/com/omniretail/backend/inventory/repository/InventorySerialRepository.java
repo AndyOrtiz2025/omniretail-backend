@@ -16,6 +16,9 @@ public interface InventorySerialRepository extends JpaRepository<InventorySerial
 
     Optional<InventorySerial> findByTenantIdAndId(UUID tenantId, UUID id);
 
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    Optional<InventorySerial> findForUpdateByTenantIdAndId(UUID tenantId, UUID id);
+
     /**
      * true si el producto tiene series aun en inventario (disponibles, reservadas o en transito) en la
      * sucursal fuera de la ubicacion indicada (null = sin ubicacion). Solo lectura.
@@ -44,6 +47,18 @@ public interface InventorySerialRepository extends JpaRepository<InventorySerial
 
     List<InventorySerial> findByTenantIdAndProductIdAndSerialNumberIn(
             UUID tenantId, UUID productId, List<String> serialNumbers);
+
+    @Query("""
+            select serial.id from InventorySerial serial
+            where serial.tenantId = :tenantId
+              and serial.productId = :productId
+              and serial.serialNumber in :serialNumbers
+            order by serial.serialNumber asc, serial.id asc
+            """)
+    List<UUID> findIdsByTenantIdAndProductIdAndSerialNumberIn(
+            @Param("tenantId") UUID tenantId,
+            @Param("productId") UUID productId,
+            @Param("serialNumbers") List<String> serialNumbers);
 
     @Query("""
             select serial.serialNumber from InventorySerial serial

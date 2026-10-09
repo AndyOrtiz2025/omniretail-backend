@@ -12,10 +12,10 @@ import com.omniretail.backend.inventory.dto.InventoryTraceabilitySelection;
 import com.omniretail.backend.inventory.entity.InventoryMovement;
 import com.omniretail.backend.inventory.entity.InventoryMovementType;
 import com.omniretail.backend.inventory.entity.InventorySerialStatus;
-import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
 import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
 import com.omniretail.backend.inventory.service.InventoryPhysicalSelectionCodec;
 import com.omniretail.backend.inventory.service.InventoryReservationLifecycleService;
+import com.omniretail.backend.inventory.service.InventoryReservationLifecycleService.ReservationBalanceLocks;
 import com.omniretail.backend.inventory.service.InventoryTraceabilityMutationService;
 import com.omniretail.backend.logistics.entity.PickingItem;
 import com.omniretail.backend.logistics.entity.PickingOrder;
@@ -48,7 +48,6 @@ public class OrderFulfillmentConsumptionService {
     private final InventoryPhysicalSelectionCodec physicalSelectionCodec;
     private final InventoryMovementRepository movements;
     private final ProductRepository products;
-    private final InventoryBalanceRepository balances;
     private final PickingOrderRepository pickingOrders;
     private final PickingItemRepository pickingItems;
     private final JsonMapper jsonMapper;
@@ -109,13 +108,16 @@ public class OrderFulfillmentConsumptionService {
             String reason,
             String referenceType,
             UUID referenceId) {
+        ReservationBalanceLocks lockedBalances = reservationLifecycle.lockBalances(
+                prepared.tenantId(), prepared.reservations());
         for (InventoryReservation reservation : prepared.reservations()) {
             Product product = prepared.products().get(reservation.getProductId());
-            List<Allocation> reservationAllocations = allocations(reservation);
+            List<Allocation> reservationAllocations = allocations(reservation, lockedBalances);
             BigDecimal aggregateBefore = isTraceable(product)
-                    ? aggregateQuantity(prepared.tenantId(), reservationAllocations)
+                    ? aggregateQuantity(lockedBalances, reservationAllocations)
                     : null;
-            reservationLifecycle.consume(prepared.tenantId(), reservation.getId());
+            reservationLifecycle.consume(
+                    prepared.tenantId(), reservation.getId(), lockedBalances);
             if (isTraceable(product)) {
                 PickingSelection selection = requirePickingSelection(
                         prepared.tenantId(),
@@ -142,11 +144,7 @@ public class OrderFulfillmentConsumptionService {
                 continue;
             }
             for (Allocation allocation : reservationAllocations) {
-                var balance = balances.findByTenantIdAndId(
-                                prepared.tenantId(), allocation.balanceId())
-                        .orElseThrow(() -> conflict(
-                                "INVENTORY_RESERVATION_INCONSISTENT",
-                                "La reserva no coincide con el balance de inventario."));
+                var balance = lockedBalances.require(allocation.balanceId());
                 movements.save(InventoryMovement.builder()
                         .tenantId(prepared.tenantId())
                         .branchId(prepared.branchId())
@@ -203,27 +201,19 @@ public class OrderFulfillmentConsumptionService {
         return new PickingSelection(item, selections);
     }
 
-    private BigDecimal aggregateQuantity(UUID tenantId, List<Allocation> allocations) {
+    private BigDecimal aggregateQuantity(
+            ReservationBalanceLocks lockedBalances, List<Allocation> allocations) {
         return allocations.stream()
-                .map(allocation -> balances.findByTenantIdAndId(tenantId, allocation.balanceId())
-                        .orElseThrow(() -> conflict(
-                                "INVENTORY_RESERVATION_INCONSISTENT",
-                                "La reserva no coincide con el balance de inventario."))
-                        .getQuantity())
+                .map(allocation -> lockedBalances.require(allocation.balanceId()).getQuantity())
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
-    private List<Allocation> allocations(InventoryReservation reservation) {
+    private List<Allocation> allocations(
+            InventoryReservation reservation, ReservationBalanceLocks lockedBalances) {
         JsonNode root = jsonMapper.readTree(reservation.getAllocations());
         if (!root.isArray() || root.isEmpty()) {
-            UUID balanceId = balances
-                    .findByTenantIdAndBranchIdAndProductIdAndLocationIdIsNull(
-                            reservation.getTenantId(),
-                            reservation.getBranchId(),
-                            reservation.getProductId())
-                    .orElseThrow(() -> conflict(
-                            "INVENTORY_RESERVATION_INCONSISTENT",
-                            "La reserva no coincide con el balance de inventario."))
+            UUID balanceId = lockedBalances
+                    .requireDefault(reservation.getBranchId(), reservation.getProductId())
                     .getId();
             return List.of(new Allocation(balanceId, reservation.getQuantity()));
         }
