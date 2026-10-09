@@ -5,6 +5,7 @@ import com.omniretail.backend.logistics.entity.PackingSourceType;
 import com.omniretail.backend.logistics.entity.PackingStatus;
 import jakarta.persistence.LockModeType;
 import java.util.List;
+import java.util.Collection;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -34,6 +35,9 @@ public interface PackingRepository extends JpaRepository<Packing, UUID> {
 
     Optional<Packing> findByTenantIdAndBranchIdAndPickingOrderId(
             UUID tenantId, UUID branchId, UUID pickingOrderId);
+
+    List<Packing> findByTenantIdAndBranchIdAndPickingOrderIdIn(
+            UUID tenantId, UUID branchId, Collection<UUID> pickingOrderIds);
 
     List<Packing> findByTenantIdAndBranchIdAndStatusOrderByCreatedAtAsc(
             UUID tenantId, UUID branchId, PackingStatus status);
