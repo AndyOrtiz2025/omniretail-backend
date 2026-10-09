@@ -124,6 +124,54 @@ class PickingServiceTest {
     }
 
     @Test
+    void legacyPosStorePickupWithoutGuestUsesRecipientInQueueAndDetail() {
+        Fixture fixture = fixture("store_pickup", false);
+        jdbc.update("""
+                UPDATE orders
+                SET source = 'pos', guest_customer = NULL,
+                    store_pickup_contact = '{"recipientName":"  Persona que retira  "}'::jsonb
+                WHERE id = ?
+                """, fixture.orderId());
+        PickingOrder picking = service.ensureForOrder(
+                fixture.tenantId(), fixture.orderId()).orElseThrow();
+        actor(fixture);
+        entityManager.flush();
+        entityManager.clear();
+
+        assertThat(service.getQueue(fixture.branchId()))
+                .singleElement()
+                .satisfies(item -> assertThat(item.customerName()).isEqualTo("Persona que retira"));
+        assertThat(service.getDetail(fixture.branchId(), picking.getId()).customerName())
+                .isEqualTo("Persona que retira");
+    }
+
+    @Test
+    void registeredCustomerKeepsPriorityOverContactName() {
+        Fixture fixture = fixture("home_delivery", false);
+        UUID customerId = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO customers (id, tenant_id, code, name, email, status)
+                VALUES (?, ?, ?, 'Cliente registrado', ?, 'active')
+                """, customerId, fixture.tenantId(), "C-" + customerId,
+                customerId + "@customer.test");
+        jdbc.update("""
+                UPDATE orders
+                SET source = 'pos', customer_id = ?,
+                    guest_customer = NULL,
+                    delivery_address = '{"recipientName":"Persona que recibe"}'::jsonb
+                WHERE id = ?
+                """, customerId, fixture.orderId());
+        service.ensureForOrder(fixture.tenantId(), fixture.orderId()).orElseThrow();
+        actor(fixture);
+        entityManager.flush();
+        entityManager.clear();
+
+        assertThat(service.getQueue(fixture.branchId()))
+                .singleElement()
+                .satisfies(item -> assertThat(item.customerName()).isEqualTo("Cliente registrado"));
+    }
+
+    @Test
     void rejectsEcommerceStorePickup() {
         Fixture storePickup = fixture("store_pickup", false);
 

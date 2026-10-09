@@ -10,6 +10,7 @@ import com.omniretail.backend.ecommerce.entity.Order;
 import com.omniretail.backend.ecommerce.entity.OrderStatus;
 import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.ecommerce.repository.OrderRepository;
+import com.omniretail.backend.ecommerce.service.OrderCustomerNameResolver;
 import com.omniretail.backend.pos.dto.PosSalesHistoryPageResponse;
 import com.omniretail.backend.pos.dto.PosSalesHistoryRowResponse;
 import com.omniretail.backend.pos.dto.PosSalesHistorySummaryResponse;
@@ -43,8 +44,6 @@ import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import tools.jackson.core.type.TypeReference;
-import tools.jackson.databind.json.JsonMapper;
 
 @Service
 @Transactional(readOnly = true)
@@ -63,7 +62,7 @@ public class PosSalesHistoryService {
     private final SaleRepository sales;
     private final OrderRepository orders;
     private final CustomerRepository customers;
-    private final JsonMapper jsonMapper;
+    private final OrderCustomerNameResolver customerNameResolver;
 
     public PosSalesHistoryPageResponse search(
             UUID branchId,
@@ -156,16 +155,8 @@ public class PosSalesHistoryService {
             return sale.getDocumentLegalName();
         }
         Customer customer = customersById.get(sale.getCustomerId());
-        if (customer != null && !customer.getName().isBlank()) {
-            return customer.getName();
-        }
-        if (order == null || order.getGuestCustomer() == null) {
-            return FINAL_CUSTOMER;
-        }
-        Map<String, Object> guest = jsonMapper.readValue(
-                order.getGuestCustomer(), new TypeReference<Map<String, Object>>() {});
-        Object name = guest.get("name");
-        return name instanceof String value && !value.isBlank() ? value : FINAL_CUSTOMER;
+        return customerNameResolver.resolve(
+                order, customer == null ? null : customer.getName(), FINAL_CUSTOMER);
     }
 
     private Map<UUID, Order> ordersById(UUID tenantId, UUID branchId, List<Sale> page) {

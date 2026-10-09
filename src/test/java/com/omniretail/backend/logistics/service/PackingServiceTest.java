@@ -85,11 +85,22 @@ class PackingServiceTest {
     @Test
     void readsPackingForPosHomeDeliveryOrder() {
         Fixture fixture = fixture();
-        jdbc.update("UPDATE orders SET source = 'pos' WHERE id = ?", fixture.orderId());
+        jdbc.update("""
+                UPDATE orders
+                SET source = 'pos', guest_customer = NULL,
+                    delivery_address = '{"recipientName":"  Persona que recibe  "}'::jsonb
+                WHERE id = ?
+                """, fixture.orderId());
         actor(fixture);
 
-        assertThat(service.getDetail(fixture.branchId(), fixture.packingId()).orderId())
-                .isEqualTo(fixture.orderId());
+        assertThat(service.getQueue(fixture.branchId()))
+                .singleElement()
+                .satisfies(item -> assertThat(item.customerName()).isEqualTo("Persona que recibe"));
+        assertThat(service.getDetail(fixture.branchId(), fixture.packingId()))
+                .satisfies(detail -> {
+                    assertThat(detail.orderId()).isEqualTo(fixture.orderId());
+                    assertThat(detail.customerName()).isEqualTo("Persona que recibe");
+                });
     }
 
     @Test
@@ -129,9 +140,14 @@ class PackingServiceTest {
         Fixture fixture = fixture();
         jdbc.update(
                 "UPDATE orders SET source = 'pos', delivery_method = 'store_pickup', "
-                        + "delivery_address = NULL WHERE id = ?",
+                        + "guest_customer = NULL, delivery_address = NULL, "
+                        + "store_pickup_contact = '{\"recipientName\":\"Persona que retira\"}'::jsonb "
+                        + "WHERE id = ?",
                 fixture.orderId());
         actor(fixture);
+
+        assertThat(service.getDetail(fixture.branchId(), fixture.packingId()).customerName())
+                .isEqualTo("Persona que retira");
 
         service.savePreparation(
                 fixture.branchId(), fixture.packingId(), preparation(0L, "pickup-prepare", "2.750", 2));

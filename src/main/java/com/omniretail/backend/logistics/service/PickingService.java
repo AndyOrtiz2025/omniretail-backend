@@ -21,6 +21,7 @@ import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.ecommerce.repository.InventoryReservationRepository;
 import com.omniretail.backend.ecommerce.repository.OrderItemRepository;
 import com.omniretail.backend.ecommerce.repository.OrderRepository;
+import com.omniretail.backend.ecommerce.service.OrderCustomerNameResolver;
 import com.omniretail.backend.inventory.entity.InventoryBalance;
 import com.omniretail.backend.inventory.dto.InventoryPhysicalSelection;
 import com.omniretail.backend.inventory.dto.InventoryTraceabilitySelection;
@@ -107,6 +108,7 @@ public class PickingService {
     private final OrderItemRepository orderItemRepository;
     private final ProductRepository productRepository;
     private final CustomerRepository customerRepository;
+    private final OrderCustomerNameResolver customerNameResolver;
     private final InventoryReservationRepository reservationRepository;
     private final InventoryBalanceRepository inventoryBalanceRepository;
     private final InventoryTransferRepository transferRepository;
@@ -1132,15 +1134,15 @@ public class PickingService {
 
     private String customerName(UUID tenantId, Order order) {
         if (order.getCustomerId() != null) {
-            return customerRepository.findByTenantIdAndId(tenantId, order.getCustomerId())
+            String registeredName = customerRepository.findByTenantIdAndId(tenantId, order.getCustomerId())
                     .map(Customer::getName)
-                    .orElse("Cliente");
+                    .orElse(null);
+            if (registeredName == null) {
+                return "Cliente";
+            }
+            return customerNameResolver.resolve(order, registeredName, "Cliente invitado");
         }
-        if (order.getGuestCustomer() == null) return "Cliente invitado";
-        Map<String, Object> guest = jsonMapper.readValue(
-                order.getGuestCustomer(), new TypeReference<Map<String, Object>>() {});
-        Object name = guest.get("name");
-        return name instanceof String value && !value.isBlank() ? value : "Cliente invitado";
+        return customerNameResolver.resolve(order, null, "Cliente invitado");
     }
 
     private static PickingProgressResponse progress(List<PickingItem> items) {

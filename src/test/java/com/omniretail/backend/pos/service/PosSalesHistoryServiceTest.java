@@ -148,6 +148,60 @@ class PosSalesHistoryServiceTest {
     }
 
     @Test
+    void resolvesFiscalRegisteredAndLegacyContactNamesWithOriginalFallback() {
+        UUID registeredCustomer = customer(fixture, "Cliente registrado");
+        UUID registered = sale(fixture, "POS-REGISTERED", SaleStatus.completed,
+                Instant.parse("2026-10-05T09:00:00Z"), null, registeredCustomer);
+
+        UUID pickupOrder = order(fixture, "ORD-PICKUP-NAME", DeliveryMethod.store_pickup,
+                OrderStatus.picking, "Temporal");
+        jdbc.update("""
+                UPDATE orders
+                SET guest_customer = NULL,
+                    store_pickup_contact = '{"recipientName":"  Persona que retira  "}'::jsonb
+                WHERE id = ?
+                """, pickupOrder);
+        UUID pickup = sale(fixture, "POS-PICKUP-NAME", SaleStatus.completed,
+                Instant.parse("2026-10-05T10:00:00Z"), pickupOrder, null);
+
+        UUID deliveryOrder = order(fixture, "ORD-DELIVERY-NAME", DeliveryMethod.home_delivery,
+                OrderStatus.picking, "Temporal");
+        jdbc.update("""
+                UPDATE orders
+                SET guest_customer = NULL,
+                    delivery_address = '{"recipientName":"  Persona que recibe  "}'::jsonb
+                WHERE id = ?
+                """, deliveryOrder);
+        UUID delivery = sale(fixture, "POS-DELIVERY-NAME", SaleStatus.completed,
+                Instant.parse("2026-10-05T11:00:00Z"), deliveryOrder, null);
+
+        UUID fallback = sale(fixture, "POS-FALLBACK", SaleStatus.completed,
+                Instant.parse("2026-10-05T12:00:00Z"), null, null);
+        UUID fiscal = sale(fixture, "POS-FISCAL", SaleStatus.completed,
+                Instant.parse("2026-10-05T13:00:00Z"), pickupOrder, null);
+        jdbc.update("""
+                UPDATE sales
+                SET document_type = 'invoice', document_tax_id = '1234567-8',
+                    document_legal_name = 'Nombre fiscal',
+                    document_fiscal_address = 'Ciudad de Guatemala'
+                WHERE id = ?
+                """, fiscal);
+
+        PosSalesHistoryPageResponse result = search(PageRequest.of(0, 20));
+
+        assertThat(result.items()).filteredOn(row -> row.saleId().equals(registered))
+                .singleElement().satisfies(row -> assertThat(row.customerDisplayName()).isEqualTo("Cliente registrado"));
+        assertThat(result.items()).filteredOn(row -> row.saleId().equals(pickup))
+                .singleElement().satisfies(row -> assertThat(row.customerDisplayName()).isEqualTo("Persona que retira"));
+        assertThat(result.items()).filteredOn(row -> row.saleId().equals(delivery))
+                .singleElement().satisfies(row -> assertThat(row.customerDisplayName()).isEqualTo("Persona que recibe"));
+        assertThat(result.items()).filteredOn(row -> row.saleId().equals(fallback))
+                .singleElement().satisfies(row -> assertThat(row.customerDisplayName()).isEqualTo("Consumidor final"));
+        assertThat(result.items()).filteredOn(row -> row.saleId().equals(fiscal))
+                .singleElement().satisfies(row -> assertThat(row.customerDisplayName()).isEqualTo("Nombre fiscal"));
+    }
+
+    @Test
     void interpretsDateBoundsInTenantTimezoneWithInclusiveLastDay() {
         UUID insideStart = sale(fixture, "POS-D1", SaleStatus.completed,
                 Instant.parse("2026-10-05T06:00:00Z"), null, null);
