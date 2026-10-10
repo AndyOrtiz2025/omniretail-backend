@@ -14,6 +14,13 @@ public record SaasPlanResponse(
         PlanStatus status, List<String> capabilities, Map<String, Integer> limits,
         Instant createdAt, Instant updatedAt) {
     public static SaasPlanResponse from(SaasPlan plan) {
+        return new SaasPlanResponse(plan.getId(), plan.getCode(), plan.getName(), plan.getDescription(),
+                plan.getMonthlyQuetzales(), plan.getStatus(), List.copyOf(plan.getCapabilities()),
+                limitsOf(plan), plan.getCreatedAt(), plan.getUpdatedAt());
+    }
+
+    /** Limites numericos del plan; omite los que no tienen tope. */
+    public static Map<String, Integer> limitsOf(SaasPlan plan) {
         Map<String, Integer> limits = new LinkedHashMap<>();
         if (plan.getMaxEmployees() != null) {
             limits.put("maxEmployees", plan.getMaxEmployees());
@@ -21,8 +28,6 @@ public record SaasPlanResponse(
         if (plan.getMaxBranches() != null) {
             limits.put("maxBranches", plan.getMaxBranches());
         }
-        return new SaasPlanResponse(plan.getId(), plan.getCode(), plan.getName(), plan.getDescription(),
-                plan.getMonthlyQuetzales(), plan.getStatus(), List.copyOf(plan.getCapabilities()),
-                Map.copyOf(limits), plan.getCreatedAt(), plan.getUpdatedAt());
+        return Map.copyOf(limits);
     }
 }

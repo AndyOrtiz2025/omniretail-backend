@@ -1,6 +1,7 @@
 package com.omniretail.backend.administration.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -103,17 +104,36 @@ class DefaultTenantEntitlementResolverTest {
 
     @Test
     void cancelledSubscriptionIsNotConsideredCurrent() {
+        var cancelled = TenantSubscription.builder()
+                .planId(planId).status(TenantSubscriptionStatus.cancelled).build();
+        when(subscriptions.findByTenantIdAndStatusIn(tenantId, CURRENT)).thenReturn(Optional.empty());
+        when(subscriptions.findFirstByTenantIdOrderByStartedAtDescCreatedAtDesc(tenantId))
+                .thenReturn(Optional.of(cancelled));
         var entitlements = resolver.resolve(tenantId);
         assertThat(entitlements.subscriptionActive()).isFalse();
+        assertThat(entitlements.planActive()).isFalse();
+        assertThat(entitlements.capabilities()).isEmpty();
         verify(subscriptions).findByTenantIdAndStatusIn(tenantId, CURRENT);
+        verify(subscriptions).findFirstByTenantIdOrderByStartedAtDescCreatedAtDesc(tenantId);
         org.mockito.Mockito.verifyNoInteractions(plans);
     }
+
+    @Test
+    void activeSubscriptionIsSelectedWithoutQueryingHistoricalFallback() {
+        setup(TenantSubscriptionStatus.active, PlanStatus.active, List.of());
+        var selected = DefaultTenantEntitlementResolver.findEffectiveSubscription(subscriptions, tenantId);
+        assertThat(selected).isPresent();
+        assertThat(selected.get().getStatus()).isEqualTo(TenantSubscriptionStatus.active);
+        verify(subscriptions, org.mockito.Mockito.never())
+                .findFirstByTenantIdOrderByStartedAtDescCreatedAtDesc(tenantId);
+    }
+
     private void setup(TenantSubscriptionStatus status, PlanStatus planStatus, List<String> addons) {
         var subscription = TenantSubscription.builder().planId(planId).status(status).addonCodes(addons).build();
         subscription.setTenantId(tenantId);
         when(subscriptions.findByTenantIdAndStatusIn(tenantId, CURRENT)).thenReturn(Optional.of(subscription));
         var keys = new java.util.ArrayList<>(BASE);
         keys.add("unknown.capability");
-        when(plans.findById(planId)).thenReturn(Optional.of(SaasPlan.builder().status(planStatus).capabilities(keys).build()));
+        lenient().when(plans.findById(planId)).thenReturn(Optional.of(SaasPlan.builder().status(planStatus).capabilities(keys).build()));
     }
 }
