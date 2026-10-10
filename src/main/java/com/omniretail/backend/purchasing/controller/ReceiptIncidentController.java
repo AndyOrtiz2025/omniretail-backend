@@ -24,7 +24,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Incidencias en Recepción de Mercancía",
+        name = "Goods receipt incidents",
         description = "Reporte y resolución de discrepancias en descarga de mercancía (piezas faltantes, dañadas, caducadas o reposiciones del proveedor)."
 )
 @RestController
@@ -35,7 +35,7 @@ public class ReceiptIncidentController {
     private final ReceiptIncidentService receiptIncidentService;
 
     @Operation(
-            summary = "Listar incidencias de una recepción",
+            summary = "List goods receipt incidents",
             description = """
                     Recupera el historial paginado (`page` comenzando en 1) de anomalías registradas en la recepción de mercancía especificada.
                     
@@ -51,7 +51,7 @@ public class ReceiptIncidentController {
     }
 
     @Operation(
-            summary = "Registrar nueva incidencia de recepción",
+            summary = "Create goods receipt incident",
             description = """
                     Levanta un reporte de incidencia sobre una partida recepcionada (`incidentType`: `missing`, `damaged`, `wrong_item`, `expired`, `other`).
                     
@@ -72,7 +72,7 @@ public class ReceiptIncidentController {
     }
 
     @Operation(
-            summary = "Resolver incidencia mediante reposición de mercancía",
+            summary = "Resolve incident with replacement",
             description = """
                     Liquida la incidencia (`resolved`) registrando el ingreso físico del producto de reposición entregado por el proveedor.
                     
@@ -92,7 +92,7 @@ public class ReceiptIncidentController {
     }
 
     @Operation(
-            summary = "Marcar incidencia como resuelta",
+            summary = "Mark incident as resolved",
             description = """
                     Cierra administrativamente la incidencia (`resolved`).
                     

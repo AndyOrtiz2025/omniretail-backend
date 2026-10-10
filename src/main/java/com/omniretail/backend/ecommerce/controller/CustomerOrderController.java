@@ -21,14 +21,14 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/customer/orders")
 @RequiredArgsConstructor
-@Tag(name = "Pedidos del cliente", description = "Historial de compras del cliente autenticado.")
+@Tag(name = "Customer orders", description = "Historial de compras del cliente autenticado.")
 public class CustomerOrderController {
 
     private final CustomerOrderService customerOrderService;
 
     @GetMapping
     @RequirePermission("customer.account.read")
-    @Operation(summary = "Consultar mis pedidos", description = "Devuelve únicamente los pedidos e-commerce del cliente autenticado.")
+    @Operation(summary = "List my orders", description = "Devuelve únicamente los pedidos e-commerce del cliente autenticado.")
     public PageResponse<CustomerOrderResponse> list(
             @PageableDefault(size = 20, sort = {"createdAt", "id"}, direction = Sort.Direction.DESC) Pageable pageable) {
         return customerOrderService.list(pageable);
@@ -36,7 +36,7 @@ public class CustomerOrderController {
 
     @GetMapping("/{id}")
     @RequirePermission("customer.account.read")
-    @Operation(summary = "Consultar detalle de mi pedido", description = "Devuelve las líneas, dirección y pago del pedido del cliente autenticado.")
+    @Operation(summary = "Get my order details", description = "Devuelve las líneas, dirección y pago del pedido del cliente autenticado.")
     public CustomerOrderDetailResponse getById(@PathVariable UUID id) {
         return customerOrderService.getById(id);
     }

@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Gestión de Clientes (Backoffice)",
+        name = "Customer administration",
         description = "Consulta y administración de clientes finales registrados en la tienda en línea o capturados desde puntos de venta."
 )
 @RestController
@@ -27,7 +27,7 @@ public class CustomerAdminController {
     private final CustomerAdminService customerAdminService;
 
     @Operation(
-            summary = "Listar clientes del tenant",
+            summary = "List customers",
             description = """
                     Recupera el padrón de clientes registrados en el tenant, permitiendo filtrar por su estado (`active`, `inactive`, `archived`).
                     
@@ -46,7 +46,7 @@ public class CustomerAdminController {
     }
 
     @Operation(
-            summary = "Obtener detalle de cliente por ID",
+            summary = "Get customer by ID",
             description = """
                     Recupera la ficha completa de un cliente por su identificador único (datos de contacto, direcciones registradas, histórico resumido de actividad).
                     

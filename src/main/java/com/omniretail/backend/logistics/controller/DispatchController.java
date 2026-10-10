@@ -22,7 +22,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Logística de Despacho y Salida (Dispatch)",
+        name = "Dispatch",
         description = "Entrega de bultos a transportistas, asignación de unidades de reparto, confirmación de salida de pedidos de clientes y transferencias entre sucursales."
 )
 @RestController
@@ -33,7 +33,7 @@ public class DispatchController {
     private final DispatchService dispatchService;
 
     @Operation(
-            summary = "Consultar cola de despachos pendientes",
+            summary = "List dispatch queue",
             description = """
                     Recupera el listado de paquetes embalados en espera de recolección por paquetería o asignación a vehículo de reparto.
                     
@@ -48,7 +48,7 @@ public class DispatchController {
     }
 
     @Operation(
-            summary = "Obtener detalle de despacho de una orden de cliente",
+            summary = "Get order dispatch details",
             description = """
                     Recupera los datos de entrega, dirección del cliente, transportista y paquetes listos para salir.
                     
@@ -64,7 +64,7 @@ public class DispatchController {
     }
 
     @Operation(
-            summary = "Obtener vista de preparación de despacho",
+            summary = "Get order dispatch readiness",
             description = """
                     Recupera el resumen consolidado de bultos, guías y validación de bultos previo a la entrega física al chofer o paquetería.
                     
@@ -80,7 +80,7 @@ public class DispatchController {
     }
 
     @Operation(
-            summary = "Confirmar despacho y salida de pedido de cliente",
+            summary = "Confirm order dispatch",
             description = """
                     Registra la entrega física del paquete al transportista (`transportMode`: `none`, `customer`, `own_fleet`, `third_party`), avanzando el pedido al estado `dispatched`.
                     
@@ -98,7 +98,7 @@ public class DispatchController {
     }
 
     @Operation(
-            summary = "Obtener detalle de despacho de transferencia entre sucursales",
+            summary = "Get transfer dispatch details",
             description = """
                     Recupera los bultos y datos del traslado físico de inventario listo para salir hacia otra sucursal.
                     
@@ -114,7 +114,7 @@ public class DispatchController {
     }
 
     @Operation(
-            summary = "Confirmar despacho y salida de transferencia de sucursal",
+            summary = "Confirm transfer dispatch",
             description = """
                     Confirma que el vehículo ha salido con la mercancía de traspaso, colocando el despacho en `dispatched` y la transferencia en estado `inTransit`.
                     

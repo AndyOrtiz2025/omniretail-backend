@@ -26,7 +26,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Consulta de Stock y Existencias",
+        name = "Inventory stock",
         description = "Monitoreo de niveles de stock en tiempo real, alertas de existencias bajas, disponibilidad de kits y consulta inter-sucursales."
 )
 @RestController
@@ -37,7 +37,7 @@ public class InventoryStockController {
     private final InventoryStockQueryService stockQueryService;
 
     @Operation(
-            summary = "Listar existencias de inventario con filtros avanzados",
+            summary = "List inventory stock",
             description = """
                     Recupera el listado paginado (`page` comenzando en 1) de productos y sus niveles de stock físico, reservado y disponible en la sucursal.
                     
@@ -67,7 +67,7 @@ public class InventoryStockController {
     }
 
     @Operation(
-            summary = "Consulta masiva (batch) de existencias",
+            summary = "Batch query inventory stock",
             description = """
                     Consulta en una sola petición el stock disponible para un listado múltiple de IDs de productos en una sucursal determinada. Optimizado para procesos de checkout y carga rápida de catálogo POS.
                     
@@ -82,7 +82,7 @@ public class InventoryStockController {
     }
 
     @Operation(
-            summary = "Calcular disponibilidad armable de un kit o combo",
+            summary = "Get kit availability",
             description = """
                     Determina cuántas unidades completas del kit pueden ensamblarse o venderse en la sucursal evaluando el stock disponible del componente más crítico (cuello de botella).
                     
@@ -98,7 +98,7 @@ public class InventoryStockController {
     }
 
     @Operation(
-            summary = "Consultar existencias cruzadas en otras sucursales",
+            summary = "List stock across other branches",
             description = """
                     Recupera el inventario disponible del mismo producto en todas las demás sucursales de la empresa, facilitando transferencias o venta omnicanal.
                     

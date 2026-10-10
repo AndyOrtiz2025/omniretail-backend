@@ -24,7 +24,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Devoluciones de Venta en POS",
+        name = "POS sale returns",
         description = "Validación de elegibilidad de tickets, procesamiento de devoluciones y reingreso de mercancía al stock."
 )
 @RestController
@@ -35,7 +35,7 @@ public class SaleReturnController {
     private final SaleReturnService service;
 
     @Operation(
-            summary = "Procesar devolución de artículos de una venta",
+            summary = "Create sale return",
             description = """
                     Ejecuta la devolución de una o varias partidas de un ticket de venta previamente cobrado: reincorpora los productos devueltos al almacén y registra el reembolso emitido.
                     
@@ -62,7 +62,7 @@ public class SaleReturnController {
     }
 
     @Operation(
-            summary = "Consultar elegibilidad de devolución por folio de ticket",
+            summary = "Get return eligibility by sale number",
             description = """
                     Verifica si una venta es apta para procesar devoluciones basándose en el número de documento/ticket, la sucursal y el límite temporal configurado en la política de reembolsos.
                     
@@ -83,7 +83,7 @@ public class SaleReturnController {
     }
 
     @Operation(
-            summary = "Listar devoluciones de una sucursal con paginación",
+            summary = "List branch sale returns",
             description = """
                     Recupera el historial paginado de todas las notas de crédito y devoluciones realizadas en la sucursal.
                     

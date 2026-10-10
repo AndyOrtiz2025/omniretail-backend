@@ -11,7 +11,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Tablero de Control y Métricas (Dashboard)",
+        name = "Admin dashboard",
         description = "Métricas consolidadas y KPIs operativos y financieros del negocio en tiempo real."
 )
 @RestController
@@ -22,7 +22,7 @@ public class DashboardAdminController {
     private final DashboardAdminService dashboardAdminService;
 
     @Operation(
-            summary = "Obtener resumen ejecutivo y KPIs del dashboard",
+            summary = "Get dashboard summary and KPIs",
             description = """
                     Recupera los indicadores clave de desempeño (KPIs) para la pantalla principal de administración: ventas del día, pedidos pendientes de despacho, alertas de stock mínimo y balance de actividad reciente.
                     

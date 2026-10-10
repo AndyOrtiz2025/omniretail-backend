@@ -24,7 +24,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Transferencias Físicas entre Sucursales",
+        name = "Inventory transfers",
         description = "Control del despacho en tránsito, recepción física y cancelación de envíos de inventario entre almacenes."
 )
 @RestController
@@ -35,7 +35,7 @@ public class InventoryTransferController {
     private final InventoryTransferService inventoryTransferService;
 
     @Operation(
-            summary = "Listar transferencias de inventario con paginación",
+            summary = "List inventory transfers",
             description = """
                     Recupera el listado paginado (`page` comenzando en 1) de órdenes de traspaso entre sucursales con filtros por almacén de origen (`sourceBranchId`), almacén de destino (`destinationBranchId`) y estado operativo (`status`: `preparing`, `inTransit`, `received`, `cancelled`).
                     
@@ -55,7 +55,7 @@ public class InventoryTransferController {
     }
 
     @Operation(
-            summary = "Obtener detalle de transferencia física por ID",
+            summary = "Get inventory transfer by ID",
             description = """
                     Recupera la información completa del traspaso: artículos enviados, cantidades, lotes/series asignados y estado de entrega.
                     
@@ -70,7 +70,7 @@ public class InventoryTransferController {
     }
 
     @Operation(
-            summary = "Cancelar orden de transferencia",
+            summary = "Cancel inventory transfer",
             description = """
                     Cancela el traspaso de mercancía y revierte el inventario apartado o en tránsito a la sucursal de origen.
                     
@@ -87,7 +87,7 @@ public class InventoryTransferController {
     }
 
     @Operation(
-            summary = "Registrar recepción de transferencia en destino",
+            summary = "Receive inventory transfer",
             description = """
                     Confirma el ingreso físico de la mercancía transferida en la sucursal de destino, incorporando formalmente el stock al balance disponible y registrando posibles diferencias.
                     

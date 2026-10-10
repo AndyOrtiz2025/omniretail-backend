@@ -27,7 +27,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Órdenes de Compra a Proveedores",
+        name = "Purchase orders",
         description = "Ciclo de vida de órdenes de compra de mercancía: cotización/borrador, envío, aprobación ejecutiva, seguimiento y cancelación."
 )
 @RestController
@@ -38,7 +38,7 @@ public class PurchaseOrderController {
     private final PurchaseOrderService purchaseOrderService;
 
     @Operation(
-            summary = "Listar órdenes de compra con paginación",
+            summary = "List purchase orders",
             description = """
                     Recupera el listado paginado de órdenes de compra con filtros combinados por sucursal de destino, proveedor y estado administrativo.
                     
@@ -63,7 +63,7 @@ public class PurchaseOrderController {
     }
 
     @Operation(
-            summary = "Obtener detalle completo de una orden de compra",
+            summary = "Get purchase order by ID",
             description = """
                     Recupera la orden de compra con su desglose de artículos, costos de compra pactados, cantidades solicitadas y costos sugeridos cuando se encuentra en estado `draft`.
                     
@@ -77,7 +77,7 @@ public class PurchaseOrderController {
     }
 
     @Operation(
-            summary = "Crear nueva orden de compra (Borrador)",
+            summary = "Create draft purchase order",
             description = """
                     Crea un registro de orden de compra en estado preliminar (`draft`) asignando proveedor, sucursal receptora y partidas.
                     
@@ -96,7 +96,7 @@ public class PurchaseOrderController {
     }
 
     @Operation(
-            summary = "Actualizar partidas o datos de la orden de compra",
+            summary = "Update purchase order",
             description = """
                     Modifica los productos, costos o condiciones de entrega de una orden en estado `draft`.
                     
@@ -115,7 +115,7 @@ public class PurchaseOrderController {
     }
 
     @Operation(
-            summary = "Enviar orden de compra para revisión",
+            summary = "Submit purchase order for approval",
             description = """
                     Avanza el estado de la orden de compra de `draft` a pendiente de aprobación (`pending_approval`), validando cantidades mínimas de compra (MOQ) y bloqueando ediciones posteriores.
                     
@@ -133,7 +133,7 @@ public class PurchaseOrderController {
     }
 
     @Operation(
-            summary = "Aprobar orden de compra",
+            summary = "Approve purchase order",
             description = """
                     Autoriza formalmente la orden de compra (`approved`), habilitándola para que el almacén pueda generar recepciones de mercancía física.
                     
@@ -151,7 +151,7 @@ public class PurchaseOrderController {
     }
 
     @Operation(
-            summary = "Cancelar orden de compra",
+            summary = "Cancel purchase order",
             description = """
                     Cancela una orden de compra (`cancelled`) con motivo justificado (`reason`), invalidando futuras recepciones asociadas.
                     

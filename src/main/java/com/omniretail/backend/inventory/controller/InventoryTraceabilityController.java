@@ -27,7 +27,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Trazabilidad de Lotes y Números de Serie",
+        name = "Inventory traceability",
         description = "Control de números de serie individuales, asignación y seguimiento de lotes con fecha de caducidad y alertas de expiración próxima."
 )
 @RestController
@@ -39,7 +39,7 @@ public class InventoryTraceabilityController {
     private final InventorySerialValidationService serialValidationService;
 
     @Operation(
-            summary = "Listar lotes disponibles con stock",
+            summary = "List available lots",
             description = """
                     Recupera los lotes con existencia positiva para un producto y sucursal, ordenados por fecha de vencimiento (FEFO) para despacho eficiente.
                     
@@ -57,7 +57,7 @@ public class InventoryTraceabilityController {
     }
 
     @Operation(
-            summary = "Listar números de serie disponibles",
+            summary = "List available serial numbers",
             description = """
                     Recupera los números de serie en stock físico disponibles para venta o asignación del producto especificado.
                     
@@ -76,7 +76,7 @@ public class InventoryTraceabilityController {
     }
 
     @Operation(
-            summary = "Validar números de serie escaneados",
+            summary = "Validate serial numbers",
             description = """
                     Comprueba en lote si una lista de números de serie ya existe o contiene repetidos para el producto indicado.
                     
@@ -93,7 +93,7 @@ public class InventoryTraceabilityController {
     }
 
     @Operation(
-            summary = "Consultar lotes próximos a vencer",
+            summary = "List expiring lots",
             description = """
                     Recupera el listado paginado (`page` comenzando en 1) de lotes cuya fecha de caducidad se encuentra dentro del rango de días estipulado (por defecto 30 días, entre 1 y 365) para prevenir pérdidas por vencimiento.
                     

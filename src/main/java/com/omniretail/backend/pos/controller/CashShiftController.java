@@ -20,7 +20,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Turnos de Caja POS",
+        name = "POS cash shifts",
         description = "Operaciones de apertura, consulta de estado y cierre de turno de caja (arqueo y corte) en terminales de punto de venta."
 )
 @RestController
@@ -31,7 +31,7 @@ public class CashShiftController {
     private final CashShiftService cashShiftService;
 
     @Operation(
-            summary = "Consultar turno de caja abierto",
+            summary = "Get current open cash shift",
             description = """
                     Verifica si el usuario autenticado tiene un turno de caja actualmente abierto en la sucursal especificada.
                     Retorna el turno activo o código 204 (No Content) si no existe turno vigente.
@@ -52,7 +52,7 @@ public class CashShiftController {
     }
 
     @Operation(
-            summary = "Abrir turno de caja",
+            summary = "Open cash shift",
             description = """
                     Inicia un nuevo turno de caja registrando el fondo inicial de efectivo y la sucursal correspondiente.
                     
@@ -68,7 +68,7 @@ public class CashShiftController {
     }
 
     @Operation(
-            summary = "Cerrar turno de caja (corte y arqueo)",
+            summary = "Close cash shift",
             description = """
                     Finaliza el turno de caja abierto, consolidando las ventas, registrando el dinero en efectivo contado físicamente y calculando sobrantes o faltantes.
                     

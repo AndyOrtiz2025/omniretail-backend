@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Auditoría de Cortes de Caja (Backoffice)",
+        name = "Cash shift administration",
         description = "Supervisión administrativa de turnos y arqueos de caja en puntos de venta físicos por sucursal."
 )
 @RestController
@@ -27,7 +27,7 @@ public class CashShiftAdminController {
     private final CashShiftAdminService cashShiftAdminService;
 
     @Operation(
-            summary = "Listar turnos de caja de sucursales",
+            summary = "List branch cash shifts",
             description = """
                     Recupera el historial de turnos de caja del tenant con filtros por sucursal y estado.
                     
@@ -48,7 +48,7 @@ public class CashShiftAdminController {
     }
 
     @Operation(
-            summary = "Obtener detalle y arqueo de turno de caja",
+            summary = "Get cash shift details",
             description = """
                     Recupera la auditoría desglosada de un turno de caja: saldo inicial, cobros por método de pago, retiros parciales, total esperado, monto declarado y faltante/sobrante.
                     

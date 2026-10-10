@@ -28,7 +28,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Unidades de Medida",
+        name = "Measurement units",
         description = "Administración de unidades métricas y comerciales para inventario, venta y empaque (kg, pieza, metro, etc.)."
 )
 @RestController
@@ -39,7 +39,7 @@ public class UnitController {
     private final UnitService unitService;
 
     @Operation(
-            summary = "Listar unidades de medida con paginación",
+            summary = "List measurement units",
             description = """
                     Recupera el listado paginado de unidades de medida configuradas en el tenant, permitiendo filtrar por estado.
                     
@@ -65,7 +65,7 @@ public class UnitController {
     }
 
     @Operation(
-            summary = "Obtener detalle de unidad de medida por ID",
+            summary = "Get measurement unit by ID",
             description = """
                     Recupera los datos de una unidad de medida por su identificador único (nombre, símbolo/abreviatura y estado).
                     
@@ -80,7 +80,7 @@ public class UnitController {
     }
 
     @Operation(
-            summary = "Crear nueva unidad de medida",
+            summary = "Create measurement unit",
             description = """
                     Registra una nueva unidad de medida en el catálogo (por ejemplo: PZ, KG, LTR, CJ).
                     
@@ -96,7 +96,7 @@ public class UnitController {
     }
 
     @Operation(
-            summary = "Actualizar unidad de medida existente",
+            summary = "Update measurement unit",
             description = """
                     Actualiza el nombre, abreviatura o descripción de una unidad de medida existente.
                     
@@ -113,7 +113,7 @@ public class UnitController {
     }
 
     @Operation(
-            summary = "Archivar o desactivar unidad de medida",
+            summary = "Archive measurement unit",
             description = """
                     Marca la unidad de medida como inactiva/archivada. Las conversiones y productos existentes conservan su histórico.
                     

@@ -21,7 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 /** Remitente Gmail del tenant. El tenant sale siempre del JWT; nunca de la ruta ni del body. */
 @Tag(
-        name = "Configuración de Servidor de Correo",
+        name = "Email sender configuration",
         description = "Gestión de credenciales de envío SMTP (Gmail) personalizadas por tenant para notificaciones operativas de pedidos y órdenes de compra."
 )
 @RestController
@@ -32,7 +32,7 @@ public class EmailSenderConfigController {
     private final EmailSenderConfigService emailSenderConfigService;
 
     @Operation(
-            summary = "Obtener configuración de remitente de correo",
+            summary = "Get email sender configuration",
             description = """
                     Recupera el estado de conexión y los parámetros del remitente configurado para el tenant (correo emisor, estado de verificación, fecha de última prueba).
                     
@@ -48,7 +48,7 @@ public class EmailSenderConfigController {
     }
 
     @Operation(
-            summary = "Guardar configuración de correo saliente",
+            summary = "Save email sender configuration",
             description = """
                     Configura las credenciales de correo (Gmail con Contraseña de Aplicación) para el envío automatizado de correos electrónicos transaccionales del tenant.
                     
@@ -63,7 +63,7 @@ public class EmailSenderConfigController {
     }
 
     @Operation(
-            summary = "Enviar correo de prueba",
+            summary = "Send test email",
             description = """
                     Envía un mensaje de prueba a un destinatario objetivo para verificar la validez de las credenciales SMTP configuradas y la conectividad con el servidor de correo.
                     
@@ -78,7 +78,7 @@ public class EmailSenderConfigController {
     }
 
     @Operation(
-            summary = "Desconectar y eliminar configuración de correo",
+            summary = "Delete email sender configuration",
             description = """
                     Elimina las credenciales de envío de correo del tenant, desactivando el remitente personalizado y retornando al comportamiento predeterminado del sistema.
                     

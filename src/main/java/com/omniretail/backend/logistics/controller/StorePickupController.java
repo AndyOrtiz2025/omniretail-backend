@@ -14,7 +14,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Entrega en Tienda (Store Pickup)",
+        name = "Store pickup",
         description = "Entrega de pedidos recogidos en tienda física por el cliente (Click & Collect), validación de identidad y cierre de entrega."
 )
 @RestController
@@ -25,7 +25,7 @@ public class StorePickupController {
     private final StorePickupService storePickupService;
 
     @Operation(
-            summary = "Registrar entrega de pedido en mostrador a cliente",
+            summary = "Confirm store pickup",
             description = """
                     Confirma que el cliente ha recibido en mano su paquete en la sucursal física seleccionada, finalizando el pedido con estado `delivered`.
                     

@@ -11,7 +11,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Reportes y Analítica",
+        name = "Reports and analytics",
         description = "Generación y consulta de reportes consolidados comerciales, de ventas y de rendimiento para la toma de decisiones."
 )
 @RestController
@@ -22,7 +22,7 @@ public class ReportAdminController {
     private final ReportAdminService reportAdminService;
 
     @Operation(
-            summary = "Obtener datos consolidados de reportes",
+            summary = "Get consolidated report data",
             description = """
                     Recupera el dataset estadístico para la generación de gráficas y reportes ejecutivos (ventas por sucursal, productos más vendidos, métodos de cobro y tendencias).
                     

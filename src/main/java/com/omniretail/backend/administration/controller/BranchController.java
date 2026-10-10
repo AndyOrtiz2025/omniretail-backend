@@ -30,7 +30,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/administration/branches")
 @RequiredArgsConstructor
-@Tag(name = "Sucursales", description = "Gestión de sucursales físicas y almacenes del negocio.")
+@Tag(name = "Branches", description = "Gestión de sucursales físicas y almacenes del negocio.")
 public class BranchController {
 
     private final BranchService branchService;
@@ -38,7 +38,7 @@ public class BranchController {
     @RequirePermission("admin.branches.read")
     @GetMapping
     @Operation(
-            summary = "Listar sucursales paginadas",
+            summary = "List branches",
             description = "Consulta el listado paginado de sucursales (`page` comenzando en 1) con filtro opcional por estado operativo (`active`, `inactive`, `archived`).")
     public PageResponse<BranchResponse> list(
             @RequestParam(required = false) BranchStatus status, @PageableDefault(size = 20) Pageable pageable) {
@@ -48,7 +48,7 @@ public class BranchController {
     @RequirePermission("admin.branches.read")
     @GetMapping("/active")
     @Operation(
-            summary = "Listar sucursales activas",
+            summary = "List active branches",
             description = "Devuelve únicamente las sucursales y almacenes con estado activo para selectores de interfaz y operaciones.")
     public List<BranchResponse> listActive() {
         return branchService.listActiveBranches();
@@ -57,7 +57,7 @@ public class BranchController {
     @RequirePermission("admin.branches.read")
     @GetMapping("/{id}")
     @Operation(
-            summary = "Consultar sucursal por ID",
+            summary = "Get branch by ID",
             description = "Obtiene los detalles completos de una sucursal por su identificador único dentro del negocio.")
     public BranchResponse getById(@PathVariable UUID id) {
         return branchService.getBranchById(id);
@@ -67,7 +67,7 @@ public class BranchController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(
-            summary = "Crear nueva sucursal",
+            summary = "Create branch",
             description = "Registra una nueva sucursal o almacén en el negocio. Requiere el permiso `admin.branches.manage`.")
     public BranchResponse create(@Valid @RequestBody CreateBranchRequest request) {
         return branchService.createBranch(request);
@@ -76,7 +76,7 @@ public class BranchController {
     @RequirePermission("admin.branches.manage")
     @PutMapping("/{id}")
     @Operation(
-            summary = "Actualizar sucursal",
+            summary = "Update branch",
             description = "Modifica los datos comerciales, dirección o tipo de una sucursal existente.")
     public BranchResponse update(@PathVariable UUID id, @Valid @RequestBody UpdateBranchRequest request) {
         return branchService.updateBranch(id, request);
@@ -86,7 +86,7 @@ public class BranchController {
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Operation(
-            summary = "Archivar sucursal",
+            summary = "Archive branch",
             description = "Aplica borrado lógico archivando la sucursal. No elimina el historial de operaciones pasadas.")
     public void delete(@PathVariable UUID id) {
         branchService.archiveBranch(id);

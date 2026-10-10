@@ -22,7 +22,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Parámetros y Umbrales de Inventario",
+        name = "Inventory settings",
         description = "Configuración de parámetros operativos por producto y sucursal: stock mínimo (`minStock`), punto de reorden (`reorderPoint`) y ubicación por defecto (`defaultLocationId`)."
 )
 @RestController
@@ -33,7 +33,7 @@ public class InventorySettingsController {
     private final InventorySettingsService inventorySettingsService;
 
     @Operation(
-            summary = "Listar configuraciones y umbrales de inventario",
+            summary = "List inventory settings",
             description = """
                     Recupera el listado paginado de parámetros y umbrales de inventario (`minStock`, `reorderPoint`, `defaultLocationId`) configurados en una sucursal.
                     
@@ -57,7 +57,7 @@ public class InventorySettingsController {
     }
 
     @Operation(
-            summary = "Obtener configuración de inventario de un producto",
+            summary = "Get product inventory settings",
             description = """
                     Recupera los parámetros de stock mínimo (`minStock`), punto de reorden (`reorderPoint`) y ubicación por defecto (`defaultLocationId`) configurados para un producto en una sucursal específica (o `204 No Content` si no tiene configuración explícita).
                     
@@ -76,7 +76,7 @@ public class InventorySettingsController {
     }
 
     @Operation(
-            summary = "Guardar o actualizar umbrales de inventario",
+            summary = "Upsert product inventory settings",
             description = """
                     Configura o actualiza (upsert) el stock mínimo (`minStock`), punto de reorden (`reorderPoint`) y ubicación por defecto (`defaultLocationId`) del producto en la sucursal indicada.
                     

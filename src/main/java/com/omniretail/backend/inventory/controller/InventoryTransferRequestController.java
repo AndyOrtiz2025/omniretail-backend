@@ -28,7 +28,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Solicitudes de Transferencia de Stock",
+        name = "Inventory transfer requests",
         description = "Flujo de peticiones de reabastecimiento entre sucursales: creación de solicitud, revisión, aprobación y rechazo."
 )
 @RestController
@@ -39,7 +39,7 @@ public class InventoryTransferRequestController {
     private final InventoryTransferService inventoryTransferService;
 
     @Operation(
-            summary = "Crear solicitud de transferencia entre sucursales",
+            summary = "Create transfer request",
             description = """
                     Genera una petición formal de traspaso de mercancía desde una sucursal proveedora hacia la sucursal solicitante.
                     
@@ -56,7 +56,7 @@ public class InventoryTransferRequestController {
     }
 
     @Operation(
-            summary = "Listar solicitudes de transferencia con paginación",
+            summary = "List transfer requests",
             description = """
                     Recupera el listado paginado (`page` comenzando en 1) de solicitudes de reabastecimiento entre tiendas con filtros por sucursal solicitante (`requestingBranchId`), sucursal origen (`sourceBranchId`) y estado operativo (`status`: `requested`, `approved`, `rejected`, `cancelled`).
                     
@@ -76,7 +76,7 @@ public class InventoryTransferRequestController {
     }
 
     @Operation(
-            summary = "Aprobar solicitud de transferencia",
+            summary = "Approve transfer request",
             description = """
                     Aprueba formalmente la solicitud de traspaso y genera la orden de transferencia de inventario en tránsito.
                     
@@ -93,7 +93,7 @@ public class InventoryTransferRequestController {
     }
 
     @Operation(
-            summary = "Rechazar solicitud de transferencia",
+            summary = "Reject transfer request",
             description = """
                     Rechaza la petición de reabastecimiento con motivo justificado (falta de existencias en origen, capacidad logística insuficiente, etc.).
                     
@@ -110,7 +110,7 @@ public class InventoryTransferRequestController {
     }
 
     @Operation(
-            summary = "Cancelar solicitud de transferencia",
+            summary = "Cancel transfer request",
             description = """
                     Cancela una solicitud de transferencia previamente emitida por la sucursal solicitante antes de su aprobación.
                     

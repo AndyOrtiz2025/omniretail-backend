@@ -29,7 +29,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Logística de Recolección (Picking)",
+        name = "Picking",
         description = "Gestión de tareas de surtido de pedidos en almacén: cola de órdenes, asignación de recolectores, registro de items surtidos, incidencias y finalización."
 )
 @RestController
@@ -40,7 +40,7 @@ public class PickingController {
     private final PickingService pickingService;
 
     @Operation(
-            summary = "Consultar cola de tareas de picking en sucursal",
+            summary = "List picking queue",
             description = """
                     Recupera las órdenes de pedidos en espera de recolección física en la sucursal indicada.
                     
@@ -55,7 +55,7 @@ public class PickingController {
     }
 
     @Operation(
-            summary = "Obtener detalle y ruta de recolección de una orden",
+            summary = "Get picking order by ID",
             description = """
                     Recupera el detalle de la tarea de picking: artículos a surtir, pasillos y racks sugeridos y progreso de recolección.
                     
@@ -71,7 +71,7 @@ public class PickingController {
     }
 
     @Operation(
-            summary = "Asignar tarea de picking al operador actual",
+            summary = "Assign picking order",
             description = """
                     Bloquea la orden de recolección asignándola al usuario autenticado para evitar doble surtido simultáneo.
                     
@@ -87,7 +87,7 @@ public class PickingController {
     }
 
     @Operation(
-            summary = "Liberar tarea de picking asignada",
+            summary = "Release picking order",
             description = """
                     Desasigna la orden de recolección con motivo justificado para regresarla a la cola general de recolectores.
                     
@@ -105,7 +105,7 @@ public class PickingController {
     }
 
     @Operation(
-            summary = "Actualizar progreso de recolección de una partida",
+            summary = "Update picking item progress",
             description = """
                     Registra la cantidad recolectada de un artículo específico, validando el escaneo de código de barras, lote o serie.
                     
@@ -124,7 +124,7 @@ public class PickingController {
     }
 
     @Operation(
-            summary = "Reportar incidencia durante la recolección",
+            summary = "Report picking incident",
             description = """
                     Registra una anomalía en piso (`incidentType`: `missing`, `damaged`, `invalid_lot_serial`, `quantity_difference`, `location_empty`).
                     
@@ -143,7 +143,7 @@ public class PickingController {
     }
 
     @Operation(
-            summary = "Resolver incidencia de recolección",
+            summary = "Resolve picking incident",
             description = """
                     Marca como resuelta la incidencia de recolección permitiendo continuar el flujo de surtido.
                     
@@ -161,7 +161,7 @@ public class PickingController {
     }
 
     @Operation(
-            summary = "Finalizar recolección y enviar a empaque",
+            summary = "Complete picking",
             description = """
                     Concluye la recolección física de la orden y transfiere los artículos consolidados a la estación de empaque (packing).
                     

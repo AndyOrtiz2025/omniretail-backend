@@ -20,7 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 @Tag(
-        name = "Configuración de E-commerce",
+        name = "E-commerce configuration",
         description = "Administración de parámetros del storefront en línea (activación, datos de tienda, contacto, checkout/seguimiento de invitados, métodos de entrega y pago permitidos, sucursal por defecto y logotipo)."
 )
 @RestController
@@ -31,7 +31,7 @@ public class EcommerceConfigController {
     private final EcommerceConfigService ecommerceConfigService;
 
     @Operation(
-            summary = "Obtener configuración de tienda en línea",
+            summary = "Get e-commerce configuration",
             description = """
                     Recupera los parámetros de configuración del canal de comercio electrónico del tenant (`enabled`, `storeName`, `logoUrl`, `contactPhone`, `contactEmail`, `requireAccountForCheckout`, `guestTrackingEnabled`, `allowedDeliveryMethods`, `allowedPaymentMethods`, `defaultBranchId`).
                     
@@ -49,7 +49,7 @@ public class EcommerceConfigController {
     }
 
     @Operation(
-            summary = "Actualizar configuración de tienda en línea",
+            summary = "Update e-commerce configuration",
             description = """
                     Actualiza la configuración operativa del canal de comercio electrónico definida en `SaveEcommerceConfigRequest`:
                     * `enabled`: Estado de habilitación de la tienda en línea.
@@ -73,7 +73,7 @@ public class EcommerceConfigController {
     }
 
     @Operation(
-            summary = "Subir logotipo del storefront",
+            summary = "Upload storefront logo",
             description = """
                     Carga un archivo de imagen (JPEG, PNG o WebP, máximo 5 MB) para ser utilizado como logotipo (`logoUrl`) en la tienda en línea.
                     
@@ -95,7 +95,7 @@ public class EcommerceConfigController {
     }
 
     @Operation(
-            summary = "Eliminar logotipo del storefront",
+            summary = "Delete storefront logo",
             description = """
                     Elimina el logotipo personalizado previamente subido para el storefront del tenant (`logoUrl`).
                     

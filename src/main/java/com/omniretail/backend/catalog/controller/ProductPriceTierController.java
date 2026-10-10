@@ -18,7 +18,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Precios por Escala y Mayoreo",
+        name = "Product price tiers",
         description = "Configuración de precios escalonados por volumen y reglas de mayoreo por producto."
 )
 @RestController
@@ -29,7 +29,7 @@ public class ProductPriceTierController {
     private final ProductSalesPriceTierService service;
 
     @Operation(
-            summary = "Listar niveles de precios por volumen de un producto",
+            summary = "List product price tiers",
             description = """
                     Recupera los rangos de volumen y precios especiales (mayoreo, distribuidor) configurados para el producto indicado.
                     
@@ -41,7 +41,7 @@ public class ProductPriceTierController {
     public List<ProductSalesPriceTierResponse> list(@PathVariable UUID productId) { return service.list(productId); }
 
     @Operation(
-            summary = "Reemplazar niveles de precios por volumen de un producto",
+            summary = "Replace product price tiers",
             description = """
                     Sobrescribe la matriz de precios escalonados (cantidad mínima y precio unitario) para el producto especificado.
                     

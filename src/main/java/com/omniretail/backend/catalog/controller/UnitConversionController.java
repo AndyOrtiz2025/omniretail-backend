@@ -27,7 +27,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Conversiones de Unidades",
+        name = "Unit conversions",
         description = "Configuración de factores de equivalencia y conversión entre diferentes unidades de medida (globales o específicas por producto)."
 )
 @RestController
@@ -38,7 +38,7 @@ public class UnitConversionController {
     private final UnitConversionService unitConversionService;
 
     @Operation(
-            summary = "Listar conversiones de unidades con paginación",
+            summary = "List unit conversions",
             description = """
                     Recupera los factores de conversión registrados con soporte de filtrado por producto específico y unidades origen/destino.
                     
@@ -68,7 +68,7 @@ public class UnitConversionController {
     }
 
     @Operation(
-            summary = "Obtener detalle de conversión por ID",
+            summary = "Get unit conversion by ID",
             description = """
                     Recupera los detalles del factor multiplicador o divisor configurado entre dos unidades de medida.
                     
@@ -83,7 +83,7 @@ public class UnitConversionController {
     }
 
     @Operation(
-            summary = "Crear nuevo factor de conversión",
+            summary = "Create unit conversion",
             description = """
                     Registra una nueva relación de equivalencia entre unidades de medida (ejemplo: 1 Caja = 24 Piezas).
                     
@@ -100,7 +100,7 @@ public class UnitConversionController {
     }
 
     @Operation(
-            summary = "Actualizar factor de conversión",
+            summary = "Update unit conversion",
             description = """
                     Actualiza el factor numérico de equivalencia o las unidades relacionadas.
                     
@@ -117,7 +117,7 @@ public class UnitConversionController {
     }
 
     @Operation(
-            summary = "Eliminar factor de conversión",
+            summary = "Delete unit conversion",
             description = """
                     Elimina la relación de conversión configurada.
                     

@@ -24,7 +24,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Definición de Atributos",
+        name = "Attribute definitions",
         description = "Configuración de atributos dinámicos para productos y variantes (talla, color, material, especificaciones técnicas)."
 )
 @RestController
@@ -35,7 +35,7 @@ public class AttributeDefinitionController {
     private final AttributeDefinitionService definitionService;
 
     @Operation(
-            summary = "Listar definiciones de atributos con paginación",
+            summary = "List attribute definitions",
             description = """
                     Recupera el catálogo paginado (`page` comenzando en 1) de tipos de atributos disponibles para asociar a productos (`status`: `active`, `archived`).
                     
@@ -50,7 +50,7 @@ public class AttributeDefinitionController {
     }
 
     @Operation(
-            summary = "Crear nueva definición de atributo",
+            summary = "Create attribute definition",
             description = """
                     Crea un nuevo tipo de atributo dinámico (`name`, `code`, `dataType`: `TEXT`, `NUMBER`, `BOOLEAN`, `unitId` opcional, `required`).
                     
@@ -67,7 +67,7 @@ public class AttributeDefinitionController {
     }
 
     @Operation(
-            summary = "Actualizar definición de atributo",
+            summary = "Update attribute definition",
             description = """
                     Modifica el nombre o configuración del atributo dinámico.
                     
@@ -84,7 +84,7 @@ public class AttributeDefinitionController {
     }
 
     @Operation(
-            summary = "Archivar o desactivar definición de atributo",
+            summary = "Archive attribute definition",
             description = """
                     Archiva la definición del atributo impidiendo su asignación a nuevos productos.
                     

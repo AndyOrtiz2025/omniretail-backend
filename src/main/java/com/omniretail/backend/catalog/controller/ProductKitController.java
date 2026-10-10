@@ -18,7 +18,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Componentes de Kits y Combos",
+        name = "Product kits",
         description = "Administración de fórmulas y composición de artículos tipo Kit o Bundle (productos y cantidades integrantes)."
 )
 @RestController
@@ -29,7 +29,7 @@ public class ProductKitController {
     private final ProductKitService service;
 
     @Operation(
-            summary = "Listar componentes de un kit o combo",
+            summary = "List kit items",
             description = """
                     Recupera el desglose de productos que componen el kit junto con sus cantidades asociadas.
                     
@@ -41,7 +41,7 @@ public class ProductKitController {
     public List<ProductKitComponentResponse> list(@PathVariable UUID productId) { return service.list(productId); }
 
     @Operation(
-            summary = "Reemplazar componentes de un kit o combo",
+            summary = "Replace kit items",
             description = """
                     Sobrescribe la composición del kit con los nuevos productos y cantidades provistos en la solicitud.
                     

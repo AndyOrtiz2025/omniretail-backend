@@ -25,7 +25,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Logística de Empaque (Packing)",
+        name = "Packing",
         description = "Estación de embalaje y preparación de paquetes: acondicionamiento de bultos, pesaje, generación e impresión de guías y sellado de pedidos."
 )
 @RestController
@@ -36,7 +36,7 @@ public class PackingController {
     private final PackingService packingService;
 
     @Operation(
-            summary = "Consultar cola de paquetes pendientes de empaque",
+            summary = "List packing queue",
             description = """
                     Recupera la lista de órdenes recolectadas que se encuentran en espera de empaque en la sucursal.
                     
@@ -51,7 +51,7 @@ public class PackingController {
     }
 
     @Operation(
-            summary = "Obtener detalle de empaque por ID",
+            summary = "Get packing order by ID",
             description = """
                     Recupera los artículos a embalar, dimensiones requeridas, empaque sugerido y estado de avance.
                     
@@ -67,7 +67,7 @@ public class PackingController {
     }
 
     @Operation(
-            summary = "Guardar preparación física y medidas del paquete",
+            summary = "Save package preparation",
             description = """
                     Registra el número de bultos/cajas, peso total en kilogramos y dimensiones volumétricas de los paquetes preparados.
                     
@@ -85,7 +85,7 @@ public class PackingController {
     }
 
     @Operation(
-            summary = "Generar etiqueta de paquetería",
+            summary = "Generate shipping label",
             description = """
                     Genera el código y datos de la etiqueta de envío con el transportista asignado.
                     
@@ -103,7 +103,7 @@ public class PackingController {
     }
 
     @Operation(
-            summary = "Registrar impresión física de etiqueta",
+            summary = "Mark shipping label as printed",
             description = """
                     Confirma que la guía física ha sido impresa y adherida al bulto exterior.
                     
@@ -121,7 +121,7 @@ public class PackingController {
     }
 
     @Operation(
-            summary = "Finalizar empaque y sellar paquete",
+            summary = "Complete packing",
             description = """
                     Concluye el proceso de embalaje, cambiando el estado del paquete a listo para despacho o recolección.
                     

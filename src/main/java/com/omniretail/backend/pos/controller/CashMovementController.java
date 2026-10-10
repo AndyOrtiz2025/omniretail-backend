@@ -19,7 +19,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Movimientos de Caja (Entradas y Retiros)",
+        name = "Cash movements",
         description = "Registro de ingresos y egresos extraordinarios de efectivo en la gaveta del cajero (retiros parciales, gastos menores, aportes)."
 )
 @RestController
@@ -30,7 +30,7 @@ public class CashMovementController {
     private final CashMovementService service;
 
     @Operation(
-            summary = "Registrar movimiento manual de efectivo",
+            summary = "Create manual cash movement",
             description = """
                     Registra un ingreso o egreso de dinero en la caja en turno con motivo y justificación (ej. retiro para depósito bancario, pago a proveedor menor).
                     
@@ -46,7 +46,7 @@ public class CashMovementController {
     }
 
     @Operation(
-            summary = "Listar movimientos de efectivo de un turno",
+            summary = "List shift cash movements",
             description = """
                     Recupera el listado de ingresos y retiros de efectivo realizados en el turno de caja especificado.
                     
