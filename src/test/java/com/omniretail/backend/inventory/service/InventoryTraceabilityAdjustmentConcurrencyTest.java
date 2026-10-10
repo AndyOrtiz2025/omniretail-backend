@@ -77,6 +77,37 @@ class InventoryTraceabilityAdjustmentConcurrencyTest {
     }
 
     @Test
+    void concurrentAdjustmentsWithTheSameSnapshotRejectTheLoserAsStale() throws Exception {
+        Fixture fixture = createFixture(false, false);
+        authenticate(fixture);
+        insertAggregate(fixture, fixture.firstLocationId(), "1.000");
+        InventoryAdjustmentRequest counted = requestWithExpected(
+                fixture, fixture.firstLocationId(), InventoryAdjustmentType.out, "1.000");
+
+        List<Outcome> outcomes = runConcurrently(counted, counted);
+
+        assertOneWinner(outcomes, "COUNT_SNAPSHOT_STALE");
+        assertThat(aggregateQuantity(fixture, fixture.firstLocationId()))
+                .isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(movementCount(fixture)).isOne();
+    }
+
+    @Test
+    void concurrentInboundAdjustmentsOnMissingBalanceRejectTheSecondSnapshot() throws Exception {
+        Fixture fixture = createFixture(false, false);
+        authenticate(fixture);
+        InventoryAdjustmentRequest counted = requestWithExpected(
+                fixture, fixture.firstLocationId(), InventoryAdjustmentType.in, "0");
+
+        List<Outcome> outcomes = runConcurrently(counted, counted);
+
+        assertOneWinner(outcomes, "COUNT_SNAPSHOT_STALE");
+        assertThat(aggregateQuantity(fixture, fixture.firstLocationId()))
+                .isEqualByComparingTo(BigDecimal.ONE);
+        assertThat(movementCount(fixture)).isOne();
+    }
+
+    @Test
     void concurrentLotOutAllowsOneWinnerAndLotNeverGoesNegative() throws Exception {
         Fixture fixture = createFixture(true, false);
         authenticate(fixture);
@@ -266,6 +297,17 @@ class InventoryTraceabilityAdjustmentConcurrencyTest {
                 fixture.branchId(), fixture.productId(), type, BigDecimal.ONE,
                 "Ajuste concurrente", "MANUAL_ADJUSTMENT", UUID.randomUUID(), locationId,
                 lotId, lotNumber, null, serialNumbers);
+    }
+
+    private InventoryAdjustmentRequest requestWithExpected(
+            Fixture fixture,
+            UUID locationId,
+            InventoryAdjustmentType type,
+            String expectedQuantity) {
+        return new InventoryAdjustmentRequest(
+                fixture.branchId(), fixture.productId(), type, BigDecimal.ONE,
+                "Ajuste concurrente", "count_correction", UUID.randomUUID(), locationId,
+                null, null, null, List.of(), new BigDecimal(expectedQuantity));
     }
 
     private void insertAggregate(Fixture fixture, UUID locationId, String quantity) {

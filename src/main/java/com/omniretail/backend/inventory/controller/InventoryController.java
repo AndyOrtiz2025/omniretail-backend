@@ -45,7 +45,9 @@ public class InventoryController {
     })
     public PageResponse<InventoryBalanceResponse> listBalances(
             @RequestParam UUID branchId,
+            @RequestParam(required = false) UUID productId,
+            @RequestParam(name = "size", required = false) Integer requestedSize,
             @Parameter(hidden = true) Pageable pageable) {
-        return inventoryService.listBalances(branchId, pageable);
+        return inventoryService.listBalances(branchId, productId, pageable, requestedSize);
     }
 }

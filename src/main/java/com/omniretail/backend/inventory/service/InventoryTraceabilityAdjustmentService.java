@@ -93,7 +93,8 @@ public class InventoryTraceabilityAdjustmentService {
                     request.referenceType(),
                     request.referenceId(),
                     null,
-                    actor.userId()));
+                    actor.userId(),
+                    request.expectedQuantity()));
             return InventoryMovementResponse.from(movement);
         }
         Location location = requireLocation(tenantId, request.branchId(), request.locationId());
@@ -101,6 +102,8 @@ public class InventoryTraceabilityAdjustmentService {
 
         InventoryBalance balance = lockAggregateBalance(
                 tenantId, request.branchId(), product.getId(), request.locationId(), request.type());
+        InventoryQuantityPrecondition.requireExpectedQuantity(
+                request.expectedQuantity(), balance.getQuantity());
         ensureAggregateAvailable(balance, request.quantity(), request.type());
 
         InventoryLot lot = resolveLot(tenantId, product, request, trace);

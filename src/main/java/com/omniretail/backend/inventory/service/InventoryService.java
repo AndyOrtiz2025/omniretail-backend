@@ -15,6 +15,7 @@ import com.omniretail.backend.inventory.dto.InventoryMovementDisplayType;
 import com.omniretail.backend.inventory.dto.InventoryMovementListDto;
 import com.omniretail.backend.inventory.dto.InventoryMovementPageResponse;
 import com.omniretail.backend.inventory.dto.InventoryMovementSummaryDto;
+import com.omniretail.backend.inventory.entity.InventoryBalance;
 import com.omniretail.backend.inventory.entity.InventoryMovement;
 import com.omniretail.backend.inventory.entity.InventoryMovementType;
 import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
@@ -73,16 +74,32 @@ public class InventoryService {
 
     public PageResponse<InventoryBalanceResponse> listBalances(
             UUID branchId, Pageable pageable) {
+        return listBalances(branchId, null, pageable);
+    }
+
+    public PageResponse<InventoryBalanceResponse> listBalances(
+            UUID branchId, UUID productId, Pageable pageable) {
+        return listBalances(branchId, productId, pageable, null);
+    }
+
+    public PageResponse<InventoryBalanceResponse> listBalances(
+            UUID branchId, UUID productId, Pageable pageable, Integer requestedSize) {
         AuthenticatedUser actor = currentUser.require();
         UUID tenantId = actor.tenantId();
         tenantCapabilityGuard.ensureTenantCapability(tenantId, SaasCapability.inventory);
         validateBranch(tenantId, branchId);
         requireBranchAccess(branchAccessResolver.resolve(actor), branchId);
+        if (productId != null) {
+            validateProduct(tenantId, productId);
+        }
 
-        return PageResponse.from(
-                inventoryBalanceRepository.findByTenantIdAndBranchId(
-                        tenantId, branchId, pageable),
-                InventoryBalanceResponse::from);
+        Pageable safePageable = balancePageable(pageable, requestedSize);
+        Page<InventoryBalance> balances = productId == null
+                ? inventoryBalanceRepository.findByTenantIdAndBranchId(
+                        tenantId, branchId, safePageable)
+                : inventoryBalanceRepository.findByTenantIdAndBranchIdAndProductId(
+                        tenantId, branchId, productId, safePageable);
+        return PageResponse.from(balances, InventoryBalanceResponse::from);
     }
 
     public InventoryMovementPageResponse searchMovements(
@@ -221,6 +238,39 @@ public class InventoryService {
         return PageRequest.of(
                 Math.max(pageable.getPageNumber(), 0),
                 Math.min(Math.max(pageable.getPageSize(), 1), 100),
+                sort);
+    }
+
+    private static Pageable balancePageable(Pageable pageable, Integer requestedSize) {
+        Set<String> supported = Set.of(
+                "id", "productId", "locationId", "quantity", "reservedQuantity",
+                "createdAt", "updatedAt");
+        pageable.getSort().forEach(order -> {
+            if (!supported.contains(order.getProperty())) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "INVENTORY_BALANCE_SORT_INVALID",
+                        "El ordenamiento de balances no admite el campo solicitado.");
+            }
+        });
+        int pageSize = requestedSize == null ? pageable.getPageSize() : requestedSize;
+        if (pageSize < 1 || pageSize > 2000) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "INVENTORY_BALANCE_PAGE_SIZE_INVALID",
+                    "El tamano de pagina debe estar entre 1 y 2000.");
+        }
+        Sort sort = pageable.getSort().isUnsorted()
+                ? Sort.by(
+                        Sort.Order.asc("productId"),
+                        Sort.Order.asc("locationId"),
+                        Sort.Order.asc("id"))
+                : pageable.getSort().getOrderFor("id") == null
+                        ? pageable.getSort().and(Sort.by(Sort.Order.asc("id")))
+                        : pageable.getSort();
+        return PageRequest.of(
+                Math.max(pageable.getPageNumber(), 0),
+                pageSize,
                 sort);
     }
 

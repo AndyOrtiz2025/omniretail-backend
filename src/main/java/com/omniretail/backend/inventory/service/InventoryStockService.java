@@ -11,6 +11,7 @@ import com.omniretail.backend.inventory.entity.InventoryMovementType;
 import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
 import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
+import jakarta.persistence.EntityManager;
 import java.math.BigDecimal;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -30,6 +31,7 @@ public class InventoryStockService {
     private final InventoryMovementRepository inventoryMovementRepository;
     private final LocationRepository locationRepository;
     private final InventoryOperationalLocationService operationalLocations;
+    private final EntityManager entityManager;
 
     @Transactional
     public InventoryMovement deductStock(
@@ -123,6 +125,7 @@ public class InventoryStockService {
                         command.tenantId(), command.branchId(), command.productId())
                 .orElseThrow(() -> new IllegalStateException(
                         "No se pudo inicializar el balance de inventario."));
+        refreshLockedBalance(balance);
 
         BigDecimal quantityBefore = balance.getQuantity();
         balance.add(command.qty());
@@ -161,6 +164,7 @@ public class InventoryStockService {
                         command.tenantId(), command.branchId(), command.productId(), locationId)
                 .orElseThrow(() -> new IllegalStateException(
                         "No se pudo inicializar el balance de inventario de la ubicacion."));
+        refreshLockedBalance(balance);
 
         BigDecimal quantityBefore = balance.getQuantity();
         balance.add(command.qty());
@@ -377,12 +381,22 @@ public class InventoryStockService {
             UUID branchId,
             UUID productId,
             InventoryOperationalLocationService.OperationalLocation operational) {
-        if (operational.locationId() == null) {
-            return inventoryBalanceRepository.findByTenantIdAndBranchIdAndProductIdAndLocationIdIsNull(
-                    tenantId, branchId, productId);
-        }
-        return inventoryBalanceRepository.findByTenantIdAndBranchIdAndProductIdAndLocationId(
-                tenantId, branchId, productId, operational.locationId());
+        java.util.Optional<InventoryBalance> locked = operational.locationId() == null
+                ? inventoryBalanceRepository.findByTenantIdAndBranchIdAndProductIdAndLocationIdIsNull(
+                        tenantId, branchId, productId)
+                : inventoryBalanceRepository.findByTenantIdAndBranchIdAndProductIdAndLocationId(
+                        tenantId, branchId, productId, operational.locationId());
+        locked.ifPresent(this::refreshLockedBalance);
+        return locked;
+    }
+
+    /**
+     * La politica operativa puede haber cargado esta entidad antes de que el query pesimista obtuviera
+     * el lock. En este punto aun no hay cambios pendientes sobre el balance, por lo que refrescar la misma
+     * fila bloqueada conserva quantity y reservedQuantity confirmados por la transaccion anterior.
+     */
+    private void refreshLockedBalance(InventoryBalance balance) {
+        entityManager.refresh(balance);
     }
 
     private InventoryBalance requireDefaultBalance(

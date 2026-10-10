@@ -16,4 +16,33 @@ public record InventoryInboundCommand(
         String referenceType,
         UUID referenceId,
         UUID referenceLineId,
-        UUID actorUserId) {}
+        UUID actorUserId,
+        BigDecimal expectedQuantity) {
+
+    public InventoryInboundCommand(
+            UUID tenantId,
+            UUID branchId,
+            Product product,
+            UUID locationId,
+            BigDecimal baseQuantity,
+            List<InventoryInboundTraceDetail> trackingDetails,
+            String reason,
+            String referenceType,
+            UUID referenceId,
+            UUID referenceLineId,
+            UUID actorUserId) {
+        this(
+                tenantId,
+                branchId,
+                product,
+                locationId,
+                baseQuantity,
+                trackingDetails,
+                reason,
+                referenceType,
+                referenceId,
+                referenceLineId,
+                actorUserId,
+                null);
+    }
+}

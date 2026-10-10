@@ -349,6 +349,69 @@ class InventoryOperationalLocationTest {
         assertThat(countBalances(fixture)).isOne();
     }
 
+    @Test
+    void traceabilityReceiveRefreshesTheBalanceAfterWaitingForItsLock() throws Exception {
+        Fixture fixture = createFixture(true);
+        UUID shelf = createLocation(fixture, fixture.branchId(), "active");
+        assign(fixture, shelf);
+        UUID balanceId = createBalance(fixture, shelf, "10.000", "2.000");
+        Product product = productRepository
+                .findByTenantIdAndId(fixture.tenantId(), fixture.productId())
+                .orElseThrow();
+        UUID inboundReferenceId = UUID.randomUUID();
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch deductionLocked = new CountDownLatch(1);
+        CountDownLatch releaseDeduction = new CountDownLatch(1);
+        TransactionTemplate template = new TransactionTemplate(transactionManager);
+
+        try {
+            Future<?> deduction = executor.submit(() -> template.executeWithoutResult(status -> {
+                stockService.deductStock(
+                        fixture.tenantId(), fixture.branchId(), fixture.productId(), new BigDecimal("3.000"));
+                deductionLocked.countDown();
+                awaitLatch(releaseDeduction);
+            }));
+            assertThat(deductionLocked.await(10, TimeUnit.SECONDS)).isTrue();
+
+            Future<InventoryMovement> inbound = executor.submit(() -> traceabilityMutation.receive(
+                    new InventoryInboundCommand(
+                            fixture.tenantId(),
+                            fixture.branchId(),
+                            product,
+                            null,
+                            new BigDecimal("5.000"),
+                            List.of(),
+                            "Entrada concurrente",
+                            "GOODS_RECEIPT",
+                            inboundReferenceId,
+                            null,
+                            null)));
+
+            awaitBlockedSessions(1);
+            assertThat(inbound.isDone()).isFalse();
+            releaseDeduction.countDown();
+
+            deduction.get(20, TimeUnit.SECONDS);
+            InventoryMovement movement = inbound.get(20, TimeUnit.SECONDS);
+
+            assertBalance(balanceId, "12.000", "2.000");
+            assertThat(movement.getQuantityBefore()).isEqualByComparingTo("7.000");
+            assertThat(movement.getQuantityAfter()).isEqualByComparingTo("12.000");
+            assertThat(movement.getToLocationId()).isEqualTo(shelf);
+            assertThat(jdbcTemplate.queryForObject(
+                            "SELECT count(*) FROM inventory_movements "
+                                    + "WHERE tenant_id = ? AND branch_id = ? AND product_id = ?",
+                            Long.class,
+                            fixture.tenantId(),
+                            fixture.branchId(),
+                            fixture.productId()))
+                    .isEqualTo(2L);
+        } finally {
+            releaseDeduction.countDown();
+            executor.shutdownNow();
+        }
+    }
+
     // -------------------------------------------------------- cambio de ubicacion
 
     @Test

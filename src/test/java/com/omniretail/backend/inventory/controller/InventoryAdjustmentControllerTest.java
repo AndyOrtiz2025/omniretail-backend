@@ -281,6 +281,34 @@ class InventoryAdjustmentControllerTest {
         assertThat(countMovements(fixture)).isZero();
     }
 
+    @Test
+    void expectedQuantityIsValidatedAndAStaleSnapshotCreatesNoMovement() throws Exception {
+        Fixture fixture = createFixture();
+        insertBalance(fixture, "10.000", "0.000");
+        String baseRequest = validRequest(fixture, "in", "1.000");
+
+        mockMvc.perform(post(ADJUSTMENTS)
+                        .header("Authorization", token(fixture))
+                        .contentType(APPLICATION_JSON)
+                        .content(baseRequest.replace(
+                                "\"referenceId\": null",
+                                "\"referenceId\": null, \"expectedQuantity\": -1")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+
+        mockMvc.perform(post(ADJUSTMENTS)
+                        .header("Authorization", token(fixture))
+                        .contentType(APPLICATION_JSON)
+                        .content(baseRequest.replace(
+                                "\"referenceId\": null",
+                                "\"referenceId\": null, \"expectedQuantity\": 9")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("COUNT_SNAPSHOT_STALE"));
+
+        assertThat(balanceQuantity(fixture)).isEqualByComparingTo("10.000");
+        assertThat(countMovements(fixture)).isZero();
+    }
+
     private Fixture createFixture() {
         UUID tenantId = UUID.randomUUID();
         UUID branchId = UUID.randomUUID();

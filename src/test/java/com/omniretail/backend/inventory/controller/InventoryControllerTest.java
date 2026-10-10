@@ -1,5 +1,6 @@
 package com.omniretail.backend.inventory.controller;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -430,6 +431,164 @@ class InventoryControllerTest {
                 .andExpect(jsonPath("$.code").value("CAPABILITY_REQUIRED"));
     }
 
+    @Test
+    void balancesCanBeFilteredByTenantScopedProductAndKeepNullLocations() throws Exception {
+        Fixture fixture = createFixture();
+        UUID otherProduct = insertSiblingProduct(fixture);
+        UUID expected = insertBalance(
+                fixture.tenantId(), fixture.firstBranchId(), fixture.productId(), null,
+                "4.000", "1.000");
+        insertBalance(
+                fixture.tenantId(), fixture.firstBranchId(), otherProduct, null,
+                "8.000", "0.000");
+
+        mockMvc.perform(get(BALANCES)
+                        .header("Authorization", token(fixture.tenantId()))
+                        .param("branchId", fixture.firstBranchId().toString())
+                        .param("productId", fixture.productId().toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].id").value(expected.toString()))
+                .andExpect(jsonPath("$.items[0].locationId").doesNotExist());
+    }
+
+    @Test
+    void balanceProductFilterDoesNotAcceptAnotherTenantsProduct() throws Exception {
+        Fixture tenantA = createFixture();
+        Fixture tenantB = createFixture();
+
+        mockMvc.perform(get(BALANCES)
+                        .header("Authorization", token(tenantA.tenantId()))
+                        .param("branchId", tenantA.firstBranchId().toString())
+                        .param("productId", tenantB.productId().toString()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("PRODUCT_NOT_FOUND"));
+    }
+
+    @Test
+    void balancesUseStablePagingAndRejectUnsupportedSortFields() throws Exception {
+        Fixture fixture = createFixture();
+        UUID firstLocation = insertLocation(fixture);
+        UUID secondLocation = insertLocation(fixture);
+        insertBalance(
+                fixture.tenantId(), fixture.firstBranchId(), fixture.productId(), null,
+                "1.000", "0.000");
+        insertBalance(
+                fixture.tenantId(), fixture.firstBranchId(), fixture.productId(), firstLocation,
+                "2.000", "0.000");
+        insertBalance(
+                fixture.tenantId(), fixture.firstBranchId(), fixture.productId(), secondLocation,
+                "3.000", "0.000");
+
+        mockMvc.perform(get(BALANCES)
+                        .header("Authorization", token(fixture.tenantId()))
+                        .param("branchId", fixture.firstBranchId().toString())
+                        .param("productId", fixture.productId().toString())
+                        .param("size", "2")
+                        .param("sort", "quantity,asc"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(2))
+                .andExpect(jsonPath("$.items[0].quantity").value(1.000))
+                .andExpect(jsonPath("$.items[1].quantity").value(2.000))
+                .andExpect(jsonPath("$.totalItems").value(3));
+
+        mockMvc.perform(get(BALANCES)
+                        .header("Authorization", token(fixture.tenantId()))
+                        .param("branchId", fixture.firstBranchId().toString())
+                        .param("productId", fixture.productId().toString())
+                        .param("page", "2")
+                        .param("size", "2")
+                        .param("sort", "quantity,asc"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].quantity").value(3.000));
+
+        mockMvc.perform(get(BALANCES)
+                        .header("Authorization", token(fixture.tenantId()))
+                        .param("branchId", fixture.firstBranchId().toString())
+                        .param("sort", "tenantId,asc"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVENTORY_BALANCE_SORT_INVALID"));
+    }
+
+    @Test
+    void balancesPreserveLegacySortFieldsAndPageSizeContract() throws Exception {
+        Fixture fixture = createFixture();
+        insertBalance(
+                fixture.tenantId(), fixture.firstBranchId(), fixture.productId(), null,
+                "1.000", "0.000");
+
+        mockMvc.perform(get(BALANCES)
+                        .header("Authorization", token(fixture.tenantId()))
+                        .param("branchId", fixture.firstBranchId().toString())
+                        .param("size", "150")
+                        .param("sort", "createdAt,asc"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.pageSize").value(150));
+
+        mockMvc.perform(get(BALANCES)
+                        .header("Authorization", token(fixture.tenantId()))
+                        .param("branchId", fixture.firstBranchId().toString())
+                        .param("size", "2000")
+                        .param("sort", "updatedAt,desc"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.pageSize").value(2000));
+
+        mockMvc.perform(get(BALANCES)
+                        .header("Authorization", token(fixture.tenantId()))
+                        .param("branchId", fixture.firstBranchId().toString())
+                        .param("size", "2001"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVENTORY_BALANCE_PAGE_SIZE_INVALID"));
+    }
+
+    @Test
+    void balancePagingUsesIdAsUniqueTieBreakerAndHandlesNullLocation() throws Exception {
+        Fixture fixture = createFixture();
+        UUID firstLocation = insertLocation(fixture);
+        UUID secondLocation = insertLocation(fixture);
+        UUID first = insertBalance(
+                fixture.tenantId(), fixture.firstBranchId(), fixture.productId(), firstLocation,
+                "5.000", "0.000");
+        UUID second = insertBalance(
+                fixture.tenantId(), fixture.firstBranchId(), fixture.productId(), secondLocation,
+                "5.000", "0.000");
+        UUID legacy = insertBalance(
+                fixture.tenantId(), fixture.firstBranchId(), fixture.productId(), null,
+                "5.000", "0.000");
+
+        String firstPage = mockMvc.perform(get(BALANCES)
+                        .header("Authorization", token(fixture.tenantId()))
+                        .param("branchId", fixture.firstBranchId().toString())
+                        .param("productId", fixture.productId().toString())
+                        .param("size", "1")
+                        .param("sort", "quantity,asc"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String repeatedFirstPage = mockMvc.perform(get(BALANCES)
+                        .header("Authorization", token(fixture.tenantId()))
+                        .param("branchId", fixture.firstBranchId().toString())
+                        .param("productId", fixture.productId().toString())
+                        .param("size", "1")
+                        .param("sort", "quantity,asc"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(firstPage).isEqualTo(repeatedFirstPage);
+        mockMvc.perform(get(BALANCES)
+                        .header("Authorization", token(fixture.tenantId()))
+                        .param("branchId", fixture.firstBranchId().toString())
+                        .param("productId", fixture.productId().toString())
+                        .param("size", "3")
+                        .param("sort", "quantity,asc"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(3))
+                .andExpect(jsonPath("$.items[?(@.id == '%s')].locationId", first).exists())
+                .andExpect(jsonPath("$.items[?(@.id == '%s')].locationId", second).exists())
+                .andExpect(jsonPath("$.items[?(@.id == '%s')].locationId", legacy)
+                        .value(org.hamcrest.Matchers.contains(org.hamcrest.Matchers.nullValue())));
+    }
+
     private Fixture createFixture() {
         UUID tenantId = UUID.randomUUID();
         UUID firstBranchId = UUID.randomUUID();
@@ -516,6 +675,25 @@ class InventoryControllerTest {
                 locationId,
                 quantity,
                 reservedQuantity);
+        return id;
+    }
+
+    private UUID insertSiblingProduct(Fixture fixture) {
+        UUID id = UUID.randomUUID();
+        jdbcTemplate.update("""
+                INSERT INTO products (id, tenant_id, sku, name, category_id, base_unit_id)
+                SELECT ?, tenant_id, ?, 'Producto adicional', category_id, base_unit_id
+                FROM products WHERE id = ?
+                """, id, "SKU-" + id, fixture.productId());
+        return id;
+    }
+
+    private UUID insertLocation(Fixture fixture) {
+        UUID id = UUID.randomUUID();
+        jdbcTemplate.update("""
+                INSERT INTO locations (id, tenant_id, branch_id, code, name, type, status)
+                VALUES (?, ?, ?, ?, 'Ubicacion', 'warehouse', 'active')
+                """, id, fixture.tenantId(), fixture.firstBranchId(), "L-" + id);
         return id;
     }
 

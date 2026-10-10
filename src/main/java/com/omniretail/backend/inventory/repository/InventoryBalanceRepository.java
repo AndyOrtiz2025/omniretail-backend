@@ -20,6 +20,9 @@ public interface InventoryBalanceRepository extends JpaRepository<InventoryBalan
     Page<InventoryBalance> findByTenantIdAndBranchId(
             UUID tenantId, UUID branchId, Pageable pageable);
 
+    Page<InventoryBalance> findByTenantIdAndBranchIdAndProductId(
+            UUID tenantId, UUID branchId, UUID productId, Pageable pageable);
+
     @Modifying
     @Query(
             value = """
