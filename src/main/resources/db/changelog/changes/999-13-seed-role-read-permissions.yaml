@@ -1,0 +1,81 @@
+databaseChangeLog:
+  - changeSet:
+      id: 999-13-seed-role-read-permissions
+      author: joga17000
+      context: dev
+      comment: Completa los permisos de solo lectura que necesitan los roles de sistema Cajero, Inventario y Bodeguero (seed dev) para que sus pantallas carguen.
+      changes:
+        # Alcance de contexto (context: dev):
+        #   - Los roles operativos "Cajero", "Inventario" y "Bodeguero" (is_system = TRUE) existen como datos
+        #     semilla creados exclusivamente por 999-01-seed-base.yaml bajo `context: dev`. Por ello, este
+        #     changeset aplica automaticamente solo en el entorno de desarrollo (`dev`).
+        #   - Fuera de `dev` (ambientes productivos o tenants no sembrados por 999-01), los roles operativos
+        #     de cada tenant y sus permisos granulares se crean y actualizan mediante la API de administracion
+        #     de roles (`POST /api/v1/administration/roles` y `PUT /api/v1/administration/roles/{id}`, protegidos
+        #     por `admin.roles.manage`) o en el flujo de aprovisionamiento del tenant.
+        #
+        # Alcance de permisos (principio de menor privilegio):
+        #   - Las pantallas operativas consultan catalogos auxiliares y existencias; sin estas lecturas reciben
+        #     403 aunque el rol tenga acceso al modulo.
+        #   - Solo se agregan permisos de lectura (`*.read`). No se amplian permisos administrativos (`admin.*`)
+        #     ni se otorgan capacidades de escritura (`*.create`, `*.update`, `*.manage`, `*.delete`).
+        #   - 999-01, 999-11 y 999-12 ya estan aplicadas y no se editan para preservar sus checksums de Liquibase.
+        #
+        # Cajero:
+        #   - catalog.locations.read:  GET /catalog/locations (la terminal POS y las alertas de inventario).
+        #   - catalog.categories.read: GET /catalog/categories y /{id} (vista rapida de producto, alertas).
+        - sql:
+            sql: |
+              UPDATE roles
+              SET permissions = (
+                SELECT ARRAY(
+                  SELECT DISTINCT permission
+                  FROM unnest(COALESCE(permissions, ARRAY[]::text[])
+                              || ARRAY['catalog.locations.read', 'catalog.categories.read']::text[]) AS permission
+                  ORDER BY permission
+                )
+              )
+              WHERE name = 'Cajero' AND is_system = TRUE;
+        # Inventario:
+        #   - catalog.locations.read:  existencias por ubicacion y ajustes.
+        #   - catalog.attributes.read / catalog.promotions.read: pestañas de la edicion de producto.
+        - sql:
+            sql: |
+              UPDATE roles
+              SET permissions = (
+                SELECT ARRAY(
+                  SELECT DISTINCT permission
+                  FROM unnest(COALESCE(permissions, ARRAY[]::text[])
+                              || ARRAY['catalog.locations.read', 'catalog.attributes.read',
+                                       'catalog.promotions.read']::text[]) AS permission
+                  ORDER BY permission
+                )
+              )
+              WHERE name = 'Inventario' AND is_system = TRUE;
+        # Bodeguero (recepciones: lista y detalle de documentos):
+        #   - purchasing.orders.read:  GET /purchasing/orders (ordenes a recibir).
+        #   - receiving.receipts.read: GET /purchasing/receipts.
+        #   - catalog.products.read, catalog.units.read, catalog.locations.read, inventory.stock.read:
+        #     producto, unidades, ubicaciones y configuracion de inventario del detalle de recepcion.
+        - sql:
+            sql: |
+              UPDATE roles
+              SET permissions = (
+                SELECT ARRAY(
+                  SELECT DISTINCT permission
+                  FROM unnest(COALESCE(permissions, ARRAY[]::text[])
+                              || ARRAY['purchasing.orders.read', 'receiving.receipts.read',
+                                       'catalog.products.read', 'catalog.units.read',
+                                       'catalog.locations.read', 'inventory.stock.read']::text[]) AS permission
+                  ORDER BY permission
+                )
+              )
+              WHERE name = 'Bodeguero' AND is_system = TRUE;
+      rollback:
+        # Intencionalmente sin efecto (mismo criterio que 048-catalog-attributes-admin-permissions y
+        # 999-07-seed-catalog-attributes-admin-permissions): al tratarse de un seed acumulativo por union
+        # de conjuntos (`unnest(permissions || ARRAY[...])`), sin estado historico adicional no es posible
+        # distinguir si alguno de estos permisos ya habia sido asignado previamente al rol (por seeds previos
+        # o manualmente via API), por lo que removerlos en un rollback seria destructivo.
+        - sql:
+            sql: SELECT 1

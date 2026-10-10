@@ -105,6 +105,7 @@ public class LogisticsHistoryService {
             UUID branchId,
             String search,
             String status,
+            String transferStatus,
             String deliveryMethod,
             LocalDate from,
             LocalDate to,
@@ -116,7 +117,7 @@ public class LogisticsHistoryService {
                     "INVALID_LOGISTICS_HISTORY_DATE_RANGE",
                     "La fecha inicial no puede ser posterior a la fecha final.");
         }
-        StatusFilter statusFilter = statusFilter(status);
+        StatusFilter statusFilter = statusFilter(status, transferStatus);
         LogisticsHistoryDeliveryMethod deliveryFilter = deliveryMethod(deliveryMethod);
         ZoneId zone = tenantZone(actor.tenantId());
         Instant fromInclusive = from == null ? null : from.atStartOfDay(zone).toInstant();
@@ -147,6 +148,18 @@ public class LogisticsHistoryService {
                 result.getSize(),
                 result.getTotalElements(),
                 result.getTotalPages());
+    }
+
+    public PageResponse<LogisticsHistoryRowResponse> search(
+            UUID branchId,
+            String search,
+            String status,
+            String deliveryMethod,
+            LocalDate from,
+            LocalDate to,
+            int page,
+            int size) {
+        return search(branchId, search, status, null, deliveryMethod, from, to, page, size);
     }
 
     public LogisticsHistoryDetailResponse detail(
@@ -378,18 +391,38 @@ public class LogisticsHistoryService {
         }
     }
 
-    private StatusFilter statusFilter(String raw) {
-        String value = trimToNull(raw);
-        if (value == null) {
+    private StatusFilter statusFilter(String rawStatus, String rawTransferStatus) {
+        String statusValue = trimToNull(rawStatus);
+        String transferValue = trimToNull(rawTransferStatus);
+        if (statusValue == null && transferValue == null) {
             return new StatusFilter(null, null, false);
         }
-        OrderStatus orderStatus = enumValue(OrderStatus.values(), value);
-        InventoryTransferStatus transferStatus = enumValue(InventoryTransferStatus.values(), value);
-        if (orderStatus == null && transferStatus == null) {
+
+        InventoryTransferStatus transferStatus = null;
+        if (transferValue != null) {
+            transferStatus = enumValue(InventoryTransferStatus.values(), transferValue);
+            if (transferStatus == null) {
+                throw badRequest(
+                        "LOGISTICS_HISTORY_TRANSFER_STATUS_INVALID",
+                        "El estado de traslado no es válido.");
+            }
+        } else if (statusValue != null) {
+            transferStatus = enumValue(InventoryTransferStatus.values(), statusValue);
+        }
+
+        OrderStatus orderStatus = statusValue == null
+                ? null
+                : enumValue(OrderStatus.values(), statusValue);
+
+        if (statusValue != null
+                && orderStatus == null
+                && enumValue(InventoryTransferStatus.values(), statusValue) == null
+                && transferStatus == null) {
             throw badRequest(
                     "LOGISTICS_HISTORY_STATUS_INVALID",
                     "El estado solicitado no pertenece a pedidos ni traslados.");
         }
+
         return new StatusFilter(orderStatus, transferStatus, true);
     }
 

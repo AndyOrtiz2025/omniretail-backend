@@ -44,6 +44,7 @@ public class LogisticsHistoryController {
             @RequestParam UUID branchId,
             @RequestParam(required = false) String search,
             @RequestParam(required = false) String status,
+            @RequestParam(required = false) String transferStatus,
             @RequestParam(required = false) String deliveryMethod,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE)
                     LocalDate from,
@@ -52,7 +53,7 @@ public class LogisticsHistoryController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
         return historyService.search(
-                branchId, search, status, deliveryMethod, from, to, page, size);
+                branchId, search, status, transferStatus, deliveryMethod, from, to, page, size);
     }
 
     @Operation(
