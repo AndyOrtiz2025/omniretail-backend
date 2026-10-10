@@ -75,6 +75,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -168,6 +169,7 @@ public class PickingService {
                                 .map(InventoryReservation::getProductId).distinct().toList())
                         .stream()
                         .collect(Collectors.toMap(Product::getId, Function.identity()));
+        Set<ReservationKey> expectedReservations = new HashSet<>();
 
         PickingOrder picking = PickingOrder.builder()
                 .branchId(order.getBranchId())
@@ -186,10 +188,15 @@ public class PickingService {
             }
             List<KitFulfillmentSnapshot.Component> fulfillment =
                     KitFulfillmentSnapshot.decode(orderItem.getFulfillmentComponents());
-            if (!fulfillment.isEmpty()) {
+            if (product.getProductType() == ProductType.kit) {
+                if (fulfillment.isEmpty()) {
+                    throw conflict("PICKING_RESERVATION_REQUIRED",
+                            "El kit no conserva su detalle histórico de componentes.");
+                }
                 for (KitFulfillmentSnapshot.Component component : fulfillment) {
-                    InventoryReservation reservation = reservations.get(
-                            new ReservationKey(orderItem.getId(), component.productId()));
+                    ReservationKey reservationKey = new ReservationKey(orderItem.getId(), component.productId());
+                    expectedReservations.add(reservationKey);
+                    InventoryReservation reservation = reservations.get(reservationKey);
                     BigDecimal expectedQuantity = kitComponentQuantity(component, orderItem.getQuantity());
                     if (reservation == null || reservation.getQuantity().compareTo(expectedQuantity) != 0) {
                         throw conflict("PICKING_RESERVATION_REQUIRED",
@@ -204,14 +211,23 @@ public class PickingService {
                 }
                 continue;
             }
+            if (!fulfillment.isEmpty()) {
+                throw conflict("PICKING_RESERVATION_REQUIRED",
+                        "Un producto que no es kit no puede tener componentes de fulfillment.");
+            }
             if (product.getProductType() != ProductType.physical) continue;
-            InventoryReservation reservation = reservations.get(
-                    new ReservationKey(orderItem.getId(), product.getId()));
+            ReservationKey reservationKey = new ReservationKey(orderItem.getId(), product.getId());
+            InventoryReservation reservation = reservations.get(reservationKey);
             if (Boolean.TRUE.equals(product.getTrackingStock()) && reservation == null) {
                 throw conflict("PICKING_RESERVATION_REQUIRED",
                         "La linea de Picking no posee una reserva activa.");
             }
+            if (Boolean.TRUE.equals(product.getTrackingStock())) expectedReservations.add(reservationKey);
             saveOrderPickingItem(tenantId, picking, orderItem, product, reservation);
+        }
+        if (!reservations.keySet().equals(expectedReservations)) {
+            throw conflict("PICKING_RESERVATION_REQUIRED",
+                    "Las reservas activas no coinciden con el detalle histórico del pedido.");
         }
         return Optional.of(picking);
     }
