@@ -13,6 +13,7 @@ import com.omniretail.backend.logistics.dto.LogisticsHistoryRowResponse;
 import com.omniretail.backend.logistics.entity.PickingSourceType;
 import com.omniretail.backend.logistics.service.LogisticsHistoryService;
 import com.omniretail.backend.shared.dto.PageResponse;
+import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.exception.GlobalExceptionHandler;
 import com.omniretail.backend.shared.security.RequirePermission;
 import java.lang.reflect.Method;
@@ -21,6 +22,7 @@ import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpStatus;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
@@ -42,6 +44,7 @@ class LogisticsHistoryControllerContractTest {
         permission(
                 "search",
                 UUID.class,
+                String.class,
                 String.class,
                 String.class,
                 String.class,
@@ -84,6 +87,7 @@ class LogisticsHistoryControllerContractTest {
                         branchId,
                         "ana",
                         "delivered",
+                        "received",
                         "store_pickup",
                         LocalDate.parse("2026-10-01"),
                         LocalDate.parse("2026-10-09"),
@@ -95,6 +99,7 @@ class LogisticsHistoryControllerContractTest {
                         .param("branchId", branchId.toString())
                         .param("search", "ana")
                         .param("status", "delivered")
+                        .param("transferStatus", "received")
                         .param("deliveryMethod", "store_pickup")
                         .param("from", "2026-10-01")
                         .param("to", "2026-10-09")
@@ -110,11 +115,38 @@ class LogisticsHistoryControllerContractTest {
                 branchId,
                 "ana",
                 "delivered",
+                "received",
                 "store_pickup",
                 LocalDate.parse("2026-10-01"),
                 LocalDate.parse("2026-10-09"),
                 1,
                 25);
+    }
+
+    @Test
+    void rejectsInvalidTransferStatusWithBadRequest() throws Exception {
+        UUID branchId = UUID.randomUUID();
+        when(service.search(
+                        branchId,
+                        null,
+                        null,
+                        "foo",
+                        null,
+                        null,
+                        null,
+                        0,
+                        20))
+                .thenThrow(new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "LOGISTICS_HISTORY_TRANSFER_STATUS_INVALID",
+                        "El estado de traslado no es v├ílido."));
+
+        mvc.perform(get("/logistics/history")
+                        .param("branchId", branchId.toString())
+                        .param("transferStatus", "foo"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("LOGISTICS_HISTORY_TRANSFER_STATUS_INVALID"))
+                .andExpect(jsonPath("$.message").value("El estado de traslado no es v├ílido."));
     }
 
     private static void permission(String method, Class<?>... parameterTypes) throws Exception {

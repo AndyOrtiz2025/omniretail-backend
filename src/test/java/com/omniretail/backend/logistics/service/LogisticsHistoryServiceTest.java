@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -340,6 +341,114 @@ class LogisticsHistoryServiceTest {
                 .isInstanceOfSatisfying(BusinessException.class, exception ->
                         assertThat(exception.getStatus())
                                 .isEqualTo(org.springframework.http.HttpStatus.FORBIDDEN));
+    }
+
+    @Test
+    void mixesDispatchedOrdersAndInTransitTransfersWithCorrectTotalsAndStablePagination() {
+        jdbc.update("UPDATE orders SET status = 'dispatched' WHERE id = ?", fixture.orderId());
+        transfer("inTransit");
+        transfer("received");
+
+        PageResponse<LogisticsHistoryRowResponse> firstPage = service.search(
+                fixture.branchId(), null, "dispatched", "inTransit", null, null, null, 0, 1);
+        PageResponse<LogisticsHistoryRowResponse> secondPage = service.search(
+                fixture.branchId(), null, "dispatched", "inTransit", null, null, null, 1, 1);
+
+        assertThat(firstPage.totalItems()).isEqualTo(2);
+        assertThat(firstPage.totalPages()).isEqualTo(2);
+        assertThat(firstPage.items()).hasSize(1);
+        assertThat(secondPage.items()).hasSize(1);
+        assertThat(firstPage.items().getFirst().operationalStatus())
+                .isNotEqualTo(secondPage.items().getFirst().operationalStatus());
+        Set<String> statuses = Set.of(
+                firstPage.items().getFirst().operationalStatus(),
+                secondPage.items().getFirst().operationalStatus());
+        assertThat(statuses).containsExactlyInAnyOrder("dispatched", "inTransit");
+    }
+
+    @Test
+    void mixesDeliveredOrdersAndReceivedTransfers() {
+        jdbc.update("UPDATE orders SET status = 'delivered', delivered_at = now() WHERE id = ?", fixture.orderId());
+        transfer("received");
+        transfer("inTransit");
+
+        PageResponse<LogisticsHistoryRowResponse> result = service.search(
+                fixture.branchId(), null, "delivered", "received", null, null, null, 0, 10);
+
+        assertThat(result.totalItems()).isEqualTo(2);
+        assertThat(result.items()).extracting(LogisticsHistoryRowResponse::operationalStatus)
+                .containsExactlyInAnyOrder("delivered", "received");
+        assertThat(result.items()).extracting(LogisticsHistoryRowResponse::sourceType)
+                .containsExactlyInAnyOrder(PickingSourceType.order, PickingSourceType.transfer);
+    }
+
+    @Test
+    void cancelledStatusWithoutTransferStatusMatchesBothCancelledOrdersAndTransfers() {
+        jdbc.update("UPDATE orders SET status = 'cancelled' WHERE id = ?", fixture.orderId());
+        transfer("cancelled");
+        transfer("inTransit");
+
+        PageResponse<LogisticsHistoryRowResponse> result = service.search(
+                fixture.branchId(), null, "cancelled", null, null, null, null, 0, 10);
+
+        assertThat(result.totalItems()).isEqualTo(2);
+        assertThat(result.items()).allMatch(row -> "cancelled".equals(row.operationalStatus()));
+        assertThat(result.items()).extracting(LogisticsHistoryRowResponse::sourceType)
+                .containsExactlyInAnyOrder(PickingSourceType.order, PickingSourceType.transfer);
+    }
+
+    @Test
+    void packingStatusWithoutTransferStatusMatchesOnlyOrders() {
+        jdbc.update("UPDATE orders SET status = 'packing' WHERE id = ?", fixture.orderId());
+        transfer("inTransit");
+
+        PageResponse<LogisticsHistoryRowResponse> result = service.search(
+                fixture.branchId(), null, "packing", null, null, null, null, 0, 10);
+
+        assertThat(result.totalItems()).isEqualTo(1);
+        assertThat(result.items()).singleElement().satisfies(row -> {
+            assertThat(row.sourceType()).isEqualTo(PickingSourceType.order);
+            assertThat(row.operationalStatus()).isEqualTo("packing");
+        });
+    }
+
+    @Test
+    void transferStatusOnlyMatchesOnlyTransfersInThatStatus() {
+        jdbc.update("UPDATE orders SET status = 'dispatched' WHERE id = ?", fixture.orderId());
+        transfer("inTransit");
+        transfer("received");
+
+        PageResponse<LogisticsHistoryRowResponse> result = service.search(
+                fixture.branchId(), null, null, "inTransit", null, null, null, 0, 10);
+
+        assertThat(result.totalItems()).isEqualTo(1);
+        assertThat(result.items()).singleElement().satisfies(row -> {
+            assertThat(row.sourceType()).isEqualTo(PickingSourceType.transfer);
+            assertThat(row.operationalStatus()).isEqualTo("inTransit");
+        });
+    }
+
+    @Test
+    void rejectsInvalidTransferStatusWithDedicatedError() {
+        assertThatThrownBy(() -> service.search(
+                        fixture.branchId(), null, null, "foo", null, null, null, 0, 10))
+                .isInstanceOfSatisfying(BusinessException.class, exception -> {
+                    assertThat(exception.getStatus()).isEqualTo(HttpStatus.BAD_REQUEST);
+                    assertThat(exception.getCode()).isEqualTo("LOGISTICS_HISTORY_TRANSFER_STATUS_INVALID");
+                    assertThat(exception.getMessage()).isEqualTo("El estado de traslado no es v├ílido.");
+                });
+    }
+
+    @Test
+    void withoutStatusParametersReturnsBothOrdersAndTransfersWithoutFiltering() {
+        transfer("inTransit");
+
+        PageResponse<LogisticsHistoryRowResponse> result = service.search(
+                fixture.branchId(), null, null, null, null, null, null, 0, 10);
+
+        assertThat(result.totalItems()).isGreaterThanOrEqualTo(2);
+        assertThat(result.items()).extracting(LogisticsHistoryRowResponse::sourceType)
+                .contains(PickingSourceType.order, PickingSourceType.transfer);
     }
 
     private void insertPickingItem(
