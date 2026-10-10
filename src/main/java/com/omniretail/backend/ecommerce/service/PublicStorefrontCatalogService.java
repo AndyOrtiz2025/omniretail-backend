@@ -201,6 +201,11 @@ public class PublicStorefrontCatalogService {
                 productKitComponentRepository.findByTenantIdAndKitProductIdIn(tenantId, kitIds).stream()
                         .collect(java.util.stream.Collectors.groupingBy(
                                 com.omniretail.backend.catalog.entity.ProductKitComponent::getKitProductId));
+        Map<UUID, Product> componentProducts = productRepository.findByTenantIdAndIdIn(
+                        tenantId, componentsByKit.values().stream().flatMap(List::stream)
+                                .map(com.omniretail.backend.catalog.entity.ProductKitComponent::getComponentProductId)
+                                .distinct().toList())
+                .stream().collect(java.util.stream.Collectors.toMap(Product::getId, Function.identity()));
         Map<UUID, BigDecimal> result = new HashMap<>();
         for (UUID kitId : kitIds) {
             List<com.omniretail.backend.catalog.entity.ProductKitComponent> components = componentsByKit.get(kitId);
@@ -208,11 +213,20 @@ public class PublicStorefrontCatalogService {
                 result.put(kitId, BigDecimal.ZERO);
                 continue;
             }
-            BigDecimal capacity = components.stream()
-                    .map(component -> availableByProduct.getOrDefault(
-                                    component.getComponentProductId(), BigDecimal.ZERO)
-                            .max(BigDecimal.ZERO)
-                            .divide(component.getQuantityPerKit(), 0, RoundingMode.DOWN))
+            BigDecimal capacity = components.stream().map(component -> {
+                        Product componentProduct = componentProducts.get(component.getComponentProductId());
+                        if (componentProduct == null
+                                || componentProduct.getProductType() != ProductType.physical
+                                || componentProduct.getStatus() != ProductStatus.published
+                                || !Boolean.TRUE.equals(componentProduct.getTrackingStock())
+                                || component.getQuantityPerKit() == null
+                                || component.getQuantityPerKit().signum() <= 0) {
+                            return BigDecimal.ZERO;
+                        }
+                        return availableByProduct.getOrDefault(component.getComponentProductId(), BigDecimal.ZERO)
+                                .max(BigDecimal.ZERO)
+                                .divide(component.getQuantityPerKit(), 0, RoundingMode.DOWN);
+                    })
                     .min(BigDecimal::compareTo)
                     .orElse(BigDecimal.ZERO);
             result.put(kitId, capacity.max(BigDecimal.ZERO));

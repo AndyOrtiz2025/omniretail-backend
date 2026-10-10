@@ -95,6 +95,60 @@ class PickingServiceTest {
     }
 
     @Test
+    void createsOnlyComponentLinesForKitAlongsideNormalPhysicalItems() {
+        Fixture fixture = fixture("home_delivery", false);
+        UUID kit = UUID.randomUUID();
+        UUID kitItem = UUID.randomUUID();
+        UUID firstComponent = UUID.randomUUID();
+        UUID secondComponent = UUID.randomUUID();
+        UUID category = jdbc.queryForObject(
+                "SELECT category_id FROM products WHERE id = ?", UUID.class, fixture.productId());
+        UUID unit = jdbc.queryForObject(
+                "SELECT base_unit_id FROM products WHERE id = ?", UUID.class, fixture.productId());
+        String suffix = UUID.randomUUID().toString();
+        jdbc.update("""
+                INSERT INTO products (id, tenant_id, sku, name, product_type, category_id, base_unit_id,
+                    tracking_stock, tracking_lot, tracking_expiration, tracking_serial)
+                VALUES (?, ?, ?, 'Kit', 'kit', ?, ?, false, false, false, false)
+                """, kit, fixture.tenantId(), "KIT-" + suffix, category, unit);
+        for (UUID component : List.of(firstComponent, secondComponent)) {
+            jdbc.update("""
+                    INSERT INTO products (id, tenant_id, sku, name, product_type, category_id, base_unit_id,
+                        tracking_stock, tracking_lot, tracking_expiration, tracking_serial)
+                    VALUES (?, ?, ?, 'Componente', 'physical', ?, ?, true, false, false, false)
+                    """, component, fixture.tenantId(), "CMP-" + component, category, unit);
+        }
+        jdbc.update("""
+                INSERT INTO order_items (id, order_id, product_id, sku_snapshot, name_snapshot, quantity,
+                    inventory_quantity, fulfillment_components, unit_price, discount, subtotal)
+                VALUES (?, ?, ?, 'KIT', 'Kit', 3, 3,
+                    '[{"productId":"%s","quantityPerKit":2},{"productId":"%s","quantityPerKit":1}]'::jsonb,
+                    10, 0, 30)
+                """.formatted(firstComponent, secondComponent), kitItem, fixture.orderId(), kit);
+        insertKitReservation(fixture, kitItem, firstComponent, new BigDecimal("6.000"));
+        insertKitReservation(fixture, kitItem, secondComponent, new BigDecimal("3.000"));
+
+        PickingOrder picking = service.ensureForOrder(fixture.tenantId(), fixture.orderId()).orElseThrow();
+
+        assertThat(pickingItems.findByTenantIdAndPickingOrderId(fixture.tenantId(), picking.getId()))
+                .hasSize(3)
+                .extracting(item -> item.getProductId() + ":" + item.getRequestedQuantity())
+                .containsExactlyInAnyOrder(
+                        fixture.productId() + ":5.000",
+                        firstComponent + ":6.000",
+                        secondComponent + ":3.000");
+        assertThat(pickingItems.findByTenantIdAndPickingOrderId(fixture.tenantId(), picking.getId()))
+                .noneMatch(item -> item.getProductId().equals(kit));
+        assertThat(pickingItems.findByTenantIdAndPickingOrderId(fixture.tenantId(), picking.getId()))
+                .filteredOn(item -> item.getProductId().equals(firstComponent)
+                        || item.getProductId().equals(secondComponent))
+                .allSatisfy(item -> {
+                    assertThat(item.getSourceLineId()).isEqualTo(kitItem);
+                    assertThat(item.getOrderItemId()).isEqualTo(kitItem);
+                });
+    }
+
+    @Test
     void createsPickingForPosHomeDeliveryOrder() {
         Fixture fixture = fixture("home_delivery", false);
         jdbc.update("UPDATE orders SET source = 'pos' WHERE id = ?", fixture.orderId());
@@ -789,6 +843,20 @@ class PickingServiceTest {
                 tenant, branch, user, product, order, orderItem, balance, reservation);
         if (ensurePicking) service.ensureForOrder(tenant, order);
         return fixture;
+    }
+
+    private void insertKitReservation(Fixture fixture, UUID orderItemId, UUID productId, BigDecimal quantity) {
+        jdbc.update("""
+                INSERT INTO inventory_balances (id, tenant_id, branch_id, product_id, quantity, reserved_quantity)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """, UUID.randomUUID(), fixture.tenantId(), fixture.branchId(), productId, quantity, quantity);
+        jdbc.update("""
+                INSERT INTO inventory_reservations
+                    (id, tenant_id, branch_id, source_type, source_id, source_line_id,
+                     order_id, order_item_id, product_id, quantity, status, allocations)
+                VALUES (?, ?, ?, 'order', ?, ?, ?, ?, ?, ?, 'active', '[]'::jsonb)
+                """, UUID.randomUUID(), fixture.tenantId(), fixture.branchId(), fixture.orderId(), orderItemId,
+                fixture.orderId(), orderItemId, productId, quantity);
     }
 
     private void actor(Fixture fixture) {

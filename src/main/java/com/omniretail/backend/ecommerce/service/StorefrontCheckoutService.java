@@ -203,6 +203,7 @@ public class StorefrontCheckoutService {
         order.setTenantId(tenantId);
         Order savedOrder = orderRepository.save(order);
         orderEmailNotifier.orderConfirmed(savedOrder);
+        List<ReserveInventoryCommand> reservations = new ArrayList<>();
         for (int i = 0; i < items.size(); i++) {
             OrderItem item = items.get(i);
             item.setOrderId(savedOrder.getId());
@@ -212,19 +213,19 @@ public class StorefrontCheckoutService {
                     KitFulfillmentSnapshot.decode(item.getFulfillmentComponents());
             if (!fulfillment.isEmpty()) {
                 for (KitFulfillmentSnapshot.Component component : fulfillment) {
-                    reservationLifecycleService.reserve(new ReserveInventoryCommand(
+                    reservations.add(new ReserveInventoryCommand(
                             tenantId,
                             branch.getId(),
                             component.productId(),
                             InventoryReservationSourceType.order,
                             savedOrder.getId(),
-                            UUID.randomUUID(),
+                            savedItem.getId(),
                             savedOrder.getId(),
                             savedItem.getId(),
-                            component.quantity()));
+                            componentQuantity(component, item.getQuantity())));
                 }
             } else if (shouldReserve(product)) {
-                reservationLifecycleService.reserve(new ReserveInventoryCommand(
+                reservations.add(new ReserveInventoryCommand(
                         tenantId,
                         branch.getId(),
                         product.getId(),
@@ -236,6 +237,12 @@ public class StorefrontCheckoutService {
                         savedItem.getInventoryQuantity()));
             }
         }
+        // All callers acquire inventory locks in the same order, so overlapping kits do not
+        // deadlock merely because their catalog component order is different.
+        reservations.stream()
+                .sorted(Comparator.comparing(ReserveInventoryCommand::productId)
+                        .thenComparing(ReserveInventoryCommand::sourceLineId))
+                .forEach(reservationLifecycleService::reserve);
         pickingService.ensureForOrder(tenantId, savedOrder.getId());
         Payment payment = Payment.builder()
                 .orderId(savedOrder.getId())
@@ -290,6 +297,23 @@ public class StorefrontCheckoutService {
     private static boolean shouldReserve(Product product) {
         return Boolean.TRUE.equals(product.getTrackingStock())
                 && product.getProductType() == ProductType.physical;
+    }
+
+    private static BigDecimal componentQuantity(
+            KitFulfillmentSnapshot.Component component, BigDecimal commercialQuantity) {
+        if (component.quantityPerKit() == null || component.quantityPerKit().signum() <= 0) {
+            throw BusinessException.conflict(
+                    "KIT_FULFILLMENT_SNAPSHOT_INVALID",
+                    "El detalle histórico del kit contiene una cantidad inválida.");
+        }
+        try {
+            return component.quantityPerKit().multiply(commercialQuantity)
+                    .setScale(3, RoundingMode.UNNECESSARY);
+        } catch (ArithmeticException exception) {
+            throw BusinessException.conflict(
+                    "KIT_FULFILLMENT_SNAPSHOT_INVALID",
+                    "La cantidad total de un componente del kit es inválida.");
+        }
     }
 
     private static String trimToNull(String value) {
