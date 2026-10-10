@@ -37,7 +37,7 @@ public class InventoryTransferController {
     @Operation(
             summary = "Listar transferencias de inventario con paginación",
             description = """
-                    Recupera el listado paginado de órdenes de traspaso entre sucursales con filtros por almacén de origen, almacén de destino y estado operativo.
+                    Recupera el listado paginado (`page` comenzando en 1) de órdenes de traspaso entre sucursales con filtros por almacén de origen (`sourceBranchId`), almacén de destino (`destinationBranchId`) y estado operativo (`status`: `preparing`, `inTransit`, `received`, `cancelled`).
                     
                     **Permisos requeridos:**
                     * `inventory.transfers.manage`

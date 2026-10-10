@@ -41,11 +41,11 @@ public class UnitController {
     @Operation(
             summary = "Listar unidades de medida con paginación",
             description = """
-                    Recupera el listado paginado de unidades de medida configuradas en el tenant, permitiendo filtrar por estado activo o inactivo.
+                    Recupera el listado paginado de unidades de medida configuradas en el tenant, permitiendo filtrar por estado.
                     
                     **Parámetros de consulta:**
-                    * `status`: Filtro opcional por estado (`ACTIVE`, `INACTIVE`).
-                    * `page`: Número de página (base 0).
+                    * `status`: Filtro opcional por estado (`active`, `archived`).
+                    * `page`: Número de página (comenzando en 1).
                     * `size`: Tamaño de página (por defecto 20).
                     
                     **Permisos requeridos:**

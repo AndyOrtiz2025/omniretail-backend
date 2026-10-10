@@ -44,9 +44,12 @@ public class GoodsReceiptController {
                     **Parámetros de consulta:**
                     * `branchId`: Identificador de la sucursal receptora (opcional).
                     * `purchaseOrderId`: Identificador de la orden de compra (opcional).
-                    * `status`: Filtro por estado (`DRAFT`, `CONFIRMED`, `CANCELLED`).
-                    * `page`: Número de página (base 0).
-                    * `size`: Tamaño de página (por defecto 20).
+                    * `status`: Filtro por estado (`draft`, `confirmed`).
+                    * `page`: Número de página (comenzando en 1).
+                    * `size`: Tamaño de página (por defecto 20, máx. 100).
+                    
+                    **Permisos requeridos (cualquiera de ellos):**
+                    * `receiving.receipts.read`, `receiving.receipts.create` o `receiving.receipts.confirm`
                     """
     )
     @GetMapping
@@ -61,7 +64,10 @@ public class GoodsReceiptController {
     @Operation(
             summary = "Obtener detalle de recepción de mercancía por ID",
             description = """
-                    Recupera la ficha completa de recepción: partidas contadas, número de factura o guía del proveedor, lotes y números de serie ingresados.
+                    Recupera la ficha completa de recepción: partidas contadas, orden de compra origen, lotes y números de serie ingresados.
+                    
+                    **Permisos requeridos (cualquiera de ellos):**
+                    * `receiving.receipts.read`, `receiving.receipts.create` o `receiving.receipts.confirm`
                     """
     )
     @GetMapping("/{id}")
@@ -72,7 +78,13 @@ public class GoodsReceiptController {
     @Operation(
             summary = "Crear recepción de mercancía (Borrador)",
             description = """
-                    Inicia el proceso de descarga física en muelle para una orden de compra aprobada.
+                    Inicia el proceso de descarga física en estado `draft` para una orden de compra recepcionable (`approved`, `sent` o `partially_received`).
+                    
+                    **Capacidad SaaS requerida:**
+                    * `receiving`
+                    
+                    **Permisos requeridos (cualquiera de ellos):**
+                    * `receiving.receipts.create` o `receiving.receipts.confirm`
                     """
     )
     @PostMapping
@@ -84,7 +96,13 @@ public class GoodsReceiptController {
     @Operation(
             summary = "Actualizar recepción de mercancía borrador",
             description = """
-                    Modifica las cantidades físicas contadas o los datos del comprobante de entrega en una recepción aún no confirmada.
+                    Modifica las cantidades físicas contadas, ubicaciones o detalles de trazabilidad en una recepción en estado `draft`.
+                    
+                    **Capacidad SaaS requerida:**
+                    * `receiving`
+                    
+                    **Permisos requeridos (cualquiera de ellos):**
+                    * `receiving.receipts.create` o `receiving.receipts.confirm`
                     """
     )
     @PutMapping("/{id}")
@@ -96,7 +114,13 @@ public class GoodsReceiptController {
     @Operation(
             summary = "Confirmar recepción de mercancía (Ingreso a Inventario)",
             description = """
-                    Acredita formalmente las existencias en el inventario de la sucursal receptora, generando los movimientos de Kardex correspondientes y cerrando total o parcialmente la orden de compra.
+                    Confirma la recepción (`confirmed`), acredita formalmente las existencias en el inventario de la sucursal receptora y actualiza el estado de la orden de compra (`partially_received` o `received`).
+                    
+                    **Capacidad SaaS requerida:**
+                    * `receiving`
+                    
+                    **Permisos requeridos:**
+                    * `receiving.receipts.confirm`
                     """
     )
     @PostMapping("/{id}/confirm")
@@ -107,7 +131,13 @@ public class GoodsReceiptController {
     @Operation(
             summary = "Eliminar recepción borrador",
             description = """
-                    Descarta y elimina una recepción preliminar en estado borrador que no ha impactado existencias de inventario.
+                    Descarta y elimina una recepción preliminar en estado `draft` que aún no ha impactado existencias de inventario.
+                    
+                    **Capacidad SaaS requerida:**
+                    * `receiving`
+                    
+                    **Permisos requeridos (cualquiera de ellos):**
+                    * `receiving.receipts.create` o `receiving.receipts.confirm`
                     """
     )
     @DeleteMapping("/{id}")

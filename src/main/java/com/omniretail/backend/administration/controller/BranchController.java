@@ -39,7 +39,7 @@ public class BranchController {
     @GetMapping
     @Operation(
             summary = "Listar sucursales paginadas",
-            description = "Consulta el listado paginado de sucursales con filtro opcional por estado operativo (`ACTIVE`, `INACTIVE`).")
+            description = "Consulta el listado paginado de sucursales (`page` comenzando en 1) con filtro opcional por estado operativo (`active`, `inactive`, `archived`).")
     public PageResponse<BranchResponse> list(
             @RequestParam(required = false) BranchStatus status, @PageableDefault(size = 20) Pageable pageable) {
         return branchService.listBranches(status, pageable);

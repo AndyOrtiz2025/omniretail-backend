@@ -18,7 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
         name = "Alertas de Inventario",
-        description = "Notificaciones y monitoreo de productos críticos por desabastecimiento, nivel mínimo alcanzado o sobreinventario."
+        description = "Notificaciones y monitoreo de productos por desabastecimiento, nivel crítico o cercanía al stock mínimo."
 )
 @RestController
 @RequestMapping("/inventory/alerts")
@@ -34,8 +34,8 @@ public class InventoryAlertController {
                     
                     **Parámetros de consulta:**
                     * `branchId`: Identificador único de la sucursal (obligatorio).
-                    * `status`: Filtro opcional por severidad (`LOW_STOCK`, `OUT_OF_STOCK`, `OVERSTOCK`).
-                    * `page`: Número de página (base 0).
+                    * `status`: Filtro opcional por severidad (`out_of_stock`, `critical`, `near_minimum`, `normal`).
+                    * `page`: Número de página (comenzando en 1).
                     * `size`: Tamaño de página (por defecto 20).
                     
                     **Permisos requeridos:**

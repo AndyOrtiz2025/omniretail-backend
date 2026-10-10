@@ -46,7 +46,7 @@ public class UnitConversionController {
                     * `productId`: ID del producto si la conversión es específica para un artículo (opcional).
                     * `fromUnitId`: ID de la unidad origen (opcional).
                     * `toUnitId`: ID de la unidad destino (opcional).
-                    * `page`: Número de página (base 0).
+                    * `page`: Número de página (comenzando en 1).
                     * `size`: Tamaño de página (por defecto 20).
                     
                     **Permisos requeridos:**

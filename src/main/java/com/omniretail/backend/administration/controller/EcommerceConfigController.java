@@ -21,7 +21,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 @Tag(
         name = "Configuración de E-commerce",
-        description = "Administración de parámetros de la tienda en línea (branding, costos de envío, métodos de pago, mensajes y logotipo institucional)."
+        description = "Administración de parámetros del storefront en línea (activación, datos de tienda, contacto, checkout/seguimiento de invitados, métodos de entrega y pago permitidos, sucursal por defecto y logotipo)."
 )
 @RestController
 @RequestMapping("/administration/ecommerce-config")
@@ -33,7 +33,10 @@ public class EcommerceConfigController {
     @Operation(
             summary = "Obtener configuración de tienda en línea",
             description = """
-                    Recupera los parámetros completos de personalización y operación del storefront web del tenant.
+                    Recupera los parámetros de configuración del canal de comercio electrónico del tenant (`enabled`, `storeName`, `logoUrl`, `contactPhone`, `contactEmail`, `requireAccountForCheckout`, `guestTrackingEnabled`, `allowedDeliveryMethods`, `allowedPaymentMethods`, `defaultBranchId`).
+                    
+                    **Capacidad SaaS requerida:**
+                    * `ecommerce`
                     
                     **Permisos requeridos:**
                     * `admin.ecommerce_config.manage`
@@ -48,7 +51,16 @@ public class EcommerceConfigController {
     @Operation(
             summary = "Actualizar configuración de tienda en línea",
             description = """
-                    Actualiza la configuración visual y operativa del canal de comercio electrónico (colores de marca, montos mínimos de compra, tarifas de envío, información de contacto y soporte).
+                    Actualiza la configuración operativa del canal de comercio electrónico definida en `SaveEcommerceConfigRequest`:
+                    * `enabled`: Estado de habilitación de la tienda en línea.
+                    * `storeName`, `logoUrl`, `contactPhone`, `contactEmail`: Datos de identificación y contacto de la tienda.
+                    * `requireAccountForCheckout`, `guestTrackingEnabled`: Políticas de compra con cuenta y rastreo de pedidos de invitados.
+                    * `allowedDeliveryMethods`: Métodos de entrega habilitados (`store_pickup`, `home_delivery`).
+                    * `allowedPaymentMethods`: Métodos de pago habilitados (`cash`, `card`, `transfer`).
+                    * `defaultBranchId`: Sucursal activa por defecto para la operación de e-commerce.
+                    
+                    **Capacidad SaaS requerida:**
+                    * `ecommerce`
                     
                     **Permisos requeridos:**
                     * `admin.ecommerce_config.manage`
@@ -63,11 +75,14 @@ public class EcommerceConfigController {
     @Operation(
             summary = "Subir logotipo del storefront",
             description = """
-                    Carga un archivo de imagen (PNG, JPG, SVG, WebP) para ser utilizado como logotipo oficial en la cabecera y comprobantes del storefront.
+                    Carga un archivo de imagen (JPEG, PNG o WebP, máximo 5 MB) para ser utilizado como logotipo (`logoUrl`) en la tienda en línea.
                     
                     **Restricciones:**
-                    * Formato multipart/form-data con la parte llamada `file`.
-                    * Límite de tamaño configurado por el sistema de almacenamiento.
+                    * Formato `multipart/form-data` con la parte llamada `file`.
+                    * Tipos permitidos: `image/jpeg`, `image/png`, `image/webp` (máximo 5 MB).
+                    
+                    **Capacidad SaaS requerida:**
+                    * `ecommerce`
                     
                     **Permisos requeridos:**
                     * `admin.ecommerce_config.manage`
@@ -82,7 +97,10 @@ public class EcommerceConfigController {
     @Operation(
             summary = "Eliminar logotipo del storefront",
             description = """
-                    Elimina el logotipo personalizado previamente subido para el tenant, restableciendo la visualización al isotipo predeterminado de la plataforma.
+                    Elimina el logotipo personalizado previamente subido para el storefront del tenant (`logoUrl`).
+                    
+                    **Capacidad SaaS requerida:**
+                    * `ecommerce`
                     
                     **Permisos requeridos:**
                     * `admin.ecommerce_config.manage`

@@ -39,7 +39,15 @@ public class InventoryStockController {
     @Operation(
             summary = "Listar existencias de inventario con filtros avanzados",
             description = """
-                    Recupera el listado paginado de productos y sus niveles de stock físico, reservado y disponible en la sucursal, con filtros por texto, categorías, alertas de inventario y bandera de bajo stock.
+                    Recupera el listado paginado (`page` comenzando en 1) de productos y sus niveles de stock físico, reservado y disponible en la sucursal.
+                    
+                    **Filtros disponibles:**
+                    * `branchId`: Identificador de la sucursal (obligatorio).
+                    * `search`: Búsqueda textual por nombre, SKU o código de barras (opcional).
+                    * `categoryId`: Identificador de la categoría (opcional).
+                    * `status`: Estado de alerta (`out_of_stock`, `critical`, `near_minimum`, `normal`).
+                    * `productTypes`: Tipos de producto (`physical`, `service`, `kit`).
+                    * `lowStock`: Filtrar productos con bajo stock (`true` / `false`, por defecto `false`).
                     
                     **Permisos requeridos:**
                     * `inventory.stock.read`

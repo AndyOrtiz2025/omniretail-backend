@@ -37,7 +37,7 @@ public class AttributeDefinitionController {
     @Operation(
             summary = "Listar definiciones de atributos con paginación",
             description = """
-                    Recupera el catálogo paginado de tipos de atributos disponibles para asociar a productos.
+                    Recupera el catálogo paginado (`page` comenzando en 1) de tipos de atributos disponibles para asociar a productos (`status`: `active`, `archived`).
                     
                     **Permisos requeridos:**
                     * `catalog.attributes.read`
@@ -52,7 +52,7 @@ public class AttributeDefinitionController {
     @Operation(
             summary = "Crear nueva definición de atributo",
             description = """
-                    Crea un nuevo tipo de atributo dinámico (ejemplo: Color, Talla, Memoria RAM).
+                    Crea un nuevo tipo de atributo dinámico (`name`, `code`, `dataType`: `TEXT`, `NUMBER`, `BOOLEAN`, `unitId` opcional, `required`).
                     
                     **Permisos requeridos:**
                     * `catalog.attributes.manage`

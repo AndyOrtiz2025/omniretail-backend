@@ -45,9 +45,12 @@ public class PurchaseOrderController {
                     **Parámetros de consulta:**
                     * `branchId`: Identificador de la sucursal de destino (opcional).
                     * `supplierId`: Identificador del proveedor (opcional).
-                    * `status`: Filtro por estado (`DRAFT`, `SUBMITTED`, `APPROVED`, `PARTIALLY_RECEIVED`, `COMPLETED`, `CANCELLED`).
-                    * `page`: Número de página (base 0).
-                    * `size`: Tamaño de página (por defecto 20).
+                    * `status`: Filtro por estado (`draft`, `pending_approval`, `approved`, `sent`, `partially_received`, `received`, `cancelled`).
+                    * `page`: Número de página (comenzando en 1).
+                    * `size`: Tamaño de página (por defecto 20, máx. 100).
+                    
+                    **Permisos requeridos (cualquiera de ellos):**
+                    * `purchasing.orders.read`, `purchasing.orders.create` o `purchasing.orders.approve`
                     """
     )
     @GetMapping
@@ -62,7 +65,10 @@ public class PurchaseOrderController {
     @Operation(
             summary = "Obtener detalle completo de una orden de compra",
             description = """
-                    Recupera la orden de compra con su desglose de artículos, costos de compra pactados, impuestos, cantidades solicitadas y cantidades efectivamente recepcionadas.
+                    Recupera la orden de compra con su desglose de artículos, costos de compra pactados, cantidades solicitadas y costos sugeridos cuando se encuentra en estado `draft`.
+                    
+                    **Permisos requeridos (cualquiera de ellos):**
+                    * `purchasing.orders.read`, `purchasing.orders.create` o `purchasing.orders.approve`
                     """
     )
     @GetMapping("/{id}")
@@ -73,7 +79,10 @@ public class PurchaseOrderController {
     @Operation(
             summary = "Crear nueva orden de compra (Borrador)",
             description = """
-                    Crea un registro de orden de compra en estado preliminar (`DRAFT`) asignando proveedor, sucursal receptora y partidas.
+                    Crea un registro de orden de compra en estado preliminar (`draft`) asignando proveedor, sucursal receptora y partidas.
+                    
+                    **Capacidad SaaS requerida:**
+                    * `purchasing`
                     
                     **Permisos requeridos:**
                     * `purchasing.orders.create`
@@ -89,7 +98,10 @@ public class PurchaseOrderController {
     @Operation(
             summary = "Actualizar partidas o datos de la orden de compra",
             description = """
-                    Modifica los productos, costos o condiciones de entrega de una orden en estado borrador.
+                    Modifica los productos, costos o condiciones de entrega de una orden en estado `draft`.
+                    
+                    **Capacidad SaaS requerida:**
+                    * `purchasing`
                     
                     **Permisos requeridos:**
                     * `purchasing.orders.create`
@@ -105,7 +117,10 @@ public class PurchaseOrderController {
     @Operation(
             summary = "Enviar orden de compra para revisión",
             description = """
-                    Avanza el estado de la orden de compra de borrador a enviada (`SUBMITTED`), bloqueando ediciones y solicitando autorización.
+                    Avanza el estado de la orden de compra de `draft` a pendiente de aprobación (`pending_approval`), validando cantidades mínimas de compra (MOQ) y bloqueando ediciones posteriores.
+                    
+                    **Capacidad SaaS requerida:**
+                    * `purchasing`
                     
                     **Permisos requeridos:**
                     * `purchasing.orders.create`
@@ -120,7 +135,10 @@ public class PurchaseOrderController {
     @Operation(
             summary = "Aprobar orden de compra",
             description = """
-                    Autoriza formalmente la orden de compra (`APPROVED`), habilitándola para que el almacén pueda generar recepciones de mercancía física.
+                    Autoriza formalmente la orden de compra (`approved`), habilitándola para que el almacén pueda generar recepciones de mercancía física.
+                    
+                    **Capacidad SaaS requerida:**
+                    * `purchasing`
                     
                     **Permisos requeridos:**
                     * `purchasing.orders.approve`
@@ -135,7 +153,14 @@ public class PurchaseOrderController {
     @Operation(
             summary = "Cancelar orden de compra",
             description = """
-                    Cancela una orden de compra pendiente con motivo justificado, invalidando futuras recepciones asociadas.
+                    Cancela una orden de compra (`cancelled`) con motivo justificado (`reason`), invalidando futuras recepciones asociadas.
+                    
+                    **Capacidad SaaS requerida:**
+                    * `purchasing`
+                    
+                    **Permisos requeridos:**
+                    * `purchasing.orders.create` o `purchasing.orders.approve` (cuando está en `draft` o `pending_approval`).
+                    * `purchasing.orders.approve` (cuando está en `approved`).
                     """
     )
     @PostMapping("/{id}/cancel")

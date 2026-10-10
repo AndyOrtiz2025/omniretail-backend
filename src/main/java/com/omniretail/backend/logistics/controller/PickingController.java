@@ -126,7 +126,7 @@ public class PickingController {
     @Operation(
             summary = "Reportar incidencia durante la recolección",
             description = """
-                    Registra una anomalía en piso (ej. producto dañado, sin existencias en la ubicación indicada, etiqueta ilegible).
+                    Registra una anomalía en piso (`incidentType`: `missing`, `damaged`, `invalid_lot_serial`, `quantity_difference`, `location_empty`).
                     
                     **Permisos requeridos:**
                     * `logistics.picking.start`

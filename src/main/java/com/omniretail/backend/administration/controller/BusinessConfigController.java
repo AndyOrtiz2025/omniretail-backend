@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
         name = "Configuración del negocio",
-        description = "Configuración global y operativa del tenant (nombre comercial, moneda, régimen fiscal, zona horaria y parámetros generales del sistema)."
+        description = "Configuración operativa del tenant (preset de giro comercial, capacidades operativas de inventario/catálogo, seguimiento por defecto y métodos de pago permitidos en POS)."
 )
 @RestController
 @RequestMapping("/administration/business-config")
@@ -28,11 +28,11 @@ public class BusinessConfigController {
     @Operation(
             summary = "Obtener configuración general del negocio",
             description = """
-                    Retorna la configuración operativa y fiscal vigente del tenant actual.
+                    Retorna la configuración operativa vigente del tenant actual (`preset`, banderas de capacidades de inventario y catálogo, `allowedPosPaymentMethods` y `defaultProductTracking`).
                     
                     **Notas de uso:**
-                    * Este endpoint no restringe por permisos específicos de administración ya que es consumido transversalmente por módulos operativos (POS, Facturación, Inventario, Catálogo y Tienda en línea) para resolver moneda, impuestos por defecto y datos emisores.
-                    * Requiere sesión activa del usuario autenticado en el tenant.
+                    * Este endpoint no exige un permiso específico de administración porque es consultado transversalmente por módulos operativos (POS, inventario, recepción y catálogo).
+                    * Requiere sesión activa de un empleado del tenant.
                     """
     )
     // Sin permiso: POS, inventario, recepcion y catalogo leen esta configuracion (igual que el frontend).
@@ -44,7 +44,11 @@ public class BusinessConfigController {
     @Operation(
             summary = "Actualizar configuración general del negocio",
             description = """
-                    Actualiza los parámetros globales del negocio (razón social, RFC/NIT, dirección fiscal, moneda base, tasa general de IVA, etc.).
+                    Actualiza la configuración operativa del negocio:
+                    * `preset`: Giro comercial (`hardware_store`, `pharmacy`, `grocery`, `services`, `custom`).
+                    * Capacidades operativas: `supportsInventory`, `supportsLots`, `supportsExpiration`, `supportsSerials`, `supportsMultipleLocations`, `supportsUnitsAndPackaging`, `supportsProductAttributes`, `supportsKits`, `supportsServices`.
+                    * `allowedPosPaymentMethods`: Métodos de pago habilitados en POS (`cash`, `card`, `transfer`, `mixed`).
+                    * `defaultProductTracking`: Configuración predeterminada de trazabilidad (`trackInventory`, `trackingLots`, `trackingExpiration`, `trackingSerial`).
                     
                     **Permisos requeridos:**
                     * `admin.business_config.manage`

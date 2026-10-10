@@ -34,7 +34,10 @@ public class HeroBannerController {
     @Operation(
             summary = "Obtener configuración de banners principales",
             description = """
-                    Recupera la lista de slides promocionales, textos, botones CTA e imágenes configuradas en la portada de la tienda.
+                    Recupera las 3 diapositivas (`slides`, índices `0` a `2`) configuradas en la portada de la tienda (`title`, `description`, `imageUrl`).
+                    
+                    **Capacidad SaaS requerida:**
+                    * `ecommerce`
                     
                     **Permisos requeridos:**
                     * `admin.ecommerce_config.manage`
@@ -49,7 +52,10 @@ public class HeroBannerController {
     @Operation(
             summary = "Actualizar configuración de banners principales",
             description = """
-                    Guarda la estructura, contenido textual, enlaces de destino y orden de visualización de los slides del carrusel.
+                    Guarda la configuración de exactamente 3 diapositivas (`slides`) del carrusel principal (`title`, `description` e `imageUrl` opcional).
+                    
+                    **Capacidad SaaS requerida:**
+                    * `ecommerce`
                     
                     **Permisos requeridos:**
                     * `admin.ecommerce_config.manage`
@@ -64,11 +70,14 @@ public class HeroBannerController {
     @Operation(
             summary = "Subir imagen para un slide específico",
             description = """
-                    Carga un archivo de imagen y lo asigna al slide ubicado en el índice especificado dentro del carrusel.
+                    Carga un archivo de imagen (JPEG, PNG o WebP, máximo 5 MB) y lo asigna al slide ubicado en el índice especificado dentro del carrusel.
                     
                     **Parámetros:**
-                    * `index`: Índice numérico basado en cero del slide a actualizar.
-                    * `file`: Archivo multimedia multipart/form-data.
+                    * `index`: Índice basado en cero del slide a actualizar (`0`, `1` o `2`).
+                    * `file`: Archivo de imagen `multipart/form-data` (`image/jpeg`, `image/png` o `image/webp`, máx. 5 MB).
+                    
+                    **Capacidad SaaS requerida:**
+                    * `ecommerce`
                     
                     **Permisos requeridos:**
                     * `admin.ecommerce_config.manage`
@@ -84,10 +93,13 @@ public class HeroBannerController {
     @Operation(
             summary = "Eliminar imagen de un slide específico",
             description = """
-                    Remueve la imagen asociada a la diapositiva en el índice provisto, dejando el slide sin banner gráfico.
+                    Remueve la imagen asociada a la diapositiva en el índice provisto (`0`, `1` o `2`), dejando `imageUrl` en `null`.
                     
                     **Parámetros:**
-                    * `index`: Índice numérico basado en cero del slide.
+                    * `index`: Índice basado en cero del slide (`0`, `1` o `2`).
+                    
+                    **Capacidad SaaS requerida:**
+                    * `ecommerce`
                     
                     **Permisos requeridos:**
                     * `admin.ecommerce_config.manage`

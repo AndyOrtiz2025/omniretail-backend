@@ -32,7 +32,18 @@ public class LogisticsHistoryController {
     @Operation(
             summary = "Buscar en el historial de operaciones logísticas",
             description = """
-                    Recupera el historial paginado de movimientos logísticos con filtros por estado de orden, método de entrega y rango de fechas.
+                    Recupera el historial paginado de movimientos logísticos con filtros por búsqueda textual, estado de pedido, estado de transferencia, método de entrega y rango de fechas.
+                    
+                    **Parámetros de consulta:**
+                    * `branchId`: Identificador único de la sucursal (obligatorio).
+                    * `search`: Búsqueda textual por folio, referencia o destinatario (opcional).
+                    * `status`: Filtro por estado de pedido (`pending`, `confirmed`, `preparing`, `picking`, `packing`, `ready_for_pickup`, `ready_for_dispatch`, `dispatched`, `delivered`, `cancelled`).
+                    * `transferStatus`: Filtro por estado de transferencia (`preparing`, `inTransit`, `received`, `cancelled`).
+                    * `deliveryMethod`: Filtro por método de entrega (`immediate`, `store_pickup`, `home_delivery`, `transfer`).
+                    * `from`: Fecha inicial en formato ISO `YYYY-MM-DD` (opcional).
+                    * `to`: Fecha final en formato ISO `YYYY-MM-DD` (opcional).
+                    * `page`: Índice de página en la solicitud comenzando en `0` (por defecto `0`; `PageResponse.page` se devuelve en base 1).
+                    * `size`: Tamaño de página (por defecto `20`).
                     
                     **Permisos requeridos:**
                     * `logistics.history.read`
@@ -62,8 +73,9 @@ public class LogisticsHistoryController {
                     Recupera la línea de tiempo auditada (eventos de recolección, embalaje, etiquetado y salida) para un pedido o transferencia.
                     
                     **Parámetros:**
-                    * `sourceType`: Tipo de origen (`ORDER`, `TRANSFER`).
-                    * `sourceId`: Identificador único de la orden u operación.
+                    * `branchId`: Identificador único de la sucursal.
+                    * `sourceType`: Tipo de origen (`order`, `transfer`).
+                    * `sourceId`: Identificador único de la orden o transferencia.
                     
                     **Permisos requeridos:**
                     * `logistics.history.read`

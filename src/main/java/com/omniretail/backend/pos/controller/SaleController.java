@@ -71,9 +71,11 @@ public class SaleController {
                     
                     **Parámetros de consulta:**
                     * `branchId`: Identificador de la sucursal (obligatorio).
-                    * `status`: Filtro por estado de venta (`COMPLETED`, `VOIDED`).
+                    * `status`: Filtro por estado de venta (`completed`, `partially_returned`, `returned`, `cancelled`).
                     * `from`: Fecha y hora inicial en formato ISO-8601 (opcional).
                     * `to`: Fecha y hora final en formato ISO-8601 (opcional).
+                    * `page`: Número de página (comenzando en 1).
+                    * `size`: Tamaño de página (por defecto 20).
                     
                     **Permisos requeridos:**
                     * `pos.sales.read`
@@ -93,7 +95,13 @@ public class SaleController {
     @Operation(
             summary = "Búsqueda avanzada en el historial de ventas",
             description = """
-                    Consulta con búsqueda textual y filtros combinados sobre el historial de ventas del punto de venta (folio de ticket, cliente, método de entrega y estado operativo).
+                    Consulta paginada (`page` comenzando en 1) con búsqueda textual y filtros combinados sobre el historial de ventas del punto de venta:
+                    * `branchId`: Identificador de la sucursal (obligatorio).
+                    * `search`: Búsqueda textual por folio de ticket o cliente (opcional).
+                    * `from` / `to`: Rango de fechas en formato `YYYY-MM-DD` (opcional).
+                    * `status`: Estado comercial de la venta (`completed`, `partially_returned`, `returned`, `cancelled`).
+                    * `deliveryMethod`: Método de entrega (`immediate`, `store_pickup`, `home_delivery`).
+                    * `operationalStatus`: Estado operativo del pedido asociado (`pending`, `confirmed`, `preparing`, `picking`, `packing`, `ready_for_pickup`, `ready_for_dispatch`, `dispatched`, `delivered`, `cancelled`).
                     
                     **Permisos requeridos:**
                     * `pos.sales.read`

@@ -29,10 +29,10 @@ public class CashShiftAdminController {
     @Operation(
             summary = "Listar turnos de caja de sucursales",
             description = """
-                    Recupera el historial de turnos de caja del tenant con filtros por sucursal y estado (abierto, cerrado, auditado).
+                    Recupera el historial de turnos de caja del tenant con filtros por sucursal y estado.
                     
                     **Parámetros de consulta:**
-                    * `status`: Filtro opcional por estado (`OPEN`, `CLOSED`).
+                    * `status`: Filtro opcional por estado (`open`, `closed`, `closed_with_difference`).
                     * `branchId`: Identificador único de la sucursal a consultar (opcional).
                     
                     **Permisos requeridos:**

@@ -43,7 +43,10 @@ public class SupplierProductController {
     @Operation(
             summary = "Listar vinculaciones de producto-proveedor con paginación",
             description = """
-                    Recupera el listado administrativo paginado de productos asociados a proveedores con filtros por proveedor, producto, estado activo y condición de preferido.
+                    Recupera el listado administrativo paginado (`page` comenzando en 1) de productos asociados a proveedores con filtros por proveedor, producto, estado activo y condición de preferido.
+                    
+                    **Capacidad SaaS requerida:**
+                    * `purchasing`
                     
                     **Permisos requeridos:**
                     * `admin.suppliers.manage`
@@ -64,7 +67,13 @@ public class SupplierProductController {
     @Operation(
             summary = "Listar productos de proveedores activos (operativo)",
             description = """
-                    Recupera de manera ágil los productos y costos activos asociados a un proveedor o producto para operaciones de abastecimiento en tiempo real.
+                    Recupera los productos y costos activos asociados a un proveedor o producto para operaciones de abastecimiento en tiempo real.
+                    
+                    **Capacidad SaaS requerida:**
+                    * `purchasing`
+                    
+                    **Permisos requeridos (cualquiera de ellos):**
+                    * `purchasing.orders.read`, `purchasing.orders.create` o `purchasing.orders.approve`
                     """
     )
     @GetMapping("/active")

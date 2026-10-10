@@ -42,7 +42,7 @@ public class PromotionController {
                     
                     **Parámetros de consulta:**
                     * `productId`: Identificador del producto a consultar promociones asociadas (opcional).
-                    * `page`: Número de página (base 0).
+                    * `page`: Número de página (comenzando en 1).
                     * `size`: Tamaño de página (por defecto 20).
                     
                     **Permisos requeridos:**
@@ -58,7 +58,7 @@ public class PromotionController {
     @Operation(
             summary = "Obtener detalle de promoción por ID",
             description = """
-                    Recupera la información completa de una promoción: tipo de descuento, valor, fechas de vigencia, canales participantes y artículos incluidos.
+                    Recupera la información completa de una promoción: tipo de descuento (`percentage`, `fixed_discount`, `fixed_price`), valor, fechas de vigencia, estado (`active`, `ended`, `cancelled`) y artículos incluidos.
                     
                     **Permisos requeridos:**
                     * `catalog.promotions.read`

@@ -39,8 +39,8 @@ public class OrderAdminController {
                     Recupera el listado paginado de órdenes de compra del storefront con soporte de filtrado por estado.
                     
                     **Parámetros de consulta:**
-                    * `status`: Filtro opcional por estado (`PENDING`, `CONFIRMED`, `SHIPPED`, `DELIVERED`, `CANCELLED`).
-                    * `page`: Número de página (base 0).
+                    * `status`: Filtro opcional por estado (`pending`, `confirmed`, `preparing`, `picking`, `packing`, `ready_for_pickup`, `ready_for_dispatch`, `dispatched`, `delivered`, `cancelled`).
+                    * `page`: Número de página (comenzando en 1).
                     * `size`: Tamaño de página (por defecto 20).
                     
                     **Permisos requeridos:**
@@ -73,7 +73,7 @@ public class OrderAdminController {
     @Operation(
             summary = "Actualizar estado de un pedido",
             description = """
-                    Permite a un operador avanzar o modificar el estado del pedido en su ciclo de vida comercial o logístico.
+                    Permite a un operador avanzar o modificar el estado del pedido en su ciclo de vida (`pending`, `confirmed`, `preparing`, `picking`, `packing`, `ready_for_pickup`, `ready_for_dispatch`, `dispatched`, `delivered`, `cancelled`).
                     
                     **Permisos requeridos:**
                     * `admin.orders.manage`

@@ -27,7 +27,7 @@ public class StorePickupController {
     @Operation(
             summary = "Registrar entrega de pedido en mostrador a cliente",
             description = """
-                    Confirma que el cliente ha recibido en mano su paquete en la sucursal física seleccionada, finalizando el pedido con estado `DELIVERED`.
+                    Confirma que el cliente ha recibido en mano su paquete en la sucursal física seleccionada, finalizando el pedido con estado `delivered`.
                     
                     **Permisos requeridos:**
                     * `logistics.dispatch.confirm`

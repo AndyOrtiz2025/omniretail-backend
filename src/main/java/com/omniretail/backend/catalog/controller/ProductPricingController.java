@@ -21,7 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
         name = "Precios e Historial de Precios de Producto",
-        description = "Actualización de costos, precios base y consulta del histórico de variaciones de precio por auditoría."
+        description = "Actualización del precio base de venta (`salePrice`) y consulta del histórico de variaciones de precio por auditoría."
 )
 @RestController
 @RequestMapping("/catalog/products")
@@ -31,9 +31,9 @@ public class ProductPricingController {
     private final ProductPricingService pricingService;
 
     @Operation(
-            summary = "Actualizar precio y costo de un producto",
+            summary = "Actualizar precio de venta de un producto",
             description = """
-                    Modifica el precio de venta y costo de adquisición del producto, generando automáticamente un registro inmutable en el historial de precios.
+                    Modifica el precio de venta (`salePrice`) del producto con motivo opcional (`reason`), generando automáticamente un registro inmutable en el historial de precios.
                     
                     **Permisos requeridos:**
                     * `catalog.products.update`
@@ -49,7 +49,7 @@ public class ProductPricingController {
     @Operation(
             summary = "Consultar historial de cambios de precio",
             description = """
-                    Recupera el histórico cronológico y paginado de modificaciones de precio sufridas por el producto (precio anterior, nuevo precio, usuario responsable y fecha).
+                    Recupera el histórico cronológico y paginado (`page` comenzando en 1) de modificaciones de precio de venta sufridas por el producto (precio anterior, nuevo precio, motivo, usuario responsable y fecha).
                     
                     **Permisos requeridos:**
                     * `catalog.products.read`

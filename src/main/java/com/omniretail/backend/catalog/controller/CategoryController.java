@@ -44,7 +44,7 @@ public class CategoryController {
                     Recupera el listado completo de categorías registradas en el tenant, con soporte para filtrar por estado operativo.
                     
                     **Parámetros de consulta:**
-                    * `status`: Filtro opcional por estado (`ACTIVE`, `INACTIVE`).
+                    * `status`: Filtro opcional por estado (`active`, `archived`).
                     
                     **Permisos requeridos:**
                     * `catalog.categories.read`
@@ -60,7 +60,7 @@ public class CategoryController {
     @Operation(
             summary = "Obtener detalle de una categoría por ID",
             description = """
-                    Recupera la información completa de una categoría (nombre, código, descripción, categoría padre e imagen asociada).
+                    Recupera la información completa de una categoría (`name`, `slug`, `description`, `parentId`, `status`, `imageUrl` y subcategorías).
                     
                     **Permisos requeridos:**
                     * `catalog.categories.read`
@@ -75,7 +75,7 @@ public class CategoryController {
     @Operation(
             summary = "Crear nueva categoría",
             description = """
-                    Registra una nueva categoría en el catálogo del tenant.
+                    Registra una nueva categoría en el catálogo del tenant (`name`, `slug`, `description`, `parentId`, `status`).
                     
                     **Permisos requeridos:**
                     * `catalog.categories.manage`
@@ -91,7 +91,7 @@ public class CategoryController {
     @Operation(
             summary = "Actualizar categoría existente",
             description = """
-                    Actualiza los datos descriptivos, nombre, código o jerarquía de una categoría específica.
+                    Actualiza los datos descriptivos (`name`, `slug`, `description`, `parentId`, `status`) de una categoría específica.
                     
                     **Permisos requeridos:**
                     * `catalog.categories.manage`

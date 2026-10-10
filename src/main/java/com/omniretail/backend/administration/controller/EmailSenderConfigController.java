@@ -22,7 +22,7 @@ import org.springframework.web.bind.annotation.RestController;
 /** Remitente Gmail del tenant. El tenant sale siempre del JWT; nunca de la ruta ni del body. */
 @Tag(
         name = "Configuración de Servidor de Correo",
-        description = "Gestión de credenciales de envío SMTP (Gmail) personalizadas por tenant para notificaciones de pedidos, invitaciones y comprobantes."
+        description = "Gestión de credenciales de envío SMTP (Gmail) personalizadas por tenant para notificaciones operativas de pedidos y órdenes de compra."
 )
 @RestController
 @RequestMapping("/administration/email-sender")

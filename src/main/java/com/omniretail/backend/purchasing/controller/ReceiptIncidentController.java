@@ -37,7 +37,10 @@ public class ReceiptIncidentController {
     @Operation(
             summary = "Listar incidencias de una recepción",
             description = """
-                    Recupera el historial paginado de anomalías registradas en la recepción de mercancía especificada.
+                    Recupera el historial paginado (`page` comenzando en 1) de anomalías registradas en la recepción de mercancía especificada.
+                    
+                    **Permisos requeridos (cualquiera de ellos):**
+                    * `receiving.receipts.read`, `receiving.receipts.create` o `receiving.receipts.confirm`
                     """
     )
     @GetMapping("/{receiptId}/incidents")
@@ -50,7 +53,10 @@ public class ReceiptIncidentController {
     @Operation(
             summary = "Registrar nueva incidencia de recepción",
             description = """
-                    Levanta un reporte de incidencia sobre una partida recepcionada (ej. producto dañado, faltante respecto a factura, lote no conforme).
+                    Levanta un reporte de incidencia sobre una partida recepcionada (`incidentType`: `missing`, `damaged`, `wrong_item`, `expired`, `other`).
+                    
+                    **Capacidad SaaS requerida:**
+                    * `receiving`
                     
                     **Permisos requeridos:**
                     * `receiving.incidents.manage`
@@ -68,7 +74,10 @@ public class ReceiptIncidentController {
     @Operation(
             summary = "Resolver incidencia mediante reposición de mercancía",
             description = """
-                    Liquida la incidencia registrando el ingreso físico del producto de reposición entregado por el proveedor.
+                    Liquida la incidencia (`resolved`) registrando el ingreso físico del producto de reposición entregado por el proveedor.
+                    
+                    **Capacidad SaaS requerida:**
+                    * `receiving`
                     
                     **Permisos requeridos:**
                     * `receiving.incidents.manage`
@@ -85,7 +94,10 @@ public class ReceiptIncidentController {
     @Operation(
             summary = "Marcar incidencia como resuelta",
             description = """
-                    Cierra administrativamente la incidencia (por ejemplo, tras emitirse una nota de crédito o acuerdo comercial).
+                    Cierra administrativamente la incidencia (`resolved`).
+                    
+                    **Capacidad SaaS requerida:**
+                    * `receiving`
                     
                     **Permisos requeridos:**
                     * `receiving.incidents.manage`

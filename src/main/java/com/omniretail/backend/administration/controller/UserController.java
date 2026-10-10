@@ -45,7 +45,7 @@ public class UserController {
     @GetMapping
     @Operation(
             summary = "Listar empleados paginados",
-            description = "Devuelve el listado de empleados del tenant con paginación y filtro opcional por estado (`active`, `blocked`).")
+            description = "Devuelve el listado de empleados del tenant con paginación (`page` comenzando en 1) y filtro opcional por estado (`active`, `inactive`, `blocked`, `archived`).")
     public PageResponse<UserResponse> list(
             @RequestParam(required = false) UserStatus status, @PageableDefault(size = 20) Pageable pageable) {
         return userService.listUsers(status, pageable);
@@ -83,7 +83,7 @@ public class UserController {
     @PutMapping("/{id}/status")
     @Operation(
             summary = "Cambiar estado de empleado",
-            description = "Activa o bloquea a un empleado. Al bloquearlo, se invalidan inmediatamente sus sesiones activas.")
+            description = "Actualiza el estado operativo de un empleado (`active`, `inactive`, `blocked`; no permite `archived`). Al desactivarlo o bloquearlo, se invalidan inmediatamente sus sesiones activas.")
     public UserResponse updateStatus(@PathVariable UUID id, @RequestParam UserStatus status) {
         return userService.updateUserStatus(id, status);
     }

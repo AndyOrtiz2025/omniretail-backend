@@ -43,7 +43,7 @@ public class TenantSubscriptionController {
     @Operation(
             summary = "Actualizar complementos (addons) de la suscripción",
             description = """
-                    Modifica los complementos asignados a la suscripción del tenant (como capacidad extra de sucursales o licencias de usuarios concurrentes).
+                    Modifica los complementos (`addonCodes`) asignados a la suscripción activa del tenant (`ecommerce_delivery`, `advanced_reports`).
                     
                     **Permisos requeridos:**
                     * `admin.plans.manage`

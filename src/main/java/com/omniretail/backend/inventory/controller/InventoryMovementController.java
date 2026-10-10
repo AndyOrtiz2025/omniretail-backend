@@ -38,11 +38,13 @@ public class InventoryMovementController {
                     **Filtros disponibles:**
                     * `branchId`: Identificador de la sucursal (opcional).
                     * `productId`: Identificador del producto (opcional).
-                    * `type`: Tipo de movimiento (`PURCHASE_RECEIPT`, `SALE`, `SALE_VOID`, `ADJUSTMENT_IN`, `ADJUSTMENT_OUT`, `TRANSFER_IN`, `TRANSFER_OUT`, etc.).
+                    * `type`: Tipo base de movimiento (`in`, `out`, `transfer`).
                     * `from`: Fecha inicial en formato ISO-8601 UTC (opcional).
                     * `to`: Fecha final en formato ISO-8601 UTC (opcional).
                     * `search`: Búsqueda textual por referencia, motivo o código.
-                    * `displayType`: Agrupación visual (`all`, `in`, `out`).
+                    * `displayType`: Clasificación operativa (`purchase_in`, `transfer_out`, `transfer_in`, `inventory_adjustment`, `shrinkage`, `manual_in`, `manual_out`, `sale`, `dispatch`, `return`, `void`, `store_pickup`, `in`, `out`, `adjustment`, `transfer`).
+                    * `page`: Número de página (comenzando en 1).
+                    * `size`: Tamaño de página (por defecto 10).
                     
                     **Permisos requeridos:**
                     * `inventory.movements.read`

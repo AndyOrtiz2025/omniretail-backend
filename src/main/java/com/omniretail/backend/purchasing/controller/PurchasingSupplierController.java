@@ -36,7 +36,13 @@ public class PurchasingSupplierController {
     @Operation(
             summary = "Listar proveedores activos (selectores)",
             description = """
-                    Recupera la lista simplificada de proveedores activos del tenant, ideal para poblar selectores y formularios de órdenes de compra.
+                    Recupera la lista simplificada de proveedores activos (`active`) del tenant, ideal para poblar selectores y formularios de órdenes de compra.
+                    
+                    **Capacidad SaaS requerida:**
+                    * `purchasing`
+                    
+                    **Permisos requeridos (cualquiera de ellos):**
+                    * `purchasing.orders.read`, `purchasing.orders.create` o `purchasing.orders.approve`
                     """
     )
     @GetMapping("/active")
@@ -47,13 +53,19 @@ public class PurchasingSupplierController {
     @Operation(
             summary = "Listar proveedores con paginación y búsqueda",
             description = """
-                    Recupera el padrón general de proveedores con búsqueda por razón social o identificación fiscal y filtro por estado.
+                    Recupera el padrón general de proveedores con búsqueda textual y filtro por estado.
                     
                     **Parámetros de consulta:**
-                    * `status`: Filtro por estado (`ACTIVE`, `INACTIVE`, `ARCHIVED`).
-                    * `search`: Búsqueda textual por nombre comercial o RFC.
-                    * `page`: Número de página (base 0).
-                    * `size`: Tamaño de página (por defecto 20).
+                    * `status`: Filtro por estado (`active`, `inactive`, `archived`).
+                    * `search`: Búsqueda textual por nombre o código del proveedor.
+                    * `page`: Número de página (comenzando en 1).
+                    * `size`: Tamaño de página (por defecto 20, máx. 100).
+                    
+                    **Capacidad SaaS requerida:**
+                    * `purchasing`
+                    
+                    **Permisos requeridos (cualquiera de ellos):**
+                    * `purchasing.orders.read`, `purchasing.orders.create` o `purchasing.orders.approve`
                     """
     )
     @GetMapping
@@ -67,7 +79,13 @@ public class PurchasingSupplierController {
     @Operation(
             summary = "Listar catálogo de productos ofrecidos por el proveedor",
             description = """
-                    Recupera los artículos provistos por este proveedor junto con sus números de parte (SKU del proveedor) y costos pactados.
+                    Recupera de forma paginada (`page` comenzando en 1) los artículos provistos por este proveedor junto con sus números de parte (`supplierSku`), costos pactados y escalas de volumen.
+                    
+                    **Capacidad SaaS requerida:**
+                    * `purchasing`
+                    
+                    **Permisos requeridos (cualquiera de ellos):**
+                    * `purchasing.orders.read`, `purchasing.orders.create` o `purchasing.orders.approve`
                     """
     )
     @GetMapping("/{supplierId}/products")
@@ -82,7 +100,13 @@ public class PurchasingSupplierController {
     @Operation(
             summary = "Consultar incidencias de recepción asociadas al proveedor",
             description = """
-                    Recupera las reclamaciones y reportes de discrepancia (faltantes, piezas dañadas o productos incorrectos) registrados al recibir mercancía de este proveedor.
+                    Recupera de forma paginada (`page` comenzando en 1) las incidencias de recepción (`status`: `open`, `resolved`) registradas al recibir mercancía de este proveedor.
+                    
+                    **Capacidad SaaS requerida:**
+                    * `purchasing`
+                    
+                    **Permisos requeridos (cualquiera de ellos):**
+                    * `purchasing.orders.read`, `purchasing.orders.create` o `purchasing.orders.approve`
                     """
     )
     @GetMapping("/{supplierId}/incidents")
@@ -97,7 +121,13 @@ public class PurchasingSupplierController {
     @Operation(
             summary = "Obtener detalle completo de proveedor por ID",
             description = """
-                    Recupera la ficha pormenorizada del proveedor: términos de crédito, datos bancarios, contacto y resumen de órdenes de compra.
+                    Recupera la ficha operativa del proveedor para compras (datos comerciales, contacto y estado).
+                    
+                    **Capacidad SaaS requerida:**
+                    * `purchasing`
+                    
+                    **Permisos requeridos (cualquiera de ellos):**
+                    * `purchasing.orders.read`, `purchasing.orders.create` o `purchasing.orders.approve`
                     """
     )
     @GetMapping("/{id}")

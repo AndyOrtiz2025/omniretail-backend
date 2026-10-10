@@ -53,11 +53,11 @@ public class ProductController {
                     
                     **Filtros disponibles:**
                     * `search`: Búsqueda textual por nombre, SKU o código de barras.
-                    * `status`: Filtro por estado (`ACTIVE`, `INACTIVE`, `ARCHIVED`).
-                    * `productType`: Tipo de producto (`SIMPLE`, `VARIANT`, `KIT`, `SERVICE`).
+                    * `status`: Filtro por estado (`published`, `archived`).
+                    * `productType`: Tipo de producto (`physical`, `service`, `kit`).
                     * `categoryId`: Identificador de la categoría.
-                    * `channels`: Canales de venta autorizados (`POS`, `ECOMMERCE`).
-                    * `promotion`: Filtro de artículos con promoción activa (`all`, `with_promotion`, `without_promotion`).
+                    * `channels`: Canales de venta autorizados (`pos`, `ecommerce`, `mobileApp`).
+                    * `promotion`: Filtro de artículos con promoción activa (`all`, `with`, `without`).
                     
                     **Permisos requeridos:**
                     * `catalog.products.read`

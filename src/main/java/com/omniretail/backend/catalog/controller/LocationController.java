@@ -47,9 +47,9 @@ public class LocationController {
                     **Parámetros de consulta:**
                     * `branchId`: Identificador de la sucursal (opcional).
                     * `parentId`: Identificador de la ubicación padre en la jerarquía (opcional).
-                    * `type`: Tipo de ubicación (`AISLE`, `RACK`, `SHELF`, `BIN`, etc.).
-                    * `status`: Estado de la ubicación (`ACTIVE`, `INACTIVE`).
-                    * `page`: Número de página (base 0).
+                    * `type`: Tipo de ubicación (`warehouse`, `aisle`, `shelf`, `level`).
+                    * `status`: Estado de la ubicación (`active`, `inactive`, `archived`).
+                    * `page`: Número de página (comenzando en 1).
                     * `size`: Tamaño de página (por defecto 20).
                     
                     **Permisos requeridos:**

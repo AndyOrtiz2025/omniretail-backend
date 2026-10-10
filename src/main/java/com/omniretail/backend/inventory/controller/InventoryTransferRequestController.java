@@ -58,7 +58,7 @@ public class InventoryTransferRequestController {
     @Operation(
             summary = "Listar solicitudes de transferencia con paginación",
             description = """
-                    Recupera el listado paginado de solicitudes de reabastecimiento entre tiendas con filtros por sucursal origen, destino y estado operativo.
+                    Recupera el listado paginado (`page` comenzando en 1) de solicitudes de reabastecimiento entre tiendas con filtros por sucursal solicitante (`requestingBranchId`), sucursal origen (`sourceBranchId`) y estado operativo (`status`: `requested`, `approved`, `rejected`, `cancelled`).
                     
                     **Permisos requeridos:**
                     * `inventory.transfers.manage`

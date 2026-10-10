@@ -29,10 +29,10 @@ public class CustomerAdminController {
     @Operation(
             summary = "Listar clientes del tenant",
             description = """
-                    Recupera el padrón de clientes registrados en el tenant, permitiendo filtrar por su estado de cuenta (activo, inactivo, bloqueado).
+                    Recupera el padrón de clientes registrados en el tenant, permitiendo filtrar por su estado (`active`, `inactive`, `archived`).
                     
                     **Parámetros de consulta:**
-                    * `status`: Filtro opcional por estado (`ACTIVE`, `INACTIVE`, `SUSPENDED`).
+                    * `status`: Filtro opcional por estado (`active`, `inactive`, `archived`).
                     
                     **Permisos requeridos:**
                     * `admin.customers.read`

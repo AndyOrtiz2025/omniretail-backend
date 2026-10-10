@@ -27,7 +27,7 @@ public class DeliveryConfirmationController {
     @Operation(
             summary = "Confirmar entrega a domicilio completada",
             description = """
-                    Registra la confirmación de entrega del paquete en el domicilio del destinatario, finalizando el ciclo logístico con estado `DELIVERED`.
+                    Registra la confirmación de entrega del paquete en el domicilio del destinatario, finalizando el ciclo logístico con estado `delivered`.
                     
                     **Permisos requeridos:**
                     * `logistics.dispatch.confirm`

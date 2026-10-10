@@ -89,7 +89,7 @@ public class SaleReturnController {
                     
                     **Parámetros de consulta:**
                     * `branchId`: Identificador único de la sucursal.
-                    * `page`: Número de página (base 0).
+                    * `page`: Número de página (comenzando en 1).
                     * `size`: Tamaño de página (por defecto 20).
                     
                     **Permisos requeridos:**

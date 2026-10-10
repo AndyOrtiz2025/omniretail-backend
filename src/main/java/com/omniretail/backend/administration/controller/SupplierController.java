@@ -39,7 +39,7 @@ public class SupplierController {
     @GetMapping
     @Operation(
             summary = "Listar proveedores paginados",
-            description = "Devuelve los proveedores del negocio con soporte de paginación y filtro opcional por estado (`active`, `archived`).")
+            description = "Devuelve los proveedores del negocio con soporte de paginación (`page` comenzando en 1) y filtro opcional por estado (`active`, `inactive`, `archived`).")
     public PageResponse<SupplierResponse> list(
             @RequestParam(required = false) SupplierStatus status, @PageableDefault(size = 20) Pageable pageable) {
         return supplierService.listSuppliers(status, pageable);

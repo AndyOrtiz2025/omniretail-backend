@@ -23,7 +23,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
         name = "Parámetros y Umbrales de Inventario",
-        description = "Configuración de parámetros operativos por producto y sucursal: stock mínimo de seguridad, capacidad máxima y punto de reorden."
+        description = "Configuración de parámetros operativos por producto y sucursal: stock mínimo (`minStock`), punto de reorden (`reorderPoint`) y ubicación por defecto (`defaultLocationId`)."
 )
 @RestController
 @RequestMapping("/inventory/settings")
@@ -35,12 +35,12 @@ public class InventorySettingsController {
     @Operation(
             summary = "Listar configuraciones y umbrales de inventario",
             description = """
-                    Recupera el listado paginado de parámetros y umbrales de inventario configurados en una sucursal.
+                    Recupera el listado paginado de parámetros y umbrales de inventario (`minStock`, `reorderPoint`, `defaultLocationId`) configurados en una sucursal.
                     
                     **Parámetros de consulta:**
                     * `branchId`: Identificador único de la sucursal (obligatorio).
                     * `productId`: Filtro por producto específico (opcional).
-                    * `page`: Número de página (base 0).
+                    * `page`: Número de página (comenzando en 1).
                     * `size`: Tamaño de página (por defecto 20).
                     
                     **Permisos requeridos:**
@@ -59,7 +59,7 @@ public class InventorySettingsController {
     @Operation(
             summary = "Obtener configuración de inventario de un producto",
             description = """
-                    Recupera los umbrales de stock mínimo, máximo y punto de reorden configurados para un producto en una sucursal específica.
+                    Recupera los parámetros de stock mínimo (`minStock`), punto de reorden (`reorderPoint`) y ubicación por defecto (`defaultLocationId`) configurados para un producto en una sucursal específica (o `204 No Content` si no tiene configuración explícita).
                     
                     **Permisos requeridos:**
                     * `inventory.stock.read`
@@ -78,7 +78,7 @@ public class InventorySettingsController {
     @Operation(
             summary = "Guardar o actualizar umbrales de inventario",
             description = """
-                    Configura o actualiza (upsert) los límites de stock mínimo, stock máximo y punto de reorden del producto en la sucursal indicada.
+                    Configura o actualiza (upsert) el stock mínimo (`minStock`), punto de reorden (`reorderPoint`) y ubicación por defecto (`defaultLocationId`) del producto en la sucursal indicada.
                     
                     **Permisos requeridos:**
                     * `catalog.products.update`

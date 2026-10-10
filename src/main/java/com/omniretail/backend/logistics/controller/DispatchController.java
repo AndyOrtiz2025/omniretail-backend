@@ -82,7 +82,7 @@ public class DispatchController {
     @Operation(
             summary = "Confirmar despacho y salida de pedido de cliente",
             description = """
-                    Registra la entrega física del paquete al transportista (número de guía, chofer o mensajería), avanzando el pedido al estado `SHIPPED` (en camino).
+                    Registra la entrega física del paquete al transportista (`transportMode`: `none`, `customer`, `own_fleet`, `third_party`), avanzando el pedido al estado `dispatched`.
                     
                     **Permisos requeridos:**
                     * `logistics.dispatch.confirm`
@@ -116,7 +116,7 @@ public class DispatchController {
     @Operation(
             summary = "Confirmar despacho y salida de transferencia de sucursal",
             description = """
-                    Confirma que el camión o vehículo ha zarpado con la mercancía de traspaso, colocando la transferencia en estado `IN_TRANSIT`.
+                    Confirma que el vehículo ha salido con la mercancía de traspaso, colocando el despacho en `dispatched` y la transferencia en estado `inTransit`.
                     
                     **Permisos requeridos:**
                     * `logistics.dispatch.confirm`

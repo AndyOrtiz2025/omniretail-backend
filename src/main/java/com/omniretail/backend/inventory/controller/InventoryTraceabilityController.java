@@ -78,7 +78,13 @@ public class InventoryTraceabilityController {
     @Operation(
             summary = "Validar números de serie escaneados",
             description = """
-                    Comprueba la validez, existencia y disponibilidad de una lista de números de serie ingresados durante procesos de cobro POS o despacho de pedidos.
+                    Comprueba en lote si una lista de números de serie ya existe o contiene repetidos para el producto indicado.
+                    
+                    **Capacidad SaaS requerida:**
+                    * `inventory` o `receiving`
+                    
+                    **Permisos requeridos (cualquiera de ellos):**
+                    * `inventory.stock.read`, `receiving.receipts.create` o `receiving.receipts.confirm`
                     """
     )
     @PostMapping("/serials/validate")
@@ -89,7 +95,7 @@ public class InventoryTraceabilityController {
     @Operation(
             summary = "Consultar lotes próximos a vencer",
             description = """
-                    Recupera el listado paginado de lotes cuya fecha de caducidad se encuentra dentro del rango de días estipulado (por defecto 30 días) para prevenir pérdidas por vencimiento.
+                    Recupera el listado paginado (`page` comenzando en 1) de lotes cuya fecha de caducidad se encuentra dentro del rango de días estipulado (por defecto 30 días, entre 1 y 365) para prevenir pérdidas por vencimiento.
                     
                     **Permisos requeridos:**
                     * `inventory.stock.read`
