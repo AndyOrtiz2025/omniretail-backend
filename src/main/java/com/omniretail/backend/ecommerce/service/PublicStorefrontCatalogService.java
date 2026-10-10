@@ -11,9 +11,11 @@ import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductMedia;
 import com.omniretail.backend.catalog.entity.ProductMediaType;
 import com.omniretail.backend.catalog.entity.ProductStatus;
+import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.entity.Unit;
 import com.omniretail.backend.catalog.entity.UnitConversion;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
+import com.omniretail.backend.catalog.repository.ProductKitComponentRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.ProductMediaRepository;
 import com.omniretail.backend.catalog.repository.UnitConversionRepository;
@@ -44,6 +46,7 @@ public class PublicStorefrontCatalogService {
 
     private final TenantRepository tenantRepository;
     private final ProductRepository productRepository;
+    private final ProductKitComponentRepository productKitComponentRepository;
     private final ProductMediaRepository productMediaRepository;
     private final CategoryRepository categoryRepository;
     private final UnitRepository unitRepository;
@@ -63,13 +66,14 @@ public class PublicStorefrontCatalogService {
                 .findByTenantIdAndStatusAndChannelEcommerceTrue(tenantId, ProductStatus.published);
         Instant pricingAt = Instant.now();
         Map<UUID, BigDecimal> availableByProduct = availableByProduct(tenantId);
+        Map<UUID, BigDecimal> availableKits = availableKits(tenantId, products, availableByProduct);
         Map<UUID, BigDecimal> saleUnitFactors = saleUnitFactors(tenantId, products);
         Map<UUID, ProductMedia> primaryMedia = primaryMediaByProduct(tenantId, products);
 
         return products.stream()
                 .map(product -> toResponse(
                         product, activeCategories, units, tenantId, pricingAt,
-                        availableByProduct, saleUnitFactors, primaryMedia.get(product.getId())))
+                        availableByProduct, availableKits, saleUnitFactors, primaryMedia.get(product.getId())))
                 .toList();
     }
 
@@ -86,9 +90,11 @@ public class PublicStorefrontCatalogService {
                 .filter(found -> found.getTenantId().equals(tenantId))
                 .map(Unit::getName)
                 .orElse(null);
+        Map<UUID, BigDecimal> availableByProduct = availableByProduct(tenantId);
         StockAvailability stock = stockAvailability(
                 product,
-                availableByProduct(tenantId),
+                availableByProduct,
+                availableKits(tenantId, List.of(product), availableByProduct),
                 saleUnitFactors(tenantId, List.of(product)));
         ProductMedia primaryMedia = primaryMediaByProduct(tenantId, List.of(product)).get(product.getId());
         return PublicStorefrontProductResponse.from(
@@ -111,12 +117,13 @@ public class PublicStorefrontCatalogService {
             UUID tenantId,
             Instant pricingAt,
             Map<UUID, BigDecimal> availableByProduct,
+            Map<UUID, BigDecimal> availableKits,
             Map<UUID, BigDecimal> saleUnitFactors,
             ProductMedia primaryMedia) {
         UUID saleUnitId = product.getSaleUnitId() != null ? product.getSaleUnitId() : product.getBaseUnitId();
         Unit saleUnit = units.get(saleUnitId);
         Category category = categories.get(product.getCategoryId());
-        StockAvailability stock = stockAvailability(product, availableByProduct, saleUnitFactors);
+        StockAvailability stock = stockAvailability(product, availableByProduct, availableKits, saleUnitFactors);
         return PublicStorefrontProductResponse.from(
                 product,
                 category != null ? category.getName() : null,
@@ -164,7 +171,12 @@ public class PublicStorefrontCatalogService {
     private static StockAvailability stockAvailability(
             Product product,
             Map<UUID, BigDecimal> availableByProduct,
+            Map<UUID, BigDecimal> availableKits,
             Map<UUID, BigDecimal> saleUnitFactors) {
+        if (product.getProductType() == ProductType.kit) {
+            BigDecimal available = availableKits.getOrDefault(product.getId(), BigDecimal.ZERO).max(BigDecimal.ZERO);
+            return new StockAvailability(available.signum() > 0, available);
+        }
         if (!Boolean.TRUE.equals(product.getTrackingStock())) {
             return new StockAvailability(true, null);
         }
@@ -175,6 +187,51 @@ public class PublicStorefrontCatalogService {
         }
         available = available.max(BigDecimal.ZERO).divide(factor, 0, RoundingMode.DOWN);
         return new StockAvailability(available.signum() > 0, available.max(BigDecimal.ZERO));
+    }
+
+    /** La capacidad de un kit es el menor número entero de kits completos que permiten sus componentes. */
+    private Map<UUID, BigDecimal> availableKits(
+            UUID tenantId, List<Product> products, Map<UUID, BigDecimal> availableByProduct) {
+        List<UUID> kitIds = products.stream()
+                .filter(product -> product.getProductType() == ProductType.kit)
+                .map(Product::getId)
+                .toList();
+        if (kitIds.isEmpty()) return Map.of();
+        Map<UUID, List<com.omniretail.backend.catalog.entity.ProductKitComponent>> componentsByKit =
+                productKitComponentRepository.findByTenantIdAndKitProductIdIn(tenantId, kitIds).stream()
+                        .collect(java.util.stream.Collectors.groupingBy(
+                                com.omniretail.backend.catalog.entity.ProductKitComponent::getKitProductId));
+        Map<UUID, Product> componentProducts = productRepository.findByTenantIdAndIdIn(
+                        tenantId, componentsByKit.values().stream().flatMap(List::stream)
+                                .map(com.omniretail.backend.catalog.entity.ProductKitComponent::getComponentProductId)
+                                .distinct().toList())
+                .stream().collect(java.util.stream.Collectors.toMap(Product::getId, Function.identity()));
+        Map<UUID, BigDecimal> result = new HashMap<>();
+        for (UUID kitId : kitIds) {
+            List<com.omniretail.backend.catalog.entity.ProductKitComponent> components = componentsByKit.get(kitId);
+            if (components == null || components.isEmpty()) {
+                result.put(kitId, BigDecimal.ZERO);
+                continue;
+            }
+            BigDecimal capacity = components.stream().map(component -> {
+                        Product componentProduct = componentProducts.get(component.getComponentProductId());
+                        if (componentProduct == null
+                                || componentProduct.getProductType() != ProductType.physical
+                                || componentProduct.getStatus() != ProductStatus.published
+                                || !Boolean.TRUE.equals(componentProduct.getTrackingStock())
+                                || component.getQuantityPerKit() == null
+                                || component.getQuantityPerKit().signum() <= 0) {
+                            return BigDecimal.ZERO;
+                        }
+                        return availableByProduct.getOrDefault(component.getComponentProductId(), BigDecimal.ZERO)
+                                .max(BigDecimal.ZERO)
+                                .divide(component.getQuantityPerKit(), 0, RoundingMode.DOWN);
+                    })
+                    .min(BigDecimal::compareTo)
+                    .orElse(BigDecimal.ZERO);
+            result.put(kitId, capacity.max(BigDecimal.ZERO));
+        }
+        return result;
     }
 
     private Map<UUID, BigDecimal> saleUnitFactors(UUID tenantId, List<Product> products) {

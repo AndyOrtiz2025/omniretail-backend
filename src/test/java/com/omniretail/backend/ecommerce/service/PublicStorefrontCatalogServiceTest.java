@@ -19,11 +19,14 @@ import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductMedia;
 import com.omniretail.backend.catalog.entity.ProductMediaType;
 import com.omniretail.backend.catalog.entity.ProductStatus;
+import com.omniretail.backend.catalog.entity.ProductType;
+import com.omniretail.backend.catalog.entity.ProductKitComponent;
 import com.omniretail.backend.catalog.entity.Unit;
 import com.omniretail.backend.catalog.entity.UnitConversion;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.ProductMediaRepository;
+import com.omniretail.backend.catalog.repository.ProductKitComponentRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
 import com.omniretail.backend.catalog.repository.UnitConversionRepository;
 import com.omniretail.backend.catalog.service.ProductPriceResolver;
@@ -46,6 +49,7 @@ class PublicStorefrontCatalogServiceTest {
 
     @Mock private TenantRepository tenantRepository;
     @Mock private ProductRepository productRepository;
+    @Mock private ProductKitComponentRepository productKitComponentRepository;
     @Mock private ProductMediaRepository productMediaRepository;
     @Mock private CategoryRepository categoryRepository;
     @Mock private UnitRepository unitRepository;
@@ -247,6 +251,43 @@ class PublicStorefrontCatalogServiceTest {
 
         assertThat(response.inStock()).isFalse();
         assertThat(response.availableQuantity()).isEqualByComparingTo("0");
+    }
+
+    @Test
+    void exposesOnlyCompleteFixedKitsFromTheirComponentAvailability() {
+        UUID tenantId = UUID.randomUUID();
+        UUID branchId = UUID.randomUUID();
+        UUID unitId = UUID.randomUUID();
+        UUID kitId = UUID.randomUUID();
+        UUID hammerId = UUID.randomUUID();
+        UUID tapeId = UUID.randomUUID();
+        Product kit = product(kitId, UUID.randomUUID(), unitId);
+        when(kit.getProductType()).thenReturn(ProductType.kit);
+        Product hammerProduct = trackedProduct(hammerId, unitId);
+        Product tapeProduct = trackedProduct(tapeId, unitId);
+        ProductKitComponent hammer = ProductKitComponent.builder()
+                .kitProductId(kitId).componentProductId(hammerId)
+                .quantityPerKit(new BigDecimal("2")).build();
+        ProductKitComponent tape = ProductKitComponent.builder()
+                .kitProductId(kitId).componentProductId(tapeId)
+                .quantityPerKit(BigDecimal.ONE).build();
+        when(tenantRepository.findBySlug("ferreteria-los-simpson")).thenReturn(Optional.of(tenant(tenantId)));
+        when(productRepository.findByTenantIdAndStatusAndChannelEcommerceTrue(tenantId, ProductStatus.published))
+                .thenReturn(List.of(kit));
+        when(productKitComponentRepository.findByTenantIdAndKitProductIdIn(tenantId, List.of(kitId)))
+                .thenReturn(List.of(hammer, tape));
+        when(productRepository.findByTenantIdAndIdIn(tenantId, List.of(hammerId, tapeId)))
+                .thenReturn(List.of(hammerProduct, tapeProduct));
+        ecommerceBranch(tenantId, branchId);
+        when(inventoryOperationalLocationService.availableByProduct(tenantId, branchId))
+                .thenReturn(java.util.Map.of(hammerId, new BigDecimal("5"), tapeId, new BigDecimal("10")));
+
+        var response = service.listProducts("ferreteria-los-simpson");
+
+        assertThat(response).singleElement().satisfies(item -> {
+            assertThat(item.inStock()).isTrue();
+            assertThat(item.availableQuantity()).isEqualByComparingTo("2");
+        });
     }
 
     @Test

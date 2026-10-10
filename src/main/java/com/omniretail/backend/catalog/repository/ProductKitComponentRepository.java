@@ -9,6 +9,7 @@ import org.springframework.data.repository.query.Param;
 
 public interface ProductKitComponentRepository extends JpaRepository<ProductKitComponent, UUID> {
     List<ProductKitComponent> findByTenantIdAndKitProductIdOrderByCreatedAtAscIdAsc(UUID tenantId, UUID kitProductId);
+    List<ProductKitComponent> findByTenantIdAndKitProductIdIn(UUID tenantId, List<UUID> kitProductIds);
     void deleteByTenantIdAndKitProductId(UUID tenantId, UUID kitProductId);
     @Query("""
             select case when count(component) > 0 then true else false end

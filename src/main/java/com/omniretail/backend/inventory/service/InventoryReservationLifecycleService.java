@@ -44,8 +44,8 @@ public class InventoryReservationLifecycleService {
     @Transactional
     public InventoryReservation reserve(ReserveInventoryCommand command) {
         validate(command);
-        if (reservationRepository.existsByTenantIdAndSourceTypeAndSourceLineId(
-                command.tenantId(), command.sourceType(), command.sourceLineId())) {
+        if (reservationRepository.existsByTenantIdAndSourceTypeAndSourceLineIdAndProductId(
+                command.tenantId(), command.sourceType(), command.sourceLineId(), command.productId())) {
             throw duplicateReservation();
         }
 
@@ -337,6 +337,7 @@ public class InventoryReservationLifecycleService {
         }
         if (command.sourceType() == InventoryReservationSourceType.order
                 && (!Objects.equals(command.sourceId(), command.orderId())
+                        || command.orderItemId() == null
                         || !Objects.equals(command.sourceLineId(), command.orderItemId()))) {
             throw BusinessException.badRequest(
                     "La reserva de pedido no coincide con sus referencias de compatibilidad.");

@@ -8,6 +8,7 @@ import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.repository.LocationRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.catalog.service.KitFulfillmentSnapshot;
 import com.omniretail.backend.ecommerce.entity.Customer;
 import com.omniretail.backend.ecommerce.entity.DeliveryMethod;
 import com.omniretail.backend.ecommerce.entity.InventoryReservation;
@@ -74,10 +75,12 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -139,29 +142,35 @@ public class PickingService {
         }
 
         List<OrderItem> orderItems = orderItemRepository.findByOrderId(orderId);
-        Map<UUID, Product> products = productRepository
+        Map<UUID, Product> orderProducts = productRepository
                 .findByTenantIdAndIdIn(tenantId, orderItems.stream().map(OrderItem::getProductId).toList())
                 .stream()
                 .collect(Collectors.toMap(Product::getId, Function.identity()));
-        List<OrderItem> physicalItems = orderItems.stream()
-                .filter(item -> {
-                    Product product = products.get(item.getProductId());
-                    return product != null && product.getProductType() == ProductType.physical;
-                })
-                .toList();
-        if (physicalItems.isEmpty()) return Optional.empty();
-
-        Map<ReservationKey, InventoryReservation> reservations = reservationRepository
+        List<InventoryReservation> activeReservations = reservationRepository
                 .findByTenantIdAndSourceTypeAndSourceIdAndStatus(
                         tenantId,
                         InventoryReservationSourceType.order,
                         orderId,
-                        InventoryReservationStatus.active)
-                .stream()
+                        InventoryReservationStatus.active);
+        boolean hasPhysicalWork = orderItems.stream().anyMatch(item -> {
+            Product product = orderProducts.get(item.getProductId());
+            return product != null && (product.getProductType() == ProductType.physical
+                    || !KitFulfillmentSnapshot.decode(item.getFulfillmentComponents()).isEmpty());
+        });
+        if (!hasPhysicalWork && activeReservations.isEmpty()) return Optional.empty();
+        Map<ReservationKey, InventoryReservation> reservations = activeReservations.stream()
                 .collect(Collectors.toMap(
                         reservation -> new ReservationKey(
                                 reservation.getSourceLineId(), reservation.getProductId()),
                         Function.identity()));
+        Map<UUID, Product> reservedProducts = activeReservations.isEmpty()
+                ? Map.of()
+                : productRepository
+                        .findByTenantIdAndIdIn(tenantId, activeReservations.stream()
+                                .map(InventoryReservation::getProductId).distinct().toList())
+                        .stream()
+                        .collect(Collectors.toMap(Product::getId, Function.identity()));
+        Set<ReservationKey> expectedReservations = new HashSet<>();
 
         PickingOrder picking = PickingOrder.builder()
                 .branchId(order.getBranchId())
@@ -173,30 +182,90 @@ public class PickingService {
         picking.setTenantId(tenantId);
         picking = pickingOrderRepository.save(picking);
 
-        for (OrderItem orderItem : physicalItems) {
-            Product product = products.get(orderItem.getProductId());
-            InventoryReservation reservation = reservations.get(
-                    new ReservationKey(orderItem.getId(), product.getId()));
+        for (OrderItem orderItem : orderItems) {
+            Product product = orderProducts.get(orderItem.getProductId());
+            if (product == null) {
+                throw conflict("PICKING_PRODUCT_NOT_FOUND", "La línea del pedido no tiene un producto válido.");
+            }
+            List<KitFulfillmentSnapshot.Component> fulfillment =
+                    KitFulfillmentSnapshot.decode(orderItem.getFulfillmentComponents());
+            if (product.getProductType() == ProductType.kit) {
+                if (fulfillment.isEmpty()) {
+                    throw conflict("PICKING_RESERVATION_REQUIRED",
+                            "El kit no conserva su detalle histórico de componentes.");
+                }
+                for (KitFulfillmentSnapshot.Component component : fulfillment) {
+                    ReservationKey reservationKey = new ReservationKey(orderItem.getId(), component.productId());
+                    expectedReservations.add(reservationKey);
+                    InventoryReservation reservation = reservations.get(reservationKey);
+                    BigDecimal expectedQuantity = kitComponentQuantity(component, orderItem.getQuantity());
+                    if (reservation == null || reservation.getQuantity().compareTo(expectedQuantity) != 0) {
+                        throw conflict("PICKING_RESERVATION_REQUIRED",
+                                "El componente del kit no posee una reserva activa con la cantidad esperada.");
+                    }
+                    Product componentProduct = reservedProducts.get(component.productId());
+                    if (componentProduct == null || componentProduct.getProductType() != ProductType.physical) {
+                        throw conflict("PICKING_RESERVATION_REQUIRED",
+                                "La reserva del componente no corresponde a un producto físico válido.");
+                    }
+                    saveOrderPickingItem(tenantId, picking, orderItem, componentProduct, reservation);
+                }
+                continue;
+            }
+            if (!fulfillment.isEmpty()) {
+                throw conflict("PICKING_RESERVATION_REQUIRED",
+                        "Un producto que no es kit no puede tener componentes de fulfillment.");
+            }
+            if (product.getProductType() != ProductType.physical) continue;
+            ReservationKey reservationKey = new ReservationKey(orderItem.getId(), product.getId());
+            InventoryReservation reservation = reservations.get(reservationKey);
             if (Boolean.TRUE.equals(product.getTrackingStock()) && reservation == null) {
-                throw conflict(
-                        "PICKING_RESERVATION_REQUIRED",
+                throw conflict("PICKING_RESERVATION_REQUIRED",
                         "La linea de Picking no posee una reserva activa.");
             }
-            BigDecimal requestedQuantity = reservation != null
-                    ? reservation.getQuantity()
-                    : Optional.ofNullable(orderItem.getInventoryQuantity()).orElse(orderItem.getQuantity());
-            PickingItem item = PickingItem.builder()
-                    .pickingOrderId(picking.getId())
-                    .sourceLineId(orderItem.getId())
-                    .orderItemId(orderItem.getId())
-                    .productId(product.getId())
-                    .requestedQuantity(requestedQuantity)
-                    .locationId(firstLocation(reservation))
-                    .build();
-            item.setTenantId(tenantId);
-            pickingItemRepository.save(item);
+            if (Boolean.TRUE.equals(product.getTrackingStock())) expectedReservations.add(reservationKey);
+            saveOrderPickingItem(tenantId, picking, orderItem, product, reservation);
+        }
+        if (!reservations.keySet().equals(expectedReservations)) {
+            throw conflict("PICKING_RESERVATION_REQUIRED",
+                    "Las reservas activas no coinciden con el detalle histórico del pedido.");
         }
         return Optional.of(picking);
+    }
+
+    private void saveOrderPickingItem(
+            UUID tenantId,
+            PickingOrder picking,
+            OrderItem orderItem,
+            Product product,
+            InventoryReservation reservation) {
+        PickingItem item = PickingItem.builder()
+                .pickingOrderId(picking.getId())
+                .sourceLineId(orderItem.getId())
+                .orderItemId(orderItem.getId())
+                .productId(product.getId())
+                .requestedQuantity(reservation != null
+                        ? reservation.getQuantity()
+                        : Optional.ofNullable(orderItem.getInventoryQuantity()).orElse(orderItem.getQuantity()))
+                .locationId(firstLocation(reservation))
+                .build();
+        item.setTenantId(tenantId);
+        pickingItemRepository.save(item);
+    }
+
+    private static BigDecimal kitComponentQuantity(
+            KitFulfillmentSnapshot.Component component, BigDecimal commercialQuantity) {
+        if (component.quantityPerKit() == null || component.quantityPerKit().signum() <= 0) {
+            throw conflict("PICKING_RESERVATION_REQUIRED",
+                    "El detalle histórico del kit contiene una cantidad inválida.");
+        }
+        try {
+            return component.quantityPerKit().multiply(commercialQuantity)
+                    .setScale(3, RoundingMode.UNNECESSARY);
+        } catch (ArithmeticException exception) {
+            throw conflict("PICKING_RESERVATION_REQUIRED",
+                    "La cantidad del componente del kit es inválida.");
+        }
     }
 
     /** Se invoca dentro de la misma transaccion que aprueba la transferencia. */
@@ -1045,10 +1114,11 @@ public class PickingService {
                 ? InventoryReservationSourceType.transfer
                 : InventoryReservationSourceType.order;
         InventoryReservation reservation = reservationRepository
-                .findByTenantIdAndSourceTypeAndSourceLineIdAndStatus(
+                .findByTenantIdAndSourceTypeAndSourceLineIdAndProductIdAndStatus(
                         tenantId,
                         sourceType,
                         item.getSourceLineId(),
+                        item.getProductId(),
                         InventoryReservationStatus.active)
                 .filter(found -> branchId.equals(found.getBranchId()))
                 .filter(found -> sourceType == InventoryReservationSourceType.transfer

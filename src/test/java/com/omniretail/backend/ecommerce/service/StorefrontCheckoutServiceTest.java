@@ -273,7 +273,7 @@ class StorefrontCheckoutServiceTest {
     }
 
     @Test
-    void rejectsKitCheckoutWhenComponentSourceLinesCannotBeRepresented() {
+    void reservesEveryFixedKitComponentForEcommerceFulfillment() {
         UUID firstComponentId = UUID.randomUUID();
         UUID secondComponentId = UUID.randomUUID();
         Product kit = product(false, ProductType.kit);
@@ -292,17 +292,43 @@ class StorefrontCheckoutServiceTest {
         Order savedOrder = mock(Order.class);
         UUID orderId = UUID.randomUUID();
         when(savedOrder.getId()).thenReturn(orderId);
+        when(savedOrder.getOrderNumber()).thenReturn("WEB-KIT");
+        when(savedOrder.getTrackingToken()).thenReturn("kit-tracking");
+        when(savedOrder.getTotal()).thenReturn(new BigDecimal("40.00"));
+        when(savedOrder.getStatus()).thenReturn(OrderStatus.confirmed);
+        when(savedOrder.getTenantId()).thenReturn(tenantId);
+        when(savedOrder.getDeliveryAddress()).thenReturn(
+                "{\"recipientName\":\"Maria\",\"line1\":\"7a Avenida\","
+                        + "\"line2\":null,\"city\":\"Guatemala\","
+                        + "\"stateOrDepartment\":null,\"recipientPhone\":\"55551234\"}");
         when(orderRepository.save(any())).thenReturn(savedOrder);
-        when(orderItemRepository.save(any())).thenAnswer(call -> call.getArgument(0));
+        com.omniretail.backend.ecommerce.entity.OrderItem savedItem =
+                mock(com.omniretail.backend.ecommerce.entity.OrderItem.class);
+        UUID orderItemId = UUID.randomUUID();
+        when(savedItem.getId()).thenReturn(orderItemId);
+        when(orderItemRepository.save(any())).thenReturn(savedItem);
+        Payment payment = mock(Payment.class);
+        when(payment.getStatus()).thenReturn(PaymentStatus.approved);
+        when(paymentRepository.save(any(Payment.class))).thenReturn(payment);
+        when(reservationRepository.findByTenantIdAndOrderId(tenantId, orderId)).thenReturn(List.of());
 
-        assertThatThrownBy(() -> service.checkout(
-                        "ferreteria", "checkout-1", request(new BigDecimal("2"))))
-                .isInstanceOf(BusinessException.class)
-                .extracting(exception -> ((BusinessException) exception).getCode())
-                .isEqualTo("KIT_FULFILLMENT_NOT_SUPPORTED");
+        service.checkout("ferreteria", "checkout-1", request(new BigDecimal("2")));
 
-        verify(reservationLifecycleService, never()).reserve(any());
-        verify(pickingService, never()).ensureForOrder(any(), any());
+        ArgumentCaptor<ReserveInventoryCommand> reservations =
+                ArgumentCaptor.forClass(ReserveInventoryCommand.class);
+        verify(reservationLifecycleService, org.mockito.Mockito.times(2)).reserve(reservations.capture());
+        assertThat(reservations.getAllValues()).extracting(ReserveInventoryCommand::productId)
+                .containsExactlyInAnyOrder(firstComponentId, secondComponentId);
+        assertThat(reservations.getAllValues()).extracting(ReserveInventoryCommand::quantity)
+                .containsExactlyInAnyOrder(new BigDecimal("6.000"), new BigDecimal("2.000"));
+        assertThat(reservations.getAllValues()).allSatisfy(reservation -> {
+            assertThat(reservation.sourceType()).isEqualTo(InventoryReservationSourceType.order);
+            assertThat(reservation.sourceId()).isEqualTo(orderId);
+            assertThat(reservation.orderId()).isEqualTo(orderId);
+            assertThat(reservation.orderItemId()).isEqualTo(orderItemId);
+            assertThat(reservation.sourceLineId()).isEqualTo(orderItemId);
+        });
+        verify(pickingService).ensureForOrder(tenantId, orderId);
         verify(orderItemRepository).save(org.mockito.ArgumentMatchers.argThat(item ->
                 item.getProductId().equals(productId)
                         && item.getFulfillmentComponents().contains(firstComponentId.toString())

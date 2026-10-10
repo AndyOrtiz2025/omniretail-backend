@@ -143,6 +143,7 @@ public class ProductService {
         validateCatalogReferencesForCreate(tenantId, request);
         BusinessConfigResponse config = businessConfigService.getConfig();
         requireSupportedType(request.productType(), config, tenantId);
+        validateKitUnits(request.productType(), request.baseUnitId(), request.inventoryUnitId(), request.saleUnitId());
         if (request.productType() == ProductType.kit && request.status() == ProductStatus.published) {
             throw BusinessException.conflict("KIT_COMPONENTS_REQUIRED",
                     "Crea el kit archivado, configura sus componentes y luego restauralo.");
@@ -228,6 +229,7 @@ public class ProductService {
         }
         validateChangedOptionalUnit(tenantId, product.getInventoryUnitId(), request.inventoryUnitId());
         validateChangedOptionalUnit(tenantId, product.getSaleUnitId(), request.saleUnitId());
+        validateKitUnits(request.productType(), request.baseUnitId(), request.inventoryUnitId(), request.saleUnitId());
         validateUnitsAndPackagingForUpdate(product, request, config);
 
         TrackingValues currentTracking = TrackingValues.from(product);
@@ -439,6 +441,17 @@ public class ProductService {
                         || Boolean.TRUE.equals(requestedTracking.expiration())
                         || Boolean.TRUE.equals(requestedTracking.serial()))) {
             throw capabilityDisabled("Los kits no pueden habilitar seguimiento de inventario propio.");
+        }
+    }
+
+    /** A kit is one commercial unit; its components, not the kit, carry inventory conversions. */
+    private static void validateKitUnits(
+            ProductType type, UUID baseUnitId, UUID inventoryUnitId, UUID saleUnitId) {
+        if (type != ProductType.kit) return;
+        if ((inventoryUnitId != null && !inventoryUnitId.equals(baseUnitId))
+                || (saleUnitId != null && !saleUnitId.equals(baseUnitId))) {
+            throw BusinessException.badRequest(
+                    "Los kits se venden únicamente por su unidad base; sus componentes definen las cantidades físicas.");
         }
     }
 
