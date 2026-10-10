@@ -15,6 +15,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.enums.ParameterIn;
 import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import java.util.List;
 import java.util.UUID;
@@ -32,6 +33,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+@Tag(
+        name = "Catálogo de Productos",
+        description = "Gestión central del catálogo maestro de productos (creación, edición, consulta, búsqueda avanzada, archivo y reactivación)."
+)
 @RestController
 @RequestMapping("/catalog/products")
 @RequiredArgsConstructor
@@ -41,24 +46,40 @@ public class ProductController {
 
     @GetMapping
     @RequirePermission("catalog.products.read")
-    @Operation(parameters = {
-        @Parameter(
-                name = "page",
-                in = ParameterIn.QUERY,
-                description = "Numero de pagina comenzando en 1",
-                schema = @Schema(type = "integer", defaultValue = "1", minimum = "1")),
-        @Parameter(
-                name = "size",
-                in = ParameterIn.QUERY,
-                description = "Cantidad de elementos por pagina",
-                schema = @Schema(type = "integer", defaultValue = "20", minimum = "1")),
-        @Parameter(
-                name = "sort",
-                in = ParameterIn.QUERY,
-                description = "Criterio de ordenamiento en formato campo,direccion",
-                example = "sku,asc",
-                schema = @Schema(type = "string"))
-    })
+    @Operation(
+            summary = "Listar y buscar productos con filtros avanzados y paginación",
+            description = """
+                    Recupera el catálogo paginado de productos del tenant con soporte de búsqueda textual por SKU/código de barras/nombre y filtros combinados.
+                    
+                    **Filtros disponibles:**
+                    * `search`: Búsqueda textual por nombre, SKU o código de barras.
+                    * `status`: Filtro por estado (`published`, `archived`).
+                    * `productType`: Tipo de producto (`physical`, `service`, `kit`).
+                    * `categoryId`: Identificador de la categoría.
+                    * `channels`: Canales de venta autorizados (`pos`, `ecommerce`, `mobileApp`).
+                    * `promotion`: Filtro de artículos con promoción activa (`all`, `with`, `without`).
+                    
+                    **Permisos requeridos:**
+                    * `catalog.products.read`
+                    """,
+            parameters = {
+                @Parameter(
+                        name = "page",
+                        in = ParameterIn.QUERY,
+                        description = "Número de página comenzando en 1",
+                        schema = @Schema(type = "integer", defaultValue = "1", minimum = "1")),
+                @Parameter(
+                        name = "size",
+                        in = ParameterIn.QUERY,
+                        description = "Cantidad de elementos por página",
+                        schema = @Schema(type = "integer", defaultValue = "20", minimum = "1")),
+                @Parameter(
+                        name = "sort",
+                        in = ParameterIn.QUERY,
+                        description = "Criterio de ordenamiento en formato campo,dirección",
+                        example = "sku,asc",
+                        schema = @Schema(type = "string"))
+            })
     public PageResponse<ProductListDto> list(
             @RequestParam(required = false) String search,
             @RequestParam(required = false) ProductStatus status,
@@ -79,6 +100,15 @@ public class ProductController {
                 search, status, productType, categoryId, channels, promotion, pageable);
     }
 
+    @Operation(
+            summary = "Crear nuevo producto",
+            description = """
+                    Registra un nuevo producto o artículo en el catálogo maestro del tenant.
+                    
+                    **Permisos requeridos:**
+                    * `catalog.products.create`
+                    """
+    )
     @PostMapping
     @RequirePermission("catalog.products.create")
     @ResponseStatus(HttpStatus.CREATED)
@@ -86,12 +116,30 @@ public class ProductController {
         return productService.create(request);
     }
 
+    @Operation(
+            summary = "Obtener detalle completo de un producto por ID",
+            description = """
+                    Recupera la ficha técnica integral del producto: datos maestros, categoría, unidades de medida, precios, código de barras y estado.
+                    
+                    **Permisos requeridos:**
+                    * `catalog.products.read`
+                    """
+    )
     @GetMapping("/{id}")
     @RequirePermission("catalog.products.read")
     public ProductDto get(@PathVariable UUID id) {
         return productService.get(id);
     }
 
+    @Operation(
+            summary = "Actualizar datos maestros de un producto",
+            description = """
+                    Actualiza los campos editables del producto (nombre, descripción, categoría, estado y configuración comercial).
+                    
+                    **Permisos requeridos:**
+                    * `catalog.products.update`
+                    """
+    )
     @PutMapping("/{id}")
     @RequirePermission("catalog.products.update")
     public ProductDto update(
@@ -99,6 +147,15 @@ public class ProductController {
         return productService.update(id, request);
     }
 
+    @Operation(
+            summary = "Archivar producto",
+            description = """
+                    Marca el producto como archivado/inactivo. Se preserva el historial de movimientos y ventas pasadas pero se restringe su selección en nuevas transacciones comerciales.
+                    
+                    **Permisos requeridos:**
+                    * `catalog.products.update`
+                    """
+    )
     @DeleteMapping("/{id}")
     @RequirePermission("catalog.products.update")
     @ResponseStatus(HttpStatus.NO_CONTENT)
@@ -106,6 +163,15 @@ public class ProductController {
         productService.archive(id);
     }
 
+    @Operation(
+            summary = "Restaurar producto previamente archivado",
+            description = """
+                    Reactiva un producto archivado devolviéndolo al catálogo operativo activo para venta y control de inventario.
+                    
+                    **Permisos requeridos:**
+                    * `catalog.products.update`
+                    """
+    )
     @PostMapping("/{id}/restore")
     @RequirePermission("catalog.products.update")
     public ProductDto restore(@PathVariable UUID id) {

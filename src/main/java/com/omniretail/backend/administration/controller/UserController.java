@@ -12,6 +12,8 @@ import com.omniretail.backend.shared.security.EmployeeAuthSummary;
 import com.omniretail.backend.shared.security.EmployeeInvitationPort;
 import com.omniretail.backend.shared.security.EmployeeInviteResult;
 import com.omniretail.backend.shared.security.RequirePermission;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import java.util.List;
 import java.util.UUID;
@@ -32,6 +34,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/administration/users")
 @RequiredArgsConstructor
+@Tag(name = "Usuarios y empleados", description = "Gestión de empleados del negocio, asignación de roles y envío de invitaciones.")
 public class UserController {
 
     private final UserService userService;
@@ -40,6 +43,9 @@ public class UserController {
 
     @RequirePermission("admin.users.read")
     @GetMapping
+    @Operation(
+            summary = "Listar empleados paginados",
+            description = "Devuelve el listado de empleados del tenant con paginación (`page` comenzando en 1) y filtro opcional por estado (`active`, `inactive`, `blocked`, `archived`).")
     public PageResponse<UserResponse> list(
             @RequestParam(required = false) UserStatus status, @PageableDefault(size = 20) Pageable pageable) {
         return userService.listUsers(status, pageable);
@@ -47,6 +53,9 @@ public class UserController {
 
     @RequirePermission("admin.users.read")
     @GetMapping("/{id}")
+    @Operation(
+            summary = "Consultar empleado por ID",
+            description = "Obtiene los detalles del usuario, su rol asignado, sucursal base y sucursales permitidas.")
     public UserResponse getById(@PathVariable UUID id) {
         return userService.getUserById(id);
     }
@@ -54,36 +63,54 @@ public class UserController {
     @RequirePermission("admin.users.manage")
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
+    @Operation(
+            summary = "Crear nuevo empleado",
+            description = "Registra un empleado en el negocio asignándole rol y sucursal. Valida límites del plan SaaS.")
     public UserResponse create(@Valid @RequestBody CreateUserRequest request) {
         return userService.createUser(request);
     }
 
     @RequirePermission("admin.users.manage")
     @PutMapping("/{id}")
+    @Operation(
+            summary = "Actualizar datos del empleado",
+            description = "Modifica los datos personales, rol o sucursales asignadas a un empleado.")
     public UserResponse update(@PathVariable UUID id, @Valid @RequestBody UpdateUserRequest request) {
         return userService.updateUser(id, request);
     }
 
     @RequirePermission("admin.users.manage")
     @PutMapping("/{id}/status")
+    @Operation(
+            summary = "Cambiar estado de empleado",
+            description = "Actualiza el estado operativo de un empleado (`active`, `inactive`, `blocked`; no permite `archived`). Al desactivarlo o bloquearlo, se invalidan inmediatamente sus sesiones activas.")
     public UserResponse updateStatus(@PathVariable UUID id, @RequestParam UserStatus status) {
         return userService.updateUserStatus(id, status);
     }
 
     @RequirePermission("admin.users.manage")
     @PostMapping("/{id}/invite")
+    @Operation(
+            summary = "Enviar invitación de acceso",
+            description = "Genera un enlace de activación por correo electrónico para que el empleado establezca su contraseña.")
     public EmployeeInviteResult invite(@PathVariable UUID id) {
         return employeeInvitationPort.inviteEmployee(currentUser.require().tenantId(), id);
     }
 
     @RequirePermission("admin.users.manage")
     @PostMapping("/{id}/resend-invite")
+    @Operation(
+            summary = "Reenviar invitación de acceso",
+            description = "Reenvía el correo de activación con un token renovado.")
     public EmployeeInviteResult resendInvite(@PathVariable UUID id) {
         return employeeInvitationPort.inviteEmployee(currentUser.require().tenantId(), id);
     }
 
     @RequirePermission("admin.users.read")
     @PostMapping("/auth-summaries")
+    @Operation(
+            summary = "Consultar resúmenes de autenticación",
+            description = "Obtiene el estado de cuenta y MFA de una lista de IDs de empleados.")
     public List<EmployeeAuthSummary> authSummaries(
             @Valid @RequestBody EmployeeAuthSummariesRequest request) {
         return employeeInvitationPort.getAuthSummaries(currentUser.require().tenantId(), request.userIds());

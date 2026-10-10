@@ -5,6 +5,8 @@ import com.omniretail.backend.inventory.dto.InventoryCountSnapshotResponse;
 import com.omniretail.backend.inventory.dto.ReconcileInventoryCountRequest;
 import com.omniretail.backend.inventory.service.InventoryCountService;
 import com.omniretail.backend.shared.security.RequirePermission;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -17,6 +19,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+@Tag(
+        name = "Conteo Físico y Conciliación de Inventario",
+        description = "Tomas físicas de inventario (auditorías y arqueos de stock), instantáneas teóricas y conciliación automática de discrepancias."
+)
 @RestController
 @RequestMapping("/inventory/counts")
 @RequiredArgsConstructor
@@ -24,6 +30,20 @@ public class InventoryCountController {
 
     private final InventoryCountService countService;
 
+    @Operation(
+            summary = "Obtener instantánea (snapshot) teórica para conteo físico",
+            description = """
+                    Captura el estado actual de las existencias teóricas registradas en el sistema para un producto y sucursal, sirviendo de base para la comparación con el conteo en piso.
+                    
+                    **Parámetros de consulta:**
+                    * `branchId`: Identificador único de la sucursal.
+                    * `productId`: Identificador del producto a auditar.
+                    * `locationId`: Ubicación física específica dentro del almacén (opcional).
+                    
+                    **Permisos requeridos:**
+                    * `inventory.stock.read`
+                    """
+    )
     @GetMapping("/snapshot")
     @RequirePermission("inventory.stock.read")
     public InventoryCountSnapshotResponse snapshot(
@@ -33,6 +53,15 @@ public class InventoryCountController {
         return countService.snapshot(branchId, productId, locationId);
     }
 
+    @Operation(
+            summary = "Conciliar conteo físico contra existencias del sistema",
+            description = """
+                    Registra las cantidades físicas reales contadas y concilia automáticamente contra el balance teórico, generando los ajustes de inventario necesarios para cuadrar el stock.
+                    
+                    **Permisos requeridos:**
+                    * `inventory.adjustment.create`
+                    """
+    )
     @PostMapping("/reconcile")
     @ResponseStatus(HttpStatus.CREATED)
     @RequirePermission("inventory.adjustment.create")

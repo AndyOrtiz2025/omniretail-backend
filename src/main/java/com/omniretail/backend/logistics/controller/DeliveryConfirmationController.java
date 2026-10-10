@@ -3,6 +3,8 @@ package com.omniretail.backend.logistics.controller;
 import com.omniretail.backend.logistics.dto.DeliveryConfirmationResponse;
 import com.omniretail.backend.logistics.service.DeliveryConfirmationService;
 import com.omniretail.backend.shared.security.RequirePermission;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -11,6 +13,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+@Tag(
+        name = "Confirmación de Entrega a Domicilio",
+        description = "Confirmación final de entrega a domicilio por paquetería o chofer de última milla."
+)
 @RestController
 @RequestMapping("/logistics/deliveries")
 @RequiredArgsConstructor
@@ -18,6 +24,15 @@ public class DeliveryConfirmationController {
 
     private final DeliveryConfirmationService deliveryConfirmationService;
 
+    @Operation(
+            summary = "Confirmar entrega a domicilio completada",
+            description = """
+                    Registra la confirmación de entrega del paquete en el domicilio del destinatario, finalizando el ciclo logístico con estado `delivered`.
+                    
+                    **Permisos requeridos:**
+                    * `logistics.dispatch.confirm`
+                    """
+    )
     @PostMapping("/{orderId}/confirm")
     @RequirePermission("logistics.dispatch.confirm")
     public DeliveryConfirmationResponse confirm(

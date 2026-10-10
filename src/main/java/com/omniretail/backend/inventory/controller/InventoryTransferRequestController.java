@@ -10,6 +10,8 @@ import com.omniretail.backend.inventory.entity.InventoryTransferRequestStatus;
 import com.omniretail.backend.inventory.service.InventoryTransferService;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.security.RequirePermission;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -25,6 +27,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+@Tag(
+        name = "Solicitudes de Transferencia de Stock",
+        description = "Flujo de peticiones de reabastecimiento entre sucursales: creación de solicitud, revisión, aprobación y rechazo."
+)
 @RestController
 @RequestMapping("/inventory/transfer-requests")
 @RequiredArgsConstructor
@@ -32,6 +38,15 @@ public class InventoryTransferRequestController {
 
     private final InventoryTransferService inventoryTransferService;
 
+    @Operation(
+            summary = "Crear solicitud de transferencia entre sucursales",
+            description = """
+                    Genera una petición formal de traspaso de mercancía desde una sucursal proveedora hacia la sucursal solicitante.
+                    
+                    **Permisos requeridos:**
+                    * `inventory.transfers.manage`
+                    """
+    )
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @RequirePermission("inventory.transfers.manage")
@@ -40,6 +55,15 @@ public class InventoryTransferRequestController {
         return inventoryTransferService.createRequest(request);
     }
 
+    @Operation(
+            summary = "Listar solicitudes de transferencia con paginación",
+            description = """
+                    Recupera el listado paginado (`page` comenzando en 1) de solicitudes de reabastecimiento entre tiendas con filtros por sucursal solicitante (`requestingBranchId`), sucursal origen (`sourceBranchId`) y estado operativo (`status`: `requested`, `approved`, `rejected`, `cancelled`).
+                    
+                    **Permisos requeridos:**
+                    * `inventory.transfers.manage`
+                    """
+    )
     @GetMapping
     @RequirePermission("inventory.transfers.manage")
     public PageResponse<InventoryTransferRequestResponse> list(
@@ -51,6 +75,15 @@ public class InventoryTransferRequestController {
                 requestingBranchId, sourceBranchId, status, pageable);
     }
 
+    @Operation(
+            summary = "Aprobar solicitud de transferencia",
+            description = """
+                    Aprueba formalmente la solicitud de traspaso y genera la orden de transferencia de inventario en tránsito.
+                    
+                    **Permisos requeridos:**
+                    * `inventory.transfers.manage`
+                    """
+    )
     @PostMapping("/{id}/approve")
     @RequirePermission("inventory.transfers.manage")
     public InventoryTransferResponse approve(
@@ -59,6 +92,15 @@ public class InventoryTransferRequestController {
         return inventoryTransferService.approve(id, request);
     }
 
+    @Operation(
+            summary = "Rechazar solicitud de transferencia",
+            description = """
+                    Rechaza la petición de reabastecimiento con motivo justificado (falta de existencias en origen, capacidad logística insuficiente, etc.).
+                    
+                    **Permisos requeridos:**
+                    * `inventory.transfers.manage`
+                    """
+    )
     @PostMapping("/{id}/reject")
     @RequirePermission("inventory.transfers.manage")
     public InventoryTransferRequestResponse reject(
@@ -67,6 +109,15 @@ public class InventoryTransferRequestController {
         return inventoryTransferService.reject(id, request);
     }
 
+    @Operation(
+            summary = "Cancelar solicitud de transferencia",
+            description = """
+                    Cancela una solicitud de transferencia previamente emitida por la sucursal solicitante antes de su aprobación.
+                    
+                    **Permisos requeridos:**
+                    * `inventory.transfers.manage`
+                    """
+    )
     @PostMapping("/{id}/cancel")
     @RequirePermission("inventory.transfers.manage")
     public InventoryTransferRequestResponse cancel(
