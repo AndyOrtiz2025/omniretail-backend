@@ -1,0 +1,32 @@
+databaseChangeLog:
+  - changeSet:
+      id: 057-ecommerce-kit-component-reservations
+      author: omniretail
+      changes:
+        # Un pedido de kit conserva un único order_item comercial, pero necesita una reserva y
+        # una línea de picking por cada componente físico que se entregará.
+        - dropUniqueConstraint:
+            tableName: inventory_reservations
+            constraintName: uk_inventory_reservations_order_item
+        - sql:
+            sql: >-
+              ALTER TABLE inventory_reservations
+              DROP CONSTRAINT ck_inventory_reservations_source_legacy_consistency
+        - sql:
+            sql: >-
+              ALTER TABLE inventory_reservations
+              ADD CONSTRAINT ck_inventory_reservations_source_legacy_consistency
+              CHECK (
+                (source_type = 'order'
+                  AND order_id IS NOT NULL
+                  AND order_item_id IS NOT NULL
+                  AND source_id = order_id)
+                OR
+                (source_type = 'transfer'
+                  AND order_id IS NULL
+                  AND order_item_id IS NULL)
+              )
+        - sql:
+            sql: >-
+              ALTER TABLE picking_items
+              DROP CONSTRAINT ck_picking_items_source_line

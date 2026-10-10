@@ -337,7 +337,7 @@ public class InventoryReservationLifecycleService {
         }
         if (command.sourceType() == InventoryReservationSourceType.order
                 && (!Objects.equals(command.sourceId(), command.orderId())
-                        || !Objects.equals(command.sourceLineId(), command.orderItemId()))) {
+                        || command.orderItemId() == null)) {
             throw BusinessException.badRequest(
                     "La reserva de pedido no coincide con sus referencias de compatibilidad.");
         }
