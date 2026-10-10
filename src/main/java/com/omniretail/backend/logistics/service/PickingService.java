@@ -139,29 +139,35 @@ public class PickingService {
         }
 
         List<OrderItem> orderItems = orderItemRepository.findByOrderId(orderId);
-        Map<UUID, Product> products = productRepository
+        Map<UUID, Product> orderProducts = productRepository
                 .findByTenantIdAndIdIn(tenantId, orderItems.stream().map(OrderItem::getProductId).toList())
                 .stream()
                 .collect(Collectors.toMap(Product::getId, Function.identity()));
         List<OrderItem> physicalItems = orderItems.stream()
                 .filter(item -> {
-                    Product product = products.get(item.getProductId());
+                    Product product = orderProducts.get(item.getProductId());
                     return product != null && product.getProductType() == ProductType.physical;
                 })
                 .toList();
-        if (physicalItems.isEmpty()) return Optional.empty();
-
-        Map<ReservationKey, InventoryReservation> reservations = reservationRepository
+        List<InventoryReservation> activeReservations = reservationRepository
                 .findByTenantIdAndSourceTypeAndSourceIdAndStatus(
                         tenantId,
                         InventoryReservationSourceType.order,
                         orderId,
-                        InventoryReservationStatus.active)
-                .stream()
+                        InventoryReservationStatus.active);
+        if (physicalItems.isEmpty() && activeReservations.isEmpty()) return Optional.empty();
+        Map<ReservationKey, InventoryReservation> reservations = activeReservations.stream()
                 .collect(Collectors.toMap(
                         reservation -> new ReservationKey(
                                 reservation.getSourceLineId(), reservation.getProductId()),
                         Function.identity()));
+        Map<UUID, Product> reservedProducts = activeReservations.isEmpty()
+                ? Map.of()
+                : productRepository
+                        .findByTenantIdAndIdIn(tenantId, activeReservations.stream()
+                                .map(InventoryReservation::getProductId).distinct().toList())
+                        .stream()
+                        .collect(Collectors.toMap(Product::getId, Function.identity()));
 
         PickingOrder picking = PickingOrder.builder()
                 .branchId(order.getBranchId())
@@ -174,23 +180,40 @@ public class PickingService {
         picking = pickingOrderRepository.save(picking);
 
         for (OrderItem orderItem : physicalItems) {
-            Product product = products.get(orderItem.getProductId());
+            Product product = orderProducts.get(orderItem.getProductId());
             InventoryReservation reservation = reservations.get(
                     new ReservationKey(orderItem.getId(), product.getId()));
             if (Boolean.TRUE.equals(product.getTrackingStock()) && reservation == null) {
-                throw conflict(
-                        "PICKING_RESERVATION_REQUIRED",
+                throw conflict("PICKING_RESERVATION_REQUIRED",
                         "La linea de Picking no posee una reserva activa.");
             }
-            BigDecimal requestedQuantity = reservation != null
-                    ? reservation.getQuantity()
-                    : Optional.ofNullable(orderItem.getInventoryQuantity()).orElse(orderItem.getQuantity());
             PickingItem item = PickingItem.builder()
                     .pickingOrderId(picking.getId())
                     .sourceLineId(orderItem.getId())
                     .orderItemId(orderItem.getId())
                     .productId(product.getId())
-                    .requestedQuantity(requestedQuantity)
+                    .requestedQuantity(reservation != null
+                            ? reservation.getQuantity()
+                            : Optional.ofNullable(orderItem.getInventoryQuantity()).orElse(orderItem.getQuantity()))
+                    .locationId(firstLocation(reservation))
+                    .build();
+            item.setTenantId(tenantId);
+            pickingItemRepository.save(item);
+        }
+        for (InventoryReservation reservation : activeReservations.stream()
+                .filter(value -> !value.getSourceLineId().equals(value.getOrderItemId()))
+                .sorted(Comparator.comparing(InventoryReservation::getSourceLineId)).toList()) {
+            Product product = reservedProducts.get(reservation.getProductId());
+            if (product == null || product.getProductType() != ProductType.physical) {
+                throw conflict("PICKING_RESERVATION_REQUIRED",
+                        "La reserva del pedido no corresponde a un producto físico válido.");
+            }
+            PickingItem item = PickingItem.builder()
+                    .pickingOrderId(picking.getId())
+                    .sourceLineId(reservation.getSourceLineId())
+                    .orderItemId(reservation.getOrderItemId())
+                    .productId(product.getId())
+                    .requestedQuantity(reservation.getQuantity())
                     .locationId(firstLocation(reservation))
                     .build();
             item.setTenantId(tenantId);

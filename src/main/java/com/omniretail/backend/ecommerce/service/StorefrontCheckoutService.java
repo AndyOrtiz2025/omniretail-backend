@@ -211,9 +211,18 @@ public class StorefrontCheckoutService {
             List<KitFulfillmentSnapshot.Component> fulfillment =
                     KitFulfillmentSnapshot.decode(item.getFulfillmentComponents());
             if (!fulfillment.isEmpty()) {
-                throw BusinessException.conflict(
-                        "KIT_FULFILLMENT_NOT_SUPPORTED",
-                        "El fulfillment de kits con componentes aun no esta soportado.");
+                for (KitFulfillmentSnapshot.Component component : fulfillment) {
+                    reservationLifecycleService.reserve(new ReserveInventoryCommand(
+                            tenantId,
+                            branch.getId(),
+                            component.productId(),
+                            InventoryReservationSourceType.order,
+                            savedOrder.getId(),
+                            UUID.randomUUID(),
+                            savedOrder.getId(),
+                            savedItem.getId(),
+                            component.quantity()));
+                }
             } else if (shouldReserve(product)) {
                 reservationLifecycleService.reserve(new ReserveInventoryCommand(
                         tenantId,
