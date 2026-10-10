@@ -263,6 +263,8 @@ class PublicStorefrontCatalogServiceTest {
         UUID tapeId = UUID.randomUUID();
         Product kit = product(kitId, UUID.randomUUID(), unitId);
         when(kit.getProductType()).thenReturn(ProductType.kit);
+        Product hammerProduct = trackedProduct(hammerId, unitId);
+        Product tapeProduct = trackedProduct(tapeId, unitId);
         ProductKitComponent hammer = ProductKitComponent.builder()
                 .kitProductId(kitId).componentProductId(hammerId)
                 .quantityPerKit(new BigDecimal("2")).build();
@@ -274,6 +276,8 @@ class PublicStorefrontCatalogServiceTest {
                 .thenReturn(List.of(kit));
         when(productKitComponentRepository.findByTenantIdAndKitProductIdIn(tenantId, List.of(kitId)))
                 .thenReturn(List.of(hammer, tape));
+        when(productRepository.findByTenantIdAndIdIn(tenantId, List.of(hammerId, tapeId)))
+                .thenReturn(List.of(hammerProduct, tapeProduct));
         ecommerceBranch(tenantId, branchId);
         when(inventoryOperationalLocationService.availableByProduct(tenantId, branchId))
                 .thenReturn(java.util.Map.of(hammerId, new BigDecimal("5"), tapeId, new BigDecimal("10")));
