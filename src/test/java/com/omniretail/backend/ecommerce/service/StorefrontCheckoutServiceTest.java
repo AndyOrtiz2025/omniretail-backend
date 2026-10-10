@@ -326,7 +326,7 @@ class StorefrontCheckoutServiceTest {
             assertThat(reservation.sourceId()).isEqualTo(orderId);
             assertThat(reservation.orderId()).isEqualTo(orderId);
             assertThat(reservation.orderItemId()).isEqualTo(orderItemId);
-            assertThat(reservation.sourceLineId()).isNotEqualTo(orderItemId);
+            assertThat(reservation.sourceLineId()).isEqualTo(orderItemId);
         });
         verify(pickingService).ensureForOrder(tenantId, orderId);
         verify(orderItemRepository).save(org.mockito.ArgumentMatchers.argThat(item ->
