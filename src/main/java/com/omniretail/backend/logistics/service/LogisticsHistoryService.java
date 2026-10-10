@@ -404,7 +404,7 @@ public class LogisticsHistoryService {
             if (transferStatus == null) {
                 throw badRequest(
                         "LOGISTICS_HISTORY_TRANSFER_STATUS_INVALID",
-                        "El estado de traslado no es v├ílido.");
+                        "El estado de traslado no es válido.");
             }
         } else if (statusValue != null) {
             transferStatus = enumValue(InventoryTransferStatus.values(), statusValue);

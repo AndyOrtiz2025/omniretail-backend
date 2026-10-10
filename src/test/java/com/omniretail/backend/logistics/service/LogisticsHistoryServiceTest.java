@@ -435,7 +435,7 @@ class LogisticsHistoryServiceTest {
                 .isInstanceOfSatisfying(BusinessException.class, exception -> {
                     assertThat(exception.getStatus()).isEqualTo(HttpStatus.BAD_REQUEST);
                     assertThat(exception.getCode()).isEqualTo("LOGISTICS_HISTORY_TRANSFER_STATUS_INVALID");
-                    assertThat(exception.getMessage()).isEqualTo("El estado de traslado no es v├ílido.");
+                    assertThat(exception.getMessage()).isEqualTo("El estado de traslado no es válido.");
                 });
     }
 

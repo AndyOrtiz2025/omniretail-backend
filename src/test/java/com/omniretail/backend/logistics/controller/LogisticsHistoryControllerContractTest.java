@@ -139,14 +139,14 @@ class LogisticsHistoryControllerContractTest {
                 .thenThrow(new BusinessException(
                         HttpStatus.BAD_REQUEST,
                         "LOGISTICS_HISTORY_TRANSFER_STATUS_INVALID",
-                        "El estado de traslado no es v├ílido."));
+                        "El estado de traslado no es válido."));
 
         mvc.perform(get("/logistics/history")
                         .param("branchId", branchId.toString())
                         .param("transferStatus", "foo"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("LOGISTICS_HISTORY_TRANSFER_STATUS_INVALID"))
-                .andExpect(jsonPath("$.message").value("El estado de traslado no es v├ílido."));
+                .andExpect(jsonPath("$.message").value("El estado de traslado no es válido."));
     }
 
     private static void permission(String method, Class<?>... parameterTypes) throws Exception {
