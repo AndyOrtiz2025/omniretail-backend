@@ -79,6 +79,9 @@ class SessionEntitlementsControllerTest {
     @Autowired
     private PasswordEncoder passwordEncoder;
 
+    @Autowired
+    private com.omniretail.backend.shared.security.TenantEntitlementResolver entitlementResolver;
+
     @Test
     void employeeWithoutPlanPermissionReadsPlanCapabilities() throws Exception {
         Tenant tenant = tenant();
@@ -132,6 +135,190 @@ class SessionEntitlementsControllerTest {
                 .andExpect(jsonPath("$.planStatus").value("archived"))
                 .andExpect(jsonPath("$.isEntitlementActive").value(false))
                 .andExpect(jsonPath("$.effectiveCapabilities.length()").value(0));
+    }
+
+    @Test
+    void activeSubscriptionWinsOverMoreRecentCancelledHistoricalSubscription() throws Exception {
+        Tenant tenant = tenant();
+        Instant now = Instant.now();
+        SaasPlan activePlan = plan(PlanStatus.active, List.of("pos", "inventory"));
+        SaasPlan cancelledPlan = plan(PlanStatus.active, List.of("purchasing", "receiving"));
+
+        subscribeAt(tenant, activePlan, TenantSubscriptionStatus.active,
+                now.minus(15, ChronoUnit.DAYS), List.of());
+        subscribeAt(tenant, cancelledPlan, TenantSubscriptionStatus.cancelled,
+                now.minus(1, ChronoUnit.DAYS), List.of());
+
+        entitlements(login(employee(tenant)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.planCode").value(activePlan.getCode()))
+                .andExpect(jsonPath("$.subscriptionStatus").value("active"))
+                .andExpect(jsonPath("$.planStatus").value("active"))
+                .andExpect(jsonPath("$.isEntitlementActive").value(true))
+                .andExpect(jsonPath("$.capabilities", containsInAnyOrder("pos", "inventory")))
+                .andExpect(jsonPath("$.effectiveCapabilities", containsInAnyOrder("pos", "inventory")));
+    }
+
+    @Test
+    void suspendedSubscriptionWinsOverMoreRecentCancelledHistoricalSubscription() throws Exception {
+        Tenant tenant = tenant();
+        Instant now = Instant.now();
+        SaasPlan suspendedPlan = plan(PlanStatus.active, List.of("pos"));
+        SaasPlan cancelledPlan = plan(PlanStatus.active, List.of("inventory", "purchasing"));
+
+        subscribeAt(tenant, suspendedPlan, TenantSubscriptionStatus.suspended,
+                now.minus(20, ChronoUnit.DAYS), List.of());
+        subscribeAt(tenant, cancelledPlan, TenantSubscriptionStatus.cancelled,
+                now.minus(2, ChronoUnit.DAYS), List.of());
+
+        entitlements(login(employee(tenant)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.planCode").value(suspendedPlan.getCode()))
+                .andExpect(jsonPath("$.subscriptionStatus").value("suspended"))
+                .andExpect(jsonPath("$.isEntitlementActive").value(false))
+                .andExpect(jsonPath("$.capabilities", containsInAnyOrder("pos")))
+                .andExpect(jsonPath("$.effectiveCapabilities.length()").value(0));
+    }
+
+    @Test
+    void multipleHistoricalRecordsSelectLatestCancelledWhenNoCurrentSubscriptionExists() throws Exception {
+        Tenant tenant = tenant();
+        Instant now = Instant.now();
+        SaasPlan oldestPlan = plan(PlanStatus.active, List.of("pos"));
+        SaasPlan middlePlan = plan(PlanStatus.active, List.of("inventory"));
+        SaasPlan latestPlan = plan(PlanStatus.active, List.of("purchasing", "receiving"));
+
+        subscribeAt(tenant, oldestPlan, TenantSubscriptionStatus.cancelled,
+                now.minus(60, ChronoUnit.DAYS), List.of());
+        subscribeAt(tenant, middlePlan, TenantSubscriptionStatus.cancelled,
+                now.minus(30, ChronoUnit.DAYS), List.of());
+        subscribeAt(tenant, latestPlan, TenantSubscriptionStatus.cancelled,
+                now.minus(5, ChronoUnit.DAYS), List.of());
+
+        entitlements(login(employee(tenant)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.planCode").value(latestPlan.getCode()))
+                .andExpect(jsonPath("$.subscriptionStatus").value("cancelled"))
+                .andExpect(jsonPath("$.isEntitlementActive").value(false))
+                .andExpect(jsonPath("$.capabilities", containsInAnyOrder("purchasing", "receiving")))
+                .andExpect(jsonPath("$.effectiveCapabilities.length()").value(0));
+    }
+
+    @Test
+    void multipleHistoricalRecordsNeverOverrideCurrentSubscription() throws Exception {
+        Tenant tenant = tenant();
+        Instant now = Instant.now();
+        SaasPlan currentPlan = plan(PlanStatus.active, List.of("pos", "inventory"));
+
+        subscribeAt(tenant, plan(PlanStatus.active, List.of("purchasing")),
+                TenantSubscriptionStatus.cancelled, now.minus(45, ChronoUnit.DAYS), List.of());
+        subscribeAt(tenant, currentPlan,
+                TenantSubscriptionStatus.active, now.minus(20, ChronoUnit.DAYS), List.of());
+        subscribeAt(tenant, plan(PlanStatus.active, List.of("receiving")),
+                TenantSubscriptionStatus.cancelled, now.minus(10, ChronoUnit.DAYS), List.of());
+        subscribeAt(tenant, plan(PlanStatus.active, List.of("purchasing", "receiving")),
+                TenantSubscriptionStatus.cancelled, now.minus(1, ChronoUnit.DAYS), List.of());
+
+        entitlements(login(employee(tenant)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.planCode").value(currentPlan.getCode()))
+                .andExpect(jsonPath("$.subscriptionStatus").value("active"))
+                .andExpect(jsonPath("$.isEntitlementActive").value(true))
+                .andExpect(jsonPath("$.effectiveCapabilities", containsInAnyOrder("pos", "inventory")));
+    }
+
+    @Test
+    void effectiveCapabilitiesMatchBackendAuthorizationAcrossSubscriptionStates() throws Exception {
+        Instant now = Instant.now();
+
+        // 1. Active subscription WITHOUT purchasing + newer cancelled historical subscription WITH purchasing:
+        //    both /auth/session/entitlements and backend authorization must deny purchasing (CAPABILITY_REQUIRED).
+        Tenant activeWithHistoryTenant = tenant();
+        subscribeAt(activeWithHistoryTenant, plan(PlanStatus.active, List.of("pos")),
+                TenantSubscriptionStatus.active, now.minus(15, ChronoUnit.DAYS), List.of());
+        subscribeAt(activeWithHistoryTenant, plan(PlanStatus.active, List.of("pos", "purchasing")),
+                TenantSubscriptionStatus.cancelled, now.minus(1, ChronoUnit.DAYS), List.of());
+        String tokenWithoutPurchasing = login(
+                employeeWithPermissions(activeWithHistoryTenant, List.of("pos.cash.open", "purchasing.orders.read")));
+
+        entitlements(tokenWithoutPurchasing)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.effectiveCapabilities", containsInAnyOrder("pos")));
+        org.assertj.core.api.Assertions.assertThat(
+                        entitlementResolver.resolve(activeWithHistoryTenant.getId()).capabilities())
+                .extracting(com.omniretail.backend.shared.security.SaasCapability::getKey)
+                .containsExactly("pos");
+        mockMvc.perform(get("/api/v1/purchasing/suppliers/active")
+                        .header("Authorization", "Bearer " + tokenWithoutPurchasing))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("CAPABILITY_REQUIRED"));
+
+        // 2. Active subscription WITH purchasing + newer cancelled historical subscription WITHOUT purchasing:
+        //    both /auth/session/entitlements and backend authorization must allow purchasing (200 OK).
+        Tenant activePurchasingTenant = tenant();
+        subscribeAt(activePurchasingTenant, plan(PlanStatus.active, List.of("pos", "purchasing")),
+                TenantSubscriptionStatus.active, now.minus(15, ChronoUnit.DAYS), List.of());
+        subscribeAt(activePurchasingTenant, plan(PlanStatus.active, List.of("pos")),
+                TenantSubscriptionStatus.cancelled, now.minus(1, ChronoUnit.DAYS), List.of());
+        String tokenWithPurchasing = login(
+                employeeWithPermissions(activePurchasingTenant, List.of("pos.cash.open", "purchasing.orders.read")));
+
+        entitlements(tokenWithPurchasing)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.effectiveCapabilities", containsInAnyOrder("pos", "purchasing")));
+        org.assertj.core.api.Assertions.assertThat(
+                        entitlementResolver.resolve(activePurchasingTenant.getId()).capabilities())
+                .extracting(com.omniretail.backend.shared.security.SaasCapability::getKey)
+                .containsExactlyInAnyOrder("pos", "purchasing");
+        mockMvc.perform(get("/api/v1/purchasing/suppliers/active")
+                        .header("Authorization", "Bearer " + tokenWithPurchasing))
+                .andExpect(status().isOk());
+
+        // 3. Suspended subscription WITH purchasing: effectiveCapabilities = [] and backend returns SUBSCRIPTION_INACTIVE.
+        Tenant suspendedTenant = tenant();
+        subscribe(suspendedTenant, plan(PlanStatus.active, List.of("purchasing")),
+                TenantSubscriptionStatus.suspended, List.of());
+        String suspendedToken = login(
+                employeeWithPermissions(suspendedTenant, List.of("purchasing.orders.read")));
+
+        entitlements(suspendedToken)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.effectiveCapabilities.length()").value(0));
+        mockMvc.perform(get("/api/v1/purchasing/suppliers/active")
+                        .header("Authorization", "Bearer " + suspendedToken))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("SUBSCRIPTION_INACTIVE"));
+
+        // 4. Archived plan WITH active subscription: effectiveCapabilities = [] and backend returns PLAN_INACTIVE.
+        Tenant archivedPlanTenant = tenant();
+        subscribe(archivedPlanTenant, plan(PlanStatus.archived, List.of("purchasing")),
+                TenantSubscriptionStatus.active, List.of());
+        String archivedPlanToken = login(
+                employeeWithPermissions(archivedPlanTenant, List.of("purchasing.orders.read")));
+
+        entitlements(archivedPlanToken)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.effectiveCapabilities.length()").value(0));
+        mockMvc.perform(get("/api/v1/purchasing/suppliers/active")
+                        .header("Authorization", "Bearer " + archivedPlanToken))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("PLAN_INACTIVE"));
+
+        // 5. Only cancelled historical records: effectiveCapabilities = [] and backend returns SUBSCRIPTION_INACTIVE.
+        Tenant cancelledOnlyTenant = tenant();
+        subscribeAt(cancelledOnlyTenant, plan(PlanStatus.active, List.of("purchasing")),
+                TenantSubscriptionStatus.cancelled, now.minus(10, ChronoUnit.DAYS), List.of());
+        String cancelledOnlyToken = login(
+                employeeWithPermissions(cancelledOnlyTenant, List.of("purchasing.orders.read")));
+
+        entitlements(cancelledOnlyToken)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.subscriptionStatus").value("cancelled"))
+                .andExpect(jsonPath("$.effectiveCapabilities.length()").value(0));
+        mockMvc.perform(get("/api/v1/purchasing/suppliers/active")
+                        .header("Authorization", "Bearer " + cancelledOnlyToken))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("SUBSCRIPTION_INACTIVE"));
     }
 
     @Test
@@ -233,13 +420,17 @@ class SessionEntitlementsControllerTest {
     }
 
     private void subscribe(Tenant tenant, SaasPlan plan, TenantSubscriptionStatus status, List<String> addons) {
-        Instant now = Instant.now();
+        subscribeAt(tenant, plan, status, Instant.now(), addons);
+    }
+
+    private void subscribeAt(
+            Tenant tenant, SaasPlan plan, TenantSubscriptionStatus status, Instant startedAt, List<String> addons) {
         TenantSubscription subscription = TenantSubscription.builder()
                 .planId(plan.getId())
                 .status(status)
-                .startedAt(now)
-                .currentPeriodStart(now)
-                .currentPeriodEnd(now.plus(30, ChronoUnit.DAYS))
+                .startedAt(startedAt)
+                .currentPeriodStart(startedAt)
+                .currentPeriodEnd(startedAt.plus(30, ChronoUnit.DAYS))
                 .addonCodes(addons)
                 .build();
         subscription.setTenantId(tenant.getId());
@@ -248,11 +439,15 @@ class SessionEntitlementsControllerTest {
 
     /** Empleado sin ningun permiso administrativo: justo el caso de Cajero/Inventario/Bodeguero. */
     private User employee(Tenant tenant) {
+        return employeeWithPermissions(tenant, List.of("pos.cash.open"));
+    }
+
+    private User employeeWithPermissions(Tenant tenant, List<String> permissions) {
         Role role = Role.builder()
                 .name("Rol " + UUID.randomUUID())
                 .status(RoleStatus.active)
                 .branchScope(BranchScope.all)
-                .permissions(List.of("pos.cash.open"))
+                .permissions(permissions)
                 .build();
         role.setTenantId(tenant.getId());
         role = roleRepository.save(role);

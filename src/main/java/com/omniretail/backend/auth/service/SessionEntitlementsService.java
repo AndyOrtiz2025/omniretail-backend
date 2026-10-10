@@ -47,8 +47,8 @@ public class SessionEntitlementsService {
         requireLiveSession(actor);
         requireActiveEmployee(actor);
 
-        var subscription = subscriptionRepository
-                .findFirstByTenantIdOrderByStartedAtDescCreatedAtDesc(actor.tenantId())
+        var subscription = DefaultTenantEntitlementResolver
+                .findEffectiveSubscription(subscriptionRepository, actor.tenantId())
                 .orElseThrow(() -> notFound("TENANT_SUBSCRIPTION_NOT_FOUND",
                         "El negocio no tiene una suscripción."));
         var plan = planRepository.findById(subscription.getPlanId())

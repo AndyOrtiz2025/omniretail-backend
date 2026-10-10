@@ -3,11 +3,23 @@ databaseChangeLog:
       id: 999-13-seed-role-read-permissions
       author: joga17000
       context: dev
-      comment: Completa los permisos de solo lectura que necesitan los roles de sistema Cajero, Inventario y Bodeguero para que sus pantallas carguen.
+      comment: Completa los permisos de solo lectura que necesitan los roles de sistema Cajero, Inventario y Bodeguero (seed dev) para que sus pantallas carguen.
       changes:
-        # Las pantallas operativas piden catalogos y existencias aparte de sus permisos propios; sin estas lecturas
-        # reciben 403 aunque el rol sea el correcto. Solo lectura: ningun create/update/manage.
-        # 999-01, 999-11 y 999-12 ya estan aplicadas y no se editan (regla del master).
+        # Alcance de contexto (context: dev):
+        #   - Los roles operativos "Cajero", "Inventario" y "Bodeguero" (is_system = TRUE) existen como datos
+        #     semilla creados exclusivamente por 999-01-seed-base.yaml bajo `context: dev`. Por ello, este
+        #     changeset aplica automaticamente solo en el entorno de desarrollo (`dev`).
+        #   - Fuera de `dev` (ambientes productivos o tenants no sembrados por 999-01), los roles operativos
+        #     de cada tenant y sus permisos granulares se crean y actualizan mediante la API de administracion
+        #     de roles (`POST /api/v1/administration/roles` y `PUT /api/v1/administration/roles/{id}`, protegidos
+        #     por `admin.roles.manage`) o en el flujo de aprovisionamiento del tenant.
+        #
+        # Alcance de permisos (principio de menor privilegio):
+        #   - Las pantallas operativas consultan catalogos auxiliares y existencias; sin estas lecturas reciben
+        #     403 aunque el rol tenga acceso al modulo.
+        #   - Solo se agregan permisos de lectura (`*.read`). No se amplian permisos administrativos (`admin.*`)
+        #     ni se otorgan capacidades de escritura (`*.create`, `*.update`, `*.manage`, `*.delete`).
+        #   - 999-01, 999-11 y 999-12 ya estan aplicadas y no se editan para preservar sus checksums de Liquibase.
         #
         # Cajero:
         #   - catalog.locations.read:  GET /catalog/locations (la terminal POS y las alertas de inventario).
@@ -60,5 +72,10 @@ databaseChangeLog:
               )
               WHERE name = 'Bodeguero' AND is_system = TRUE;
       rollback:
+        # Intencionalmente sin efecto (mismo criterio que 048-catalog-attributes-admin-permissions y
+        # 999-07-seed-catalog-attributes-admin-permissions): al tratarse de un seed acumulativo por union
+        # de conjuntos (`unnest(permissions || ARRAY[...])`), sin estado historico adicional no es posible
+        # distinguir si alguno de estos permisos ya habia sido asignado previamente al rol (por seeds previos
+        # o manualmente via API), por lo que removerlos en un rollback seria destructivo.
         - sql:
             sql: SELECT 1
