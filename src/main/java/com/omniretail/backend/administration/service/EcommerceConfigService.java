@@ -8,15 +8,18 @@ import com.omniretail.backend.administration.entity.EcommerceConfig;
 import com.omniretail.backend.administration.repository.BranchRepository;
 import com.omniretail.backend.administration.repository.EcommerceConfigRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
+import com.omniretail.backend.shared.media.MediaStorageService;
 import com.omniretail.backend.shared.security.CurrentUser;
 import com.omniretail.backend.shared.security.SaasCapability;
 import com.omniretail.backend.shared.security.TenantCapabilityGuard;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
 @Service
 @Transactional
@@ -31,6 +34,8 @@ public class EcommerceConfigService {
     private final BranchRepository branchRepository;
     private final TenantCapabilityGuard tenantCapabilityGuard;
     private final CurrentUser currentUser;
+    private final MediaStorageService mediaStorageService;
+    private final EcommerceMediaReferences mediaReferences;
 
     @Transactional(readOnly = true)
     public EcommerceConfigResponse getConfig() {
@@ -57,7 +62,10 @@ public class EcommerceConfigService {
         });
         config.setEnabled(request.enabled());
         config.setStoreName(request.storeName().trim());
-        config.setLogoUrl(normalize(request.logoUrl()));
+        String previousLogoUrl = config.getLogoUrl();
+        String newLogoUrl = normalize(request.logoUrl());
+        mediaReferences.requireNotForeignMedia(tenantId, newLogoUrl);
+        config.setLogoUrl(newLogoUrl);
         config.setContactPhone(normalizePhone(request.contactPhone()));
         config.setContactEmail(normalizeEmail(request.contactEmail()));
         config.setRequireAccountForCheckout(request.requireAccountForCheckout());
@@ -66,7 +74,55 @@ public class EcommerceConfigService {
         config.setAllowedPaymentMethods(FIXED_PAYMENT_METHODS);
         config.setDefaultBranchId(request.defaultBranchId());
 
-        return EcommerceConfigResponse.from(configRepository.save(config));
+        EcommerceConfigResponse response = EcommerceConfigResponse.from(configRepository.save(config));
+        // Si el PUT cambia o quita el logo, el archivo gestionado anterior ya no se usa: se borra al confirmar.
+        if (!Objects.equals(previousLogoUrl, config.getLogoUrl())) {
+            mediaReferences.deleteAfterCommitIfUnreferenced(tenantId, previousLogoUrl);
+        }
+        return response;
+    }
+
+    /**
+     * Sube el logo de la tienda desde el equipo. La configuracion debe existir (primero se guarda el
+     * formulario). Reemplaza el logo anterior y borra su archivo gestionado al confirmar.
+     */
+    public EcommerceConfigResponse uploadLogo(MultipartFile file) {
+        UUID tenantId = currentUser.require().tenantId();
+        tenantCapabilityGuard.ensureTenantCapability(tenantId, SaasCapability.ecommerce);
+        EcommerceConfig config = requireConfig(tenantId);
+        String newUrl = mediaStorageService.storeImage(
+                tenantId, MediaStorageService.SCOPE_ECOMMERCE, tenantId, file);
+        String previous = config.getLogoUrl();
+        try {
+            config.setLogoUrl(newUrl);
+            EcommerceConfig saved = configRepository.saveAndFlush(config);
+            mediaReferences.deleteAfterCommitIfUnreferenced(tenantId, previous);
+            return EcommerceConfigResponse.from(saved);
+        } catch (RuntimeException exception) {
+            mediaStorageService.deleteQuietly(newUrl);
+            throw exception;
+        }
+    }
+
+    /** Quita el logo de la tienda y borra su archivo gestionado al confirmar. */
+    public EcommerceConfigResponse deleteLogo() {
+        UUID tenantId = currentUser.require().tenantId();
+        tenantCapabilityGuard.ensureTenantCapability(tenantId, SaasCapability.ecommerce);
+        EcommerceConfig config = requireConfig(tenantId);
+        String previous = config.getLogoUrl();
+        config.setLogoUrl(null);
+        EcommerceConfig saved = configRepository.saveAndFlush(config);
+        mediaReferences.deleteAfterCommitIfUnreferenced(tenantId, previous);
+        return EcommerceConfigResponse.from(saved);
+    }
+
+    private EcommerceConfig requireConfig(UUID tenantId) {
+        return configRepository
+                .findByTenantId(tenantId)
+                .orElseThrow(() -> new BusinessException(
+                        HttpStatus.NOT_FOUND,
+                        "ECOMMERCE_CONFIG_NOT_FOUND",
+                        "No se encontró la configuración de e-commerce del negocio."));
     }
 
     private void ensureDefaultBranch(UUID tenantId, boolean enabled, UUID defaultBranchId) {

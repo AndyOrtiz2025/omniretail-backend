@@ -1,9 +1,13 @@
 package com.omniretail.backend.administration.controller;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.matchesPattern;
 import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -18,15 +22,20 @@ import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.entity.User;
 import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.administration.repository.BranchRepository;
+import com.omniretail.backend.administration.repository.EcommerceConfigRepository;
 import com.omniretail.backend.administration.repository.RoleRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.administration.repository.UserRepository;
 import com.omniretail.backend.auth.entity.Session;
 import com.omniretail.backend.auth.repository.SessionRepository;
 import com.omniretail.backend.auth.service.JwtService;
+import com.omniretail.backend.shared.media.MediaStorageService;
 import com.omniretail.backend.shared.security.SaasCapability;
 import com.omniretail.backend.shared.security.TenantEntitlementResolver;
 import com.omniretail.backend.shared.security.TenantEntitlements;
+import com.jayway.jsonpath.JsonPath;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.EnumSet;
@@ -39,6 +48,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -47,6 +58,7 @@ import org.springframework.test.web.servlet.MockMvc;
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @Import(TestcontainersConfiguration.class)
+@TestPropertySource(properties = "app.media.storage-path=${java.io.tmpdir}/omniretail-ecommerce-media-test")
 class EcommerceConfigControllerTest {
 
     private static final String ECOMMERCE_URL = "/api/v1/administration/ecommerce-config";
@@ -72,6 +84,12 @@ class EcommerceConfigControllerTest {
 
     @Autowired
     private BranchRepository branchRepository;
+
+    @Autowired
+    private MediaStorageService mediaStorageService;
+
+    @Autowired
+    private EcommerceConfigRepository ecommerceConfigRepository;
 
     @MockitoBean
     private TenantEntitlementResolver entitlementResolver;
@@ -389,6 +407,418 @@ class EcommerceConfigControllerTest {
         mockMvc.perform(get(HERO_URL).header("Authorization", bearer(tokenA)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.slides[0].title").value("Slide 1"));
+    }
+
+    private static final byte[] PNG = {(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1};
+
+    @Test
+    void uploadEndpointsRequireTokenAndPermission() throws Exception {
+        Tenant tenant = persistTenant();
+        String withoutPermission = tokenFor(tenant, List.of());
+
+        mockMvc.perform(multipart(ECOMMERCE_URL + "/logo").file(png()))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(multipart(ECOMMERCE_URL + "/logo").file(png())
+                        .header("Authorization", bearer(withoutPermission)))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(multipart(HERO_URL + "/slides/0/image").file(png())
+                        .header("Authorization", bearer(withoutPermission)))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(delete(ECOMMERCE_URL + "/logo").header("Authorization", bearer(withoutPermission)))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(delete(HERO_URL + "/slides/0/image").header("Authorization", bearer(withoutPermission)))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void uploadWithoutSavedConfigReturnsNotFound() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+
+        mockMvc.perform(multipart(ECOMMERCE_URL + "/logo").file(png()).header("Authorization", bearer(token)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("ECOMMERCE_CONFIG_NOT_FOUND"));
+        mockMvc.perform(multipart(HERO_URL + "/slides/0/image").file(png()).header("Authorization", bearer(token)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("HERO_BANNER_NOT_FOUND"));
+    }
+
+    @Test
+    void uploadLogoStoresRelativePathReplacesAndDeletesPreviousFile() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        savedEcommerceConfig(token);
+        String pattern = "^/media/" + tenant.getId() + "/ecommerce/" + tenant.getId() + "/[0-9a-f-]{36}\\.png$";
+
+        String first = urlOf(mockMvc.perform(multipart(ECOMMERCE_URL + "/logo").file(png())
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.logoUrl").value(matchesPattern(pattern)))
+                .andReturn()
+                .getResponse()
+                .getContentAsString());
+        assertThat(Files.exists(fileFor(first))).isTrue();
+
+        String second = urlOf(mockMvc.perform(multipart(ECOMMERCE_URL + "/logo").file(png())
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString());
+
+        assertThat(second).isNotEqualTo(first);
+        assertThat(Files.exists(fileFor(second))).isTrue();
+        assertThat(Files.exists(fileFor(first))).isFalse();
+        mockMvc.perform(get(ECOMMERCE_URL).header("Authorization", bearer(token)))
+                .andExpect(jsonPath("$.logoUrl").value(second));
+    }
+
+    @Test
+    void uploadLogoRejectsInvalidAndSpoofedFiles() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        savedEcommerceConfig(token);
+
+        mockMvc.perform(multipart(ECOMMERCE_URL + "/logo")
+                        .file(new MockMultipartFile("file", "logo.png", "image/png", "no-es-imagen".getBytes()))
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.code").value("MEDIA_TYPE_INVALID"));
+        mockMvc.perform(multipart(ECOMMERCE_URL + "/logo")
+                        .file(new MockMultipartFile("file", "logo.jpg", "image/jpeg", PNG))
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isUnsupportedMediaType());
+    }
+
+    @Test
+    void deleteLogoClearsReferenceAndRemovesFile() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        savedEcommerceConfig(token);
+        String url = urlOf(mockMvc.perform(multipart(ECOMMERCE_URL + "/logo").file(png())
+                        .header("Authorization", bearer(token)))
+                .andReturn()
+                .getResponse()
+                .getContentAsString());
+
+        mockMvc.perform(delete(ECOMMERCE_URL + "/logo").header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.logoUrl").value(nullValue()));
+
+        assertThat(Files.exists(fileFor(url))).isFalse();
+    }
+
+    @Test
+    void putThatChangesOrClearsLogoDeletesPreviousManagedFile() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        savedEcommerceConfig(token);
+        String url = urlOf(mockMvc.perform(multipart(ECOMMERCE_URL + "/logo").file(png())
+                        .header("Authorization", bearer(token)))
+                .andReturn()
+                .getResponse()
+                .getContentAsString());
+
+        // Reenviar la misma URL gestionada no la borra (asi se guarda el formulario sin tocar el logo).
+        mockMvc.perform(put(ECOMMERCE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(ecommerceBodyWithLogo(url)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.logoUrl").value(url));
+        assertThat(Files.exists(fileFor(url))).isTrue();
+
+        mockMvc.perform(put(ECOMMERCE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(ecommerceBodyWithLogo("https://cdn.example.com/externo.png")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.logoUrl").value("https://cdn.example.com/externo.png"));
+
+        assertThat(Files.exists(fileFor(url))).isFalse();
+    }
+
+    @Test
+    void heroSlideImageUploadReplaceAndDeleteKeepOtherSlides() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        mockMvc.perform(put(HERO_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(slidesBody(3)))
+                .andExpect(status().isOk());
+        String pattern = "^/media/" + tenant.getId() + "/ecommerce/" + tenant.getId() + "/[0-9a-f-]{36}\\.png$";
+
+        String first = slideImageOf(mockMvc.perform(multipart(HERO_URL + "/slides/1/image").file(png())
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.slides.length()").value(3))
+                .andExpect(jsonPath("$.slides[1].imageUrl").value(matchesPattern(pattern)))
+                .andExpect(jsonPath("$.slides[1].title").value("Slide 2"))
+                .andExpect(jsonPath("$.slides[0].imageUrl").value(nullValue()))
+                .andReturn()
+                .getResponse()
+                .getContentAsString(), 1);
+        assertThat(Files.exists(fileFor(first))).isTrue();
+
+        String second = slideImageOf(mockMvc.perform(multipart(HERO_URL + "/slides/1/image").file(png())
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString(), 1);
+        assertThat(Files.exists(fileFor(first))).isFalse();
+        assertThat(Files.exists(fileFor(second))).isTrue();
+
+        mockMvc.perform(delete(HERO_URL + "/slides/1/image").header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.slides[1].imageUrl").value(nullValue()))
+                .andExpect(jsonPath("$.slides[2].title").value("Slide 3"));
+        assertThat(Files.exists(fileFor(second))).isFalse();
+    }
+
+    @Test
+    void heroSlideImageWithInvalidIndexFails() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        mockMvc.perform(put(HERO_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(slidesBody(3)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(multipart(HERO_URL + "/slides/3/image").file(png()).header("Authorization", bearer(token)))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(multipart(HERO_URL + "/slides/-1/image").file(png()).header("Authorization", bearer(token)))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(delete(HERO_URL + "/slides/3/image").header("Authorization", bearer(token)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void heroPutRemovingManagedImageDeletesFileButKeepsReusedOnes() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        mockMvc.perform(put(HERO_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(slidesBody(3)))
+                .andExpect(status().isOk());
+        String kept = slideImageOf(mockMvc.perform(multipart(HERO_URL + "/slides/0/image").file(png())
+                        .header("Authorization", bearer(token)))
+                .andReturn()
+                .getResponse()
+                .getContentAsString(), 0);
+        String removed = slideImageOf(mockMvc.perform(multipart(HERO_URL + "/slides/2/image").file(png())
+                        .header("Authorization", bearer(token)))
+                .andReturn()
+                .getResponse()
+                .getContentAsString(), 2);
+        String body = "{\"slides\":[{\"title\":\"A\",\"description\":\"a\",\"imageUrl\":\"" + kept + "\"},"
+                + "{\"title\":\"B\",\"description\":\"b\"},"
+                + "{\"title\":\"C\",\"description\":\"c\"}]}";
+
+        mockMvc.perform(put(HERO_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.slides[0].imageUrl").value(kept));
+
+        assertThat(Files.exists(fileFor(kept))).isTrue();
+        assertThat(Files.exists(fileFor(removed))).isFalse();
+    }
+
+    @Test
+    void putRejectsMediaThatBelongsToAnotherTenantAndNeverTouchesIt() throws Exception {
+        Tenant attacker = persistTenant();
+        Tenant victim = persistTenant();
+        String token = tokenFor(attacker);
+        String victimFile = storedFile(victim, "products");
+
+        mockMvc.perform(put(ECOMMERCE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(ecommerceBodyWithLogo(victimFile)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("La imagen indicada no pertenece al negocio activo."));
+        mockMvc.perform(put(HERO_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(slidesWithImages(null, victimFile, null)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("La imagen indicada no pertenece al negocio activo."));
+
+        assertThat(Files.exists(fileFor(victimFile))).isTrue();
+    }
+
+    @Test
+    void removingALogoThatPointsToProtectedMediaNeverDeletesTheFile() throws Exception {
+        Tenant attacker = persistTenant();
+        Tenant victim = persistTenant();
+        String token = tokenFor(attacker);
+        savedEcommerceConfig(token);
+        String victimFile = storedFile(victim, "products");
+        String ownProductFile = storedFile(attacker, "products");
+
+        // Aunque una URL ajena o de otra zona llegara a la configuracion (datos antiguos), nunca se borra.
+        for (String url : List.of(victimFile, ownProductFile)) {
+            forceLogo(attacker, url);
+
+            mockMvc.perform(put(ECOMMERCE_URL)
+                            .header("Authorization", bearer(token))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(ecommerceBody(false, null)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.logoUrl").value(nullValue()));
+            assertThat(Files.exists(fileFor(url))).isTrue();
+
+            forceLogo(attacker, url);
+            mockMvc.perform(delete(ECOMMERCE_URL + "/logo").header("Authorization", bearer(token)))
+                    .andExpect(status().isOk());
+            assertThat(Files.exists(fileFor(url))).isTrue();
+        }
+    }
+
+    @Test
+    void anImageUsedByTwoSlidesIsOnlyDeletedWhenNoneUsesIt() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        mockMvc.perform(put(HERO_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(slidesBody(3)))
+                .andExpect(status().isOk());
+        String shared = slideImageOf(mockMvc.perform(multipart(HERO_URL + "/slides/0/image").file(png())
+                        .header("Authorization", bearer(token)))
+                .andReturn()
+                .getResponse()
+                .getContentAsString(), 0);
+        mockMvc.perform(put(HERO_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(slidesWithImages(shared, shared, null)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(delete(HERO_URL + "/slides/0/image").header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.slides[1].imageUrl").value(shared));
+        assertThat(Files.exists(fileFor(shared))).isTrue();
+
+        // Reemplazar la imagen de la otra diapositiva tampoco borra lo que aun se use (nada la usa ya: se borra).
+        mockMvc.perform(multipart(HERO_URL + "/slides/1/image").file(png())
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk());
+        assertThat(Files.exists(fileFor(shared))).isFalse();
+    }
+
+    @Test
+    void replacingASlideImageKeepsTheFileWhileAnotherSlideStillUsesIt() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        mockMvc.perform(put(HERO_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(slidesBody(3)))
+                .andExpect(status().isOk());
+        String shared = slideImageOf(mockMvc.perform(multipart(HERO_URL + "/slides/0/image").file(png())
+                        .header("Authorization", bearer(token)))
+                .andReturn()
+                .getResponse()
+                .getContentAsString(), 0);
+        mockMvc.perform(put(HERO_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(slidesWithImages(shared, shared, null)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(multipart(HERO_URL + "/slides/0/image").file(png())
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk());
+
+        assertThat(Files.exists(fileFor(shared))).isTrue();
+    }
+
+    @Test
+    void anImageSharedByTheLogoAndASlideIsKeptUntilNoneUsesIt() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        savedEcommerceConfig(token);
+        String logo = urlOf(mockMvc.perform(multipart(ECOMMERCE_URL + "/logo").file(png())
+                        .header("Authorization", bearer(token)))
+                .andReturn()
+                .getResponse()
+                .getContentAsString());
+        mockMvc.perform(put(HERO_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(slidesWithImages(logo, null, null)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(delete(ECOMMERCE_URL + "/logo").header("Authorization", bearer(token)))
+                .andExpect(status().isOk());
+        assertThat(Files.exists(fileFor(logo))).isTrue();
+
+        mockMvc.perform(delete(HERO_URL + "/slides/0/image").header("Authorization", bearer(token)))
+                .andExpect(status().isOk());
+        assertThat(Files.exists(fileFor(logo))).isFalse();
+    }
+
+    private String storedFile(Tenant tenant, String scope) {
+        return mediaStorageService.storeImage(tenant.getId(), scope, UUID.randomUUID(), png());
+    }
+
+    private void forceLogo(Tenant tenant, String url) {
+        var config = ecommerceConfigRepository.findByTenantId(tenant.getId()).orElseThrow();
+        config.setLogoUrl(url);
+        ecommerceConfigRepository.save(config);
+    }
+
+    private static String slidesWithImages(String first, String second, String third) {
+        String[] images = {first, second, third};
+        StringBuilder slides = new StringBuilder();
+        for (int i = 0; i < images.length; i++) {
+            if (i > 0) {
+                slides.append(',');
+            }
+            slides.append("{\"title\":\"Slide ").append(i + 1).append("\",\"description\":\"Desc\"");
+            if (images[i] != null) {
+                slides.append(",\"imageUrl\":\"").append(images[i]).append('"');
+            }
+            slides.append('}');
+        }
+        return "{\"slides\":[" + slides + "]}";
+    }
+
+    private void savedEcommerceConfig(String token) throws Exception {
+        mockMvc.perform(put(ECOMMERCE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(ecommerceBody(false, null)))
+                .andExpect(status().isOk());
+    }
+
+    private static MockMultipartFile png() {
+        return new MockMultipartFile("file", "logo.png", "image/png", PNG);
+    }
+
+    private Path fileFor(String url) {
+        return mediaStorageService.root().resolve(url.substring("/media/".length()));
+    }
+
+    private static String urlOf(String responseBody) {
+        return JsonPath.read(responseBody, "$.logoUrl");
+    }
+
+    private static String slideImageOf(String responseBody, int index) {
+        return JsonPath.read(responseBody, "$.slides[" + index + "].imageUrl");
+    }
+
+    private static String ecommerceBodyWithLogo(String logoUrl) {
+        return """
+                {"enabled":false,"storeName":"Mi Tienda","logoUrl":"%s","requireAccountForCheckout":true,"guestTrackingEnabled":false}
+                """
+                .formatted(logoUrl);
     }
 
     private static String ecommerceBodyWithPhone(String contactPhone) {

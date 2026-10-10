@@ -22,8 +22,11 @@ import org.springframework.web.multipart.MultipartFile;
 @Service
 public class MediaStorageService {
 
+    /** Logo e imagenes del carrusel de la tienda en linea (ownerId = tenantId). */
+    public static final String SCOPE_ECOMMERCE = "ecommerce";
+
     private static final Pattern MANAGED_URL = Pattern.compile(
-            "^/media/([0-9a-fA-F-]{36})/(categories|products)/([0-9a-fA-F-]{36})/([0-9a-fA-F-]{36}\\.(?:jpg|png|webp))$");
+            "^/media/([0-9a-fA-F-]{36})/(categories|products|ecommerce)/([0-9a-fA-F-]{36})/([0-9a-fA-F-]{36}\\.(?:jpg|png|webp))$");
     private static final byte[] JPEG = {(byte) 0xff, (byte) 0xd8, (byte) 0xff};
     private static final byte[] PNG = {(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a};
     private static final byte[] WEBP_RIFF = {0x52, 0x49, 0x46, 0x46};
@@ -46,7 +49,7 @@ public class MediaStorageService {
     }
 
     public String storeImage(UUID tenantId, String scope, UUID ownerId, MultipartFile file) {
-        if (tenantId == null || ownerId == null || !("categories".equals(scope) || "products".equals(scope))) {
+        if (tenantId == null || ownerId == null || !("categories".equals(scope) || "products".equals(scope) || SCOPE_ECOMMERCE.equals(scope))) {
             throw invalid("Destino de archivo no valido.");
         }
         if (file == null || file.isEmpty()) {
@@ -87,6 +90,27 @@ public class MediaStorageService {
 
     public boolean isManaged(String url) {
         return url != null && MANAGED_URL.matcher(url).matches();
+    }
+
+    /** true si la URL es un archivo gestionado que pertenece al negocio indicado (en cualquier zona). */
+    public boolean isManagedByTenant(String url, UUID tenantId) {
+        Matcher matcher = managedMatcher(url);
+        return matcher != null && tenantId != null && matcher.group(1).equalsIgnoreCase(tenantId.toString());
+    }
+
+    /** true si la URL es un archivo gestionado del negocio indicado dentro de la zona indicada. */
+    public boolean isManagedIn(String url, UUID tenantId, String scope) {
+        Matcher matcher = managedMatcher(url);
+        return matcher != null
+                && tenantId != null
+                && matcher.group(1).equalsIgnoreCase(tenantId.toString())
+                && matcher.group(2).equals(scope);
+    }
+
+    private static Matcher managedMatcher(String url) {
+        if (url == null) return null;
+        Matcher matcher = MANAGED_URL.matcher(url);
+        return matcher.matches() ? matcher : null;
     }
 
     public void deleteAfterCommit(String url) {
