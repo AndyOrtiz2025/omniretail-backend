@@ -87,6 +87,39 @@ public interface InventorySerialRepository extends JpaRepository<InventorySerial
             @Param("productId") UUID productId,
             @Param("serialNumbers") List<String> serialNumbers);
 
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            select serial from InventorySerial serial
+            where serial.tenantId = :tenantId
+              and serial.branchId = :branchId
+              and serial.productId = :productId
+              and serial.locationId = :locationId
+              and serial.status in :statuses
+            order by serial.serialNumber
+            """)
+    List<InventorySerial> findPhysicalForUpdateAtLocation(
+            @Param("tenantId") UUID tenantId,
+            @Param("branchId") UUID branchId,
+            @Param("productId") UUID productId,
+            @Param("locationId") UUID locationId,
+            @Param("statuses") Collection<InventorySerialStatus> statuses);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            select serial from InventorySerial serial
+            where serial.tenantId = :tenantId
+              and serial.branchId = :branchId
+              and serial.productId = :productId
+              and serial.locationId is null
+              and serial.status in :statuses
+            order by serial.serialNumber
+            """)
+    List<InventorySerial> findPhysicalForUpdateWithoutLocation(
+            @Param("tenantId") UUID tenantId,
+            @Param("branchId") UUID branchId,
+            @Param("productId") UUID productId,
+            @Param("statuses") Collection<InventorySerialStatus> statuses);
+
     List<InventorySerial> findByTenantIdAndBranchIdAndProductIdOrderBySerialNumberAsc(
             UUID tenantId, UUID branchId, UUID productId);
 

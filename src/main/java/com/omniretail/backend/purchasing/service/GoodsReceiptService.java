@@ -364,14 +364,15 @@ public class GoodsReceiptService {
                 .toList();
         List<ResolvedItem> resolvedItems = resolveItems(tenantId, order, requests);
         validateDraftLocations(tenantId, order.getBranchId(), resolvedItems);
+        Map<UUID, GoodsReceiptItem> storedByOrderItem = storedItems.stream().collect(
+                Collectors.toMap(GoodsReceiptItem::getPurchaseOrderItemId, Function.identity()));
+        validateInboundLocations(tenantId, order.getBranchId(), resolvedItems, storedByOrderItem);
+        resolvedItems = resolveEffectiveLocations(tenantId, order.getBranchId(), resolvedItems);
+        validateConfirmedLocations(tenantId, order.getBranchId(), resolvedItems);
         refreshStoredItems(storedItems, resolvedItems);
 
         Map<UUID, BigDecimal> confirmedBefore = confirmedQuantities(tenantId, order.getId());
         validateNoOverReceiving(resolvedItems, confirmedBefore);
-
-        Map<UUID, GoodsReceiptItem> storedByOrderItem = storedItems.stream().collect(
-                Collectors.toMap(GoodsReceiptItem::getPurchaseOrderItemId, Function.identity()));
-        validateInboundLocations(tenantId, order.getBranchId(), resolvedItems, storedByOrderItem);
         List<ResolvedItem> inventoryOrder = resolvedItems.stream()
                 .sorted(Comparator.comparing(
                                 (ResolvedItem item) -> item.purchaseOrderItem().getProductId())
@@ -601,6 +602,7 @@ public class GoodsReceiptService {
                 .collect(Collectors.toMap(PurchaseOrderItem::getId, Function.identity()));
         Set<UUID> seen = new HashSet<>();
         List<ResolvedItem> resolved = new ArrayList<>(requests.size());
+        boolean locationsEnabled = operationalLocationService.locationsEnabled(tenantId);
         for (GoodsReceiptItemRequest request : requests) {
             if (request == null || request.purchaseOrderItemId() == null) {
                 throw purchaseOrderItemNotFound();
@@ -631,10 +633,10 @@ public class GoodsReceiptService {
             }
             UUID locationId = null;
             if (Boolean.TRUE.equals(product.getTrackingStock())) {
-                if (request.locationId() == null) {
+                if (!locationsEnabled && isTraceable(product) && request.locationId() == null) {
                     throw badRequest(
                             "GOODS_RECEIPT_LOCATION_REQUIRED",
-                            "La ubicación es obligatoria para productos con control de inventario.");
+                            "La ubicación es obligatoria para productos con trazabilidad de lote, serie o vencimiento.");
                 }
                 locationId = request.locationId();
             }
@@ -707,7 +709,7 @@ public class GoodsReceiptService {
         }
         List<InventoryOperationalLocationService.InboundIssue> issues = operationalLocationService
                 .inboundIssues(
-                        tenantId, branchId, targets, InventoryOperationalLocationService.InboundMode.REQUIRED);
+                        tenantId, branchId, targets, InventoryOperationalLocationService.InboundMode.OPTIONAL);
         if (issues.isEmpty()) {
             return;
         }
@@ -724,7 +726,61 @@ public class GoodsReceiptService {
     private void validateDraftLocations(
             UUID tenantId, UUID branchId, List<ResolvedItem> resolvedItems) {
         for (ResolvedItem resolved : resolvedItems) {
+            if (!Boolean.TRUE.equals(resolved.product().getTrackingStock())
+                    || resolved.locationId() == null) {
+                continue;
+            }
+            Location location = locationRepository
+                    .findByTenantIdAndId(tenantId, resolved.locationId())
+                    .orElseThrow(() -> new BusinessException(
+                            HttpStatus.NOT_FOUND,
+                            "LOCATION_NOT_FOUND",
+                            "Ubicación no encontrada."));
+            if (!location.getBranchId().equals(branchId)) {
+                throw badRequest(
+                        "LOCATION_BRANCH_MISMATCH",
+                        "La ubicación no pertenece a la sucursal indicada.");
+            }
+        }
+    }
+
+    private List<ResolvedItem> resolveEffectiveLocations(
+            UUID tenantId, UUID branchId, List<ResolvedItem> resolvedItems) {
+        List<ResolvedItem> effective = new ArrayList<>(resolvedItems.size());
+        for (ResolvedItem resolved : resolvedItems) {
             if (!Boolean.TRUE.equals(resolved.product().getTrackingStock())) {
+                effective.add(resolved);
+                continue;
+            }
+            UUID locationId = operationalLocationService.resolveForInbound(
+                            tenantId,
+                            branchId,
+                            resolved.product().getId(),
+                            resolved.locationId())
+                    .locationId();
+            effective.add(new ResolvedItem(
+                    resolved.purchaseOrderItem(),
+                    resolved.product(),
+                    resolved.receivedQuantity(),
+                    resolved.baseQuantity(),
+                    locationId,
+                    resolved.trackingDetails()));
+        }
+        return effective;
+    }
+
+    private void validateConfirmedLocations(
+            UUID tenantId, UUID branchId, List<ResolvedItem> resolvedItems) {
+        for (ResolvedItem resolved : resolvedItems) {
+            if (!Boolean.TRUE.equals(resolved.product().getTrackingStock())) {
+                continue;
+            }
+            if (resolved.locationId() == null) {
+                if (isTraceable(resolved.product())) {
+                    throw badRequest(
+                            "GOODS_RECEIPT_LOCATION_REQUIRED",
+                            "La ubicación es obligatoria para productos con trazabilidad de lote, serie o vencimiento.");
+                }
                 continue;
             }
             Location location = locationRepository
@@ -744,6 +800,12 @@ public class GoodsReceiptService {
                         "La ubicación debe estar activa para recibir inventario.");
             }
         }
+    }
+
+    private static boolean isTraceable(Product product) {
+        return Boolean.TRUE.equals(product.getTrackingLot())
+                || Boolean.TRUE.equals(product.getTrackingSerial())
+                || Boolean.TRUE.equals(product.getTrackingExpiration());
     }
 
     private void refreshStoredItems(

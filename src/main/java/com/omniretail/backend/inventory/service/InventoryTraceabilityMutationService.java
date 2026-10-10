@@ -27,6 +27,7 @@ import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
 import com.omniretail.backend.inventory.repository.InventoryMovementTraceRepository;
 import com.omniretail.backend.inventory.repository.InventorySerialRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
+import jakarta.persistence.EntityManager;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -60,6 +61,7 @@ public class InventoryTraceabilityMutationService {
     private final InventoryMovementRepository movementRepository;
     private final InventoryMovementTraceRepository movementTraceRepository;
     private final InventoryOperationalLocationService operationalLocations;
+    private final EntityManager entityManager;
 
     public List<InventoryInboundTraceDetail> validateAndNormalize(
             UUID tenantId,
@@ -212,7 +214,8 @@ public class InventoryTraceabilityMutationService {
                         requested.referenceType(),
                         requested.referenceId(),
                         requested.referenceLineId(),
-                        requested.actorUserId());
+                        requested.actorUserId(),
+                        requested.expectedQuantity());
         List<InventoryInboundTraceDetail> details = validateAndNormalize(
                 command.tenantId(), product, command.baseQuantity(), command.trackingDetails());
 
@@ -230,6 +233,13 @@ public class InventoryTraceabilityMutationService {
                                 command.tenantId(), command.branchId(), product.getId(), command.locationId()))
                 .orElseThrow(() -> new IllegalStateException(
                         "No se pudo inicializar el balance de inventario de la ubicacion."));
+
+        // resolveForInbound puede haber cargado el balance antes del lock. Todavia no existen
+        // cambios pendientes sobre esta entidad, asi que se refresca la fila ya bloqueada para
+        // conservar quantity y reservedQuantity confirmados incluso sin expectedQuantity.
+        entityManager.refresh(balance);
+        InventoryQuantityPrecondition.requireExpectedQuantity(
+                command.expectedQuantity(), balance.getQuantity());
 
         List<ResolvedDetail> resolvedDetails = new ArrayList<>(details.size());
         for (InventoryInboundTraceDetail detail : details) {

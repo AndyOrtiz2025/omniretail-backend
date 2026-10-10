@@ -13,12 +13,15 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @SpringBootTest
 @ActiveProfiles("test")
@@ -30,6 +33,9 @@ class InventoryStockServiceConcurrencyTest {
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     @Test
     void concurrentIncrementsCreateOneBalanceWithoutLostUpdate() throws Exception {
@@ -114,6 +120,63 @@ class InventoryStockServiceConcurrencyTest {
             assertThat(finalQuantity).isGreaterThanOrEqualTo(BigDecimal.ZERO);
             assertThat(countMovements(fixture)).isOne();
         } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void inboundWaitsForLockedLocationBalanceAndUsesTheCommittedQuantity() throws Exception {
+        Fixture fixture = createFixtureWithoutBalance();
+        UUID locationId = createLocation(fixture);
+        UUID balanceId = configureOperationalLocation(fixture, locationId, "10.000", "2.000");
+        UUID inboundReferenceId = UUID.randomUUID();
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch deductionLocked = new CountDownLatch(1);
+        CountDownLatch releaseDeduction = new CountDownLatch(1);
+        TransactionTemplate template = new TransactionTemplate(transactionManager);
+
+        try {
+            Future<?> deduction = executor.submit(() -> template.executeWithoutResult(status -> {
+                inventoryStockService.deductStock(
+                        fixture.tenantId(), fixture.branchId(), fixture.productId(), new BigDecimal("3.000"));
+                deductionLocked.countDown();
+                awaitLatch(releaseDeduction);
+            }));
+            assertThat(deductionLocked.await(10, TimeUnit.SECONDS)).isTrue();
+
+            Future<?> inbound = executor.submit(() -> inventoryStockService.incrementStock(new AddStockCommand(
+                    fixture.tenantId(),
+                    fixture.branchId(),
+                    fixture.productId(),
+                    new BigDecimal("5.000"),
+                    "Entrada concurrente",
+                    "GOODS_RECEIPT",
+                    inboundReferenceId,
+                    null)));
+
+            awaitBlockedSessions(1);
+            assertThat(inbound.isDone()).isFalse();
+            releaseDeduction.countDown();
+
+            deduction.get(20, TimeUnit.SECONDS);
+            inbound.get(20, TimeUnit.SECONDS);
+
+            assertThat(balanceQuantity(balanceId)).isEqualByComparingTo("12.000");
+            assertThat(balanceReservedQuantity(balanceId)).isEqualByComparingTo("2.000");
+            assertThat(jdbcTemplate.queryForObject(
+                            "SELECT quantity_before FROM inventory_movements WHERE reference_id = ?",
+                            BigDecimal.class,
+                            inboundReferenceId))
+                    .isEqualByComparingTo("7.000");
+            assertThat(jdbcTemplate.queryForObject(
+                            "SELECT quantity_after FROM inventory_movements WHERE reference_id = ?",
+                            BigDecimal.class,
+                            inboundReferenceId))
+                    .isEqualByComparingTo("12.000");
+            assertThat(countMovements(fixture, "out")).isOne();
+            assertThat(countMovements(fixture, "in")).isOne();
+        } finally {
+            releaseDeduction.countDown();
             executor.shutdownNow();
         }
     }
@@ -255,6 +318,80 @@ class InventoryStockServiceConcurrencyTest {
                 fixture.branchId(),
                 "LOC-" + locationId);
         return locationId;
+    }
+
+    private UUID configureOperationalLocation(
+            Fixture fixture, UUID locationId, String quantity, String reservedQuantity) {
+        UUID configId = UUID.randomUUID();
+        UUID balanceId = UUID.randomUUID();
+        jdbcTemplate.update(
+                """
+                INSERT INTO business_capabilities_configs
+                    (id, tenant_id, preset, supports_multiple_locations)
+                VALUES (?, ?, 'custom', true)
+                """,
+                configId,
+                fixture.tenantId());
+        jdbcTemplate.update(
+                """
+                INSERT INTO product_inventory_settings
+                    (tenant_id, branch_id, product_id, default_location_id)
+                VALUES (?, ?, ?, ?)
+                """,
+                fixture.tenantId(),
+                fixture.branchId(),
+                fixture.productId(),
+                locationId);
+        jdbcTemplate.update(
+                """
+                INSERT INTO inventory_balances
+                    (id, tenant_id, branch_id, product_id, location_id, quantity, reserved_quantity)
+                VALUES (?, ?, ?, ?, ?, ?::numeric, ?::numeric)
+                """,
+                balanceId,
+                fixture.tenantId(),
+                fixture.branchId(),
+                fixture.productId(),
+                locationId,
+                quantity,
+                reservedQuantity);
+        return balanceId;
+    }
+
+    private BigDecimal balanceQuantity(UUID balanceId) {
+        return jdbcTemplate.queryForObject(
+                "SELECT quantity FROM inventory_balances WHERE id = ?", BigDecimal.class, balanceId);
+    }
+
+    private BigDecimal balanceReservedQuantity(UUID balanceId) {
+        return jdbcTemplate.queryForObject(
+                "SELECT reserved_quantity FROM inventory_balances WHERE id = ?", BigDecimal.class, balanceId);
+    }
+
+    private void awaitBlockedSessions(int expected) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < deadline) {
+            Integer blocked = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM pg_stat_activity "
+                            + "WHERE datname = current_database() AND wait_event_type = 'Lock'",
+                    Integer.class);
+            if (blocked != null && blocked >= expected) {
+                return;
+            }
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(10));
+        }
+        throw new IllegalStateException("Ninguna sesion quedo esperando el balance bloqueado.");
+    }
+
+    private static void awaitLatch(CountDownLatch latch) {
+        try {
+            if (!latch.await(20, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("La senal de la prueba no llego a tiempo.");
+            }
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(exception);
+        }
     }
 
     private long countLocationBalances(Fixture fixture, UUID locationId) {

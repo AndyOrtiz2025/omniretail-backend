@@ -15,6 +15,7 @@ import com.omniretail.backend.inventory.dto.InventoryMovementDisplayType;
 import com.omniretail.backend.inventory.dto.InventoryMovementListDto;
 import com.omniretail.backend.inventory.dto.InventoryMovementPageResponse;
 import com.omniretail.backend.inventory.dto.InventoryMovementSummaryDto;
+import com.omniretail.backend.inventory.entity.InventoryBalance;
 import com.omniretail.backend.inventory.entity.InventoryMovement;
 import com.omniretail.backend.inventory.entity.InventoryMovementType;
 import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
@@ -57,6 +58,9 @@ import org.springframework.transaction.annotation.Transactional;
 @Transactional(readOnly = true)
 public class InventoryService {
 
+    private static final String PRODUCT_ID = "productId";
+    private static final String CREATED_AT = "createdAt";
+
     private final CurrentUser currentUser;
     private final TenantCapabilityGuard tenantCapabilityGuard;
     private final BranchRepository branchRepository;
@@ -73,16 +77,32 @@ public class InventoryService {
 
     public PageResponse<InventoryBalanceResponse> listBalances(
             UUID branchId, Pageable pageable) {
+        return listBalances(branchId, null, pageable);
+    }
+
+    public PageResponse<InventoryBalanceResponse> listBalances(
+            UUID branchId, UUID productId, Pageable pageable) {
+        return listBalances(branchId, productId, pageable, null);
+    }
+
+    public PageResponse<InventoryBalanceResponse> listBalances(
+            UUID branchId, UUID productId, Pageable pageable, Integer requestedSize) {
         AuthenticatedUser actor = currentUser.require();
         UUID tenantId = actor.tenantId();
         tenantCapabilityGuard.ensureTenantCapability(tenantId, SaasCapability.inventory);
         validateBranch(tenantId, branchId);
         requireBranchAccess(branchAccessResolver.resolve(actor), branchId);
+        if (productId != null) {
+            validateProduct(tenantId, productId);
+        }
 
-        return PageResponse.from(
-                inventoryBalanceRepository.findByTenantIdAndBranchId(
-                        tenantId, branchId, pageable),
-                InventoryBalanceResponse::from);
+        Pageable safePageable = balancePageable(pageable, requestedSize);
+        Page<InventoryBalance> balances = productId == null
+                ? inventoryBalanceRepository.findByTenantIdAndBranchId(
+                        tenantId, branchId, safePageable)
+                : inventoryBalanceRepository.findByTenantIdAndBranchIdAndProductId(
+                        tenantId, branchId, productId, safePageable);
+        return PageResponse.from(balances, InventoryBalanceResponse::from);
     }
 
     public InventoryMovementPageResponse searchMovements(
@@ -206,7 +226,7 @@ public class InventoryService {
     }
 
     private static Pageable movementPageable(Pageable pageable) {
-        Set<String> supported = Set.of("createdAt", "quantity", "type", "productId", "branchId");
+        Set<String> supported = Set.of(CREATED_AT, "quantity", "type", PRODUCT_ID, "branchId");
         pageable.getSort().forEach(order -> {
             if (!supported.contains(order.getProperty())) {
                 throw new BusinessException(
@@ -216,11 +236,48 @@ public class InventoryService {
             }
         });
         Sort sort = pageable.getSort().isUnsorted()
-                ? Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id"))
+                ? Sort.by(Sort.Order.desc(CREATED_AT), Sort.Order.desc("id"))
                 : pageable.getSort().and(Sort.by(Sort.Order.desc("id")));
         return PageRequest.of(
                 Math.max(pageable.getPageNumber(), 0),
                 Math.min(Math.max(pageable.getPageSize(), 1), 100),
+                sort);
+    }
+
+    private static Pageable balancePageable(Pageable pageable, Integer requestedSize) {
+        Set<String> supported = Set.of(
+                "id", PRODUCT_ID, "locationId", "quantity", "reservedQuantity",
+                CREATED_AT, "updatedAt");
+        pageable.getSort().forEach(order -> {
+            if (!supported.contains(order.getProperty())) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "INVENTORY_BALANCE_SORT_INVALID",
+                        "El ordenamiento de balances no admite el campo solicitado.");
+            }
+        });
+        int pageSize = requestedSize == null ? pageable.getPageSize() : requestedSize;
+        if (pageSize < 1 || pageSize > 2000) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "INVENTORY_BALANCE_PAGE_SIZE_INVALID",
+                    "El tamano de pagina debe estar entre 1 y 2000.");
+        }
+        Sort sort;
+        if (pageable.getSort().isUnsorted()) {
+            sort = Sort.by(
+                    Sort.Order.asc(PRODUCT_ID),
+                    Sort.Order.asc("locationId"),
+                    Sort.Order.asc("id"));
+        } else if (pageable.getSort().getOrderFor("id") == null) {
+            // Desempate unico: el id siempre cierra el orden solicitado.
+            sort = pageable.getSort().and(Sort.by(Sort.Order.asc("id")));
+        } else {
+            sort = pageable.getSort();
+        }
+        return PageRequest.of(
+                Math.max(pageable.getPageNumber(), 0),
+                pageSize,
                 sort);
     }
 

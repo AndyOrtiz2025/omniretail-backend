@@ -103,6 +103,41 @@ public interface InventoryLotBalanceRepository extends JpaRepository<InventoryLo
             @Param("lotId") UUID lotId,
             @Param("locationId") UUID locationId);
 
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            select balance from InventoryLotBalance balance, InventoryLot lot
+            where balance.tenantId = :tenantId
+              and balance.branchId = :branchId
+              and balance.locationId = :locationId
+              and balance.lotId = lot.id
+              and lot.tenantId = :tenantId
+              and lot.productId = :productId
+              and (balance.quantity > 0 or balance.reservedQuantity > 0)
+            order by balance.lotId
+            """)
+    List<InventoryLotBalance> findAllForUpdateAtLocation(
+            @Param("tenantId") UUID tenantId,
+            @Param("branchId") UUID branchId,
+            @Param("productId") UUID productId,
+            @Param("locationId") UUID locationId);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            select balance from InventoryLotBalance balance, InventoryLot lot
+            where balance.tenantId = :tenantId
+              and balance.branchId = :branchId
+              and balance.locationId is null
+              and balance.lotId = lot.id
+              and lot.tenantId = :tenantId
+              and lot.productId = :productId
+              and (balance.quantity > 0 or balance.reservedQuantity > 0)
+            order by balance.lotId
+            """)
+    List<InventoryLotBalance> findAllForUpdateWithoutLocation(
+            @Param("tenantId") UUID tenantId,
+            @Param("branchId") UUID branchId,
+            @Param("productId") UUID productId);
+
     @Query("""
             select balance.id from InventoryLotBalance balance, InventoryLot lot
             where balance.tenantId = :tenantId

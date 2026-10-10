@@ -40,6 +40,85 @@ class InventoryTraceabilityAdjustmentServiceTest {
     @Autowired
     private InventoryTraceabilityAdjustmentService adjustmentService;
 
+    @Test
+    void expectedQuantityGuardsInboundAndOutboundOnTheLockedTargetBalance() {
+        Fixture fixture = createFixture(false, false, false);
+        authenticate(fixture);
+        insertBalance(fixture, fixture.locationId(), "10", "3");
+        insertBalance(fixture, fixture.secondLocationId(), "20", "0");
+
+        adjustmentService.adjust(requestWithExpected(
+                fixture, fixture.locationId(), InventoryAdjustmentType.out, "2", "10"));
+        assertThat(balance(fixture, fixture.locationId())).isEqualByComparingTo("8");
+
+        assertCode("COUNT_SNAPSHOT_STALE", () -> adjustmentService.adjust(requestWithExpected(
+                fixture, fixture.locationId(), InventoryAdjustmentType.out, "1", "10")));
+        assertCode("COUNT_SNAPSHOT_STALE", () -> adjustmentService.adjust(requestWithExpected(
+                fixture, fixture.locationId(), InventoryAdjustmentType.in, "1", "28")));
+        assertThat(balance(fixture, fixture.locationId())).isEqualByComparingTo("8");
+        assertThat(balance(fixture, fixture.secondLocationId())).isEqualByComparingTo("20");
+
+        adjustmentService.adjust(requestWithExpected(
+                fixture, fixture.locationId(), InventoryAdjustmentType.in, "1", "8"));
+        assertThat(balance(fixture, fixture.locationId())).isEqualByComparingTo("9");
+        assertThat(jdbcTemplate.queryForObject(
+                        "SELECT count(*) FROM inventory_movements WHERE tenant_id = ?",
+                        Long.class,
+                        fixture.tenantId()))
+                .isEqualTo(2);
+    }
+
+    @Test
+    void expectedZeroAllowsInboundAdjustmentToCreateTheTargetBalance() {
+        Fixture fixture = createFixture(false, false, false);
+        authenticate(fixture);
+
+        InventoryMovementResponse movement = adjustmentService.adjust(requestWithExpected(
+                fixture, fixture.locationId(), InventoryAdjustmentType.in, "2", "0"));
+
+        assertThat(movement.quantityBefore()).isEqualByComparingTo("0");
+        assertThat(movement.quantityAfter()).isEqualByComparingTo("2");
+        assertThat(balance(fixture, fixture.locationId())).isEqualByComparingTo("2");
+        assertThat(count("inventory_movements", fixture.tenantId(), fixture.productId())).isOne();
+    }
+
+    @Test
+    void failingTraceableInboundRollsBackNewBalanceAndMovement() {
+        Fixture fixture = createFixture(false, false, true);
+        authenticate(fixture);
+        insertSerial(fixture, null, fixture.locationId(), "EXISTING-WITHOUT-BALANCE", "AVAILABLE");
+        InventoryAdjustmentRequest request = new InventoryAdjustmentRequest(
+                fixture.branchId(), fixture.productId(), InventoryAdjustmentType.in, BigDecimal.ONE,
+                "Ajuste con rollback", "count_correction", UUID.randomUUID(), fixture.locationId(),
+                null, null, null, List.of("EXISTING-WITHOUT-BALANCE"), BigDecimal.ZERO);
+
+        assertCode("DUPLICATE_SERIAL", () -> adjustmentService.adjust(request));
+
+        assertThat(count("inventory_balances", fixture.tenantId(), fixture.productId())).isZero();
+        assertThat(count("inventory_movements", fixture.tenantId(), fixture.productId())).isZero();
+        assertThat(count("inventory_movement_traces", fixture.tenantId(), null)).isZero();
+        assertThat(count("inventory_serials", fixture.tenantId(), fixture.productId())).isOne();
+    }
+
+    @Test
+    void omittedExpectedQuantityKeepsTheLegacyAdjustmentContract() {
+        Fixture fixture = createFixture(false, false, false);
+        authenticate(fixture);
+        insertBalance(fixture, fixture.locationId(), "5", "0");
+
+        adjustmentService.adjust(request(
+                fixture,
+                fixture.locationId(),
+                InventoryAdjustmentType.out,
+                "1",
+                null,
+                null,
+                null,
+                List.of()));
+
+        assertThat(balance(fixture, fixture.locationId())).isEqualByComparingTo("4");
+    }
+
     @Autowired
     private InventoryTraceabilityQueryService queryService;
 
@@ -489,6 +568,18 @@ class InventoryTraceabilityAdjustmentServiceTest {
                 fixture.branchId(), fixture.productId(), type, new BigDecimal(quantity),
                 "Ajuste de prueba", "MANUAL_ADJUSTMENT", UUID.randomUUID(), locationId,
                 lotId, lotNumber, expirationDate, serialNumbers);
+    }
+
+    private InventoryAdjustmentRequest requestWithExpected(
+            Fixture fixture,
+            UUID locationId,
+            InventoryAdjustmentType type,
+            String quantity,
+            String expectedQuantity) {
+        return new InventoryAdjustmentRequest(
+                fixture.branchId(), fixture.productId(), type, new BigDecimal(quantity),
+                "Ajuste con precondicion", "count_correction", UUID.randomUUID(), locationId,
+                null, null, null, List.of(), new BigDecimal(expectedQuantity));
     }
 
     private UUID insertLot(Fixture fixture, String lotNumber, LocalDate expirationDate) {
