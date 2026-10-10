@@ -70,4 +70,36 @@ class MediaStorageServiceTest {
         assertThat(Files.exists(outside)).isTrue();
         Files.deleteIfExists(outside);
     }
+
+    @Test
+    void storesEcommerceImagesUnderTenantAndTreatsThemAsManaged() throws Exception {
+        MediaStorageService service = new MediaStorageService(directory.toString(), 1024);
+        byte[] png = {(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1};
+        UUID tenantId = UUID.randomUUID();
+
+        String url = service.storeImage(tenantId, MediaStorageService.SCOPE_ECOMMERCE, tenantId,
+                new MockMultipartFile("file", "logo.png", "image/png", png));
+
+        assertThat(url).matches("^/media/" + tenantId + "/ecommerce/" + tenantId + "/[0-9a-f-]+\\.png$");
+        assertThat(service.isManaged(url)).isTrue();
+        Path stored = directory.resolve(url.substring("/media/".length()));
+        assertThat(Files.exists(stored)).isTrue();
+
+        service.deleteQuietly(url);
+
+        assertThat(Files.exists(stored)).isFalse();
+    }
+
+    @Test
+    void rejectsUnknownScopesAndIgnoresExternalUrls() {
+        MediaStorageService service = new MediaStorageService(directory.toString(), 1024);
+        byte[] png = {(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1};
+        UUID tenantId = UUID.randomUUID();
+
+        assertThatThrownBy(() -> service.storeImage(tenantId, "branding", tenantId,
+                new MockMultipartFile("file", "logo.png", "image/png", png)))
+                .isInstanceOf(BusinessException.class);
+        assertThat(service.isManaged("https://cdn.example.com/logo.png")).isFalse();
+        assertThat(service.isManaged(null)).isFalse();
+    }
 }
