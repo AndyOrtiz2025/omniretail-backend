@@ -11,6 +11,8 @@ import com.omniretail.backend.logistics.dto.ReleasePickingRequest;
 import com.omniretail.backend.logistics.dto.UpdatePickingItemRequest;
 import com.omniretail.backend.logistics.service.PickingService;
 import com.omniretail.backend.shared.security.RequirePermission;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import java.util.List;
 import java.util.UUID;
@@ -26,6 +28,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+@Tag(
+        name = "Logística de Recolección (Picking)",
+        description = "Gestión de tareas de surtido de pedidos en almacén: cola de órdenes, asignación de recolectores, registro de items surtidos, incidencias y finalización."
+)
 @RestController
 @RequestMapping("/logistics/picking")
 @RequiredArgsConstructor
@@ -33,12 +39,30 @@ public class PickingController {
 
     private final PickingService pickingService;
 
+    @Operation(
+            summary = "Consultar cola de tareas de picking en sucursal",
+            description = """
+                    Recupera las órdenes de pedidos en espera de recolección física en la sucursal indicada.
+                    
+                    **Permisos requeridos:**
+                    * `logistics.picking.read`
+                    """
+    )
     @GetMapping
     @RequirePermission("logistics.picking.read")
     public List<PickingQueueResponse> queue(@RequestParam UUID branchId) {
         return pickingService.getQueue(branchId);
     }
 
+    @Operation(
+            summary = "Obtener detalle y ruta de recolección de una orden",
+            description = """
+                    Recupera el detalle de la tarea de picking: artículos a surtir, pasillos y racks sugeridos y progreso de recolección.
+                    
+                    **Permisos requeridos:**
+                    * `logistics.picking.read`
+                    """
+    )
     @GetMapping("/{pickingOrderId}")
     @RequirePermission("logistics.picking.read")
     public PickingDetailResponse detail(
@@ -46,6 +70,15 @@ public class PickingController {
         return pickingService.getDetail(branchId, pickingOrderId);
     }
 
+    @Operation(
+            summary = "Asignar tarea de picking al operador actual",
+            description = """
+                    Bloquea la orden de recolección asignándola al usuario autenticado para evitar doble surtido simultáneo.
+                    
+                    **Permisos requeridos:**
+                    * `logistics.picking.start`
+                    """
+    )
     @PostMapping("/{pickingOrderId}/assign")
     @RequirePermission("logistics.picking.start")
     public PickingActionResponse assign(
@@ -53,6 +86,15 @@ public class PickingController {
         return pickingService.assign(branchId, pickingOrderId);
     }
 
+    @Operation(
+            summary = "Liberar tarea de picking asignada",
+            description = """
+                    Desasigna la orden de recolección con motivo justificado para regresarla a la cola general de recolectores.
+                    
+                    **Permisos requeridos:**
+                    * `logistics.picking.start`
+                    """
+    )
     @PostMapping("/{pickingOrderId}/release")
     @RequirePermission("logistics.picking.start")
     public PickingReleaseResponse release(
@@ -62,6 +104,15 @@ public class PickingController {
         return pickingService.release(branchId, pickingOrderId, request.reason());
     }
 
+    @Operation(
+            summary = "Actualizar progreso de recolección de una partida",
+            description = """
+                    Registra la cantidad recolectada de un artículo específico, validando el escaneo de código de barras, lote o serie.
+                    
+                    **Permisos requeridos:**
+                    * `logistics.picking.start`
+                    """
+    )
     @PatchMapping("/{pickingOrderId}/items/{pickingItemId}")
     @RequirePermission("logistics.picking.start")
     public PickingLineResponse updateItem(
@@ -72,6 +123,15 @@ public class PickingController {
         return pickingService.updateItem(branchId, pickingOrderId, pickingItemId, request);
     }
 
+    @Operation(
+            summary = "Reportar incidencia durante la recolección",
+            description = """
+                    Registra una anomalía en piso (ej. producto dañado, sin existencias en la ubicación indicada, etiqueta ilegible).
+                    
+                    **Permisos requeridos:**
+                    * `logistics.picking.start`
+                    """
+    )
     @PostMapping("/{pickingOrderId}/incidents")
     @ResponseStatus(HttpStatus.CREATED)
     @RequirePermission("logistics.picking.start")
@@ -82,6 +142,15 @@ public class PickingController {
         return pickingService.createIncident(branchId, pickingOrderId, request);
     }
 
+    @Operation(
+            summary = "Resolver incidencia de recolección",
+            description = """
+                    Marca como resuelta la incidencia de recolección permitiendo continuar el flujo de surtido.
+                    
+                    **Permisos requeridos:**
+                    * `logistics.picking.start`
+                    """
+    )
     @PatchMapping("/{pickingOrderId}/incidents/{incidentId}/resolve")
     @RequirePermission("logistics.picking.start")
     public PickingIncidentResponse resolveIncident(
@@ -91,6 +160,15 @@ public class PickingController {
         return pickingService.resolveIncident(branchId, pickingOrderId, incidentId);
     }
 
+    @Operation(
+            summary = "Finalizar recolección y enviar a empaque",
+            description = """
+                    Concluye la recolección física de la orden y transfiere los artículos consolidados a la estación de empaque (packing).
+                    
+                    **Permisos requeridos:**
+                    * `logistics.picking.complete`
+                    """
+    )
     @PostMapping("/{pickingOrderId}/complete")
     @RequirePermission("logistics.picking.complete")
     public PickingActionResponse complete(

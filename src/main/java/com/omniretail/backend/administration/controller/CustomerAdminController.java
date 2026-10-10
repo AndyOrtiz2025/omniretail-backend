@@ -4,6 +4,8 @@ import com.omniretail.backend.administration.dto.CustomerAdminResponse;
 import com.omniretail.backend.administration.service.CustomerAdminService;
 import com.omniretail.backend.ecommerce.entity.CustomerStatus;
 import com.omniretail.backend.shared.security.RequirePermission;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -13,6 +15,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+@Tag(
+        name = "Gestión de Clientes (Backoffice)",
+        description = "Consulta y administración de clientes finales registrados en la tienda en línea o capturados desde puntos de venta."
+)
 @RestController
 @RequestMapping("/administration/customers")
 @RequiredArgsConstructor
@@ -20,6 +26,18 @@ public class CustomerAdminController {
 
     private final CustomerAdminService customerAdminService;
 
+    @Operation(
+            summary = "Listar clientes del tenant",
+            description = """
+                    Recupera el padrón de clientes registrados en el tenant, permitiendo filtrar por su estado de cuenta (activo, inactivo, bloqueado).
+                    
+                    **Parámetros de consulta:**
+                    * `status`: Filtro opcional por estado (`ACTIVE`, `INACTIVE`, `SUSPENDED`).
+                    
+                    **Permisos requeridos:**
+                    * `admin.customers.read`
+                    """
+    )
     @RequirePermission("admin.customers.read")
     @GetMapping
     public List<CustomerAdminResponse> list(
@@ -27,6 +45,15 @@ public class CustomerAdminController {
         return customerAdminService.listCustomers(status);
     }
 
+    @Operation(
+            summary = "Obtener detalle de cliente por ID",
+            description = """
+                    Recupera la ficha completa de un cliente por su identificador único (datos de contacto, direcciones registradas, histórico resumido de actividad).
+                    
+                    **Permisos requeridos:**
+                    * `admin.customers.read`
+                    """
+    )
     @RequirePermission("admin.customers.read")
     @GetMapping("/{id}")
     public CustomerAdminResponse getById(@PathVariable UUID id) {

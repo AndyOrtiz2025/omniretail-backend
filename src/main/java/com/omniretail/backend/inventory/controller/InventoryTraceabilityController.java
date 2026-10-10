@@ -9,7 +9,9 @@ import com.omniretail.backend.inventory.service.InventorySerialValidationService
 import com.omniretail.backend.inventory.service.InventoryTraceabilityQueryService;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.security.RequirePermission;
+import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -24,6 +26,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+@Tag(
+        name = "Trazabilidad de Lotes y Números de Serie",
+        description = "Control de números de serie individuales, asignación y seguimiento de lotes con fecha de caducidad y alertas de expiración próxima."
+)
 @RestController
 @RequestMapping("/inventory")
 @RequiredArgsConstructor
@@ -32,6 +38,15 @@ public class InventoryTraceabilityController {
     private final InventoryTraceabilityQueryService queryService;
     private final InventorySerialValidationService serialValidationService;
 
+    @Operation(
+            summary = "Listar lotes disponibles con stock",
+            description = """
+                    Recupera los lotes con existencia positiva para un producto y sucursal, ordenados por fecha de vencimiento (FEFO) para despacho eficiente.
+                    
+                    **Permisos requeridos:**
+                    * `inventory.stock.read`
+                    """
+    )
     @GetMapping("/lots")
     @RequirePermission("inventory.stock.read")
     public List<InventoryLotAvailabilityDto> availableLots(
@@ -41,6 +56,15 @@ public class InventoryTraceabilityController {
         return queryService.availableLots(branchId, productId, locationId);
     }
 
+    @Operation(
+            summary = "Listar números de serie disponibles",
+            description = """
+                    Recupera los números de serie en stock físico disponibles para venta o asignación del producto especificado.
+                    
+                    **Permisos requeridos:**
+                    * `inventory.stock.read`
+                    """
+    )
     @GetMapping("/serials")
     @RequirePermission("inventory.stock.read")
     public List<InventorySerialAvailabilityDto> availableSerials(
@@ -51,11 +75,26 @@ public class InventoryTraceabilityController {
         return queryService.availableSerials(branchId, productId, locationId, lotId);
     }
 
+    @Operation(
+            summary = "Validar números de serie escaneados",
+            description = """
+                    Comprueba la validez, existencia y disponibilidad de una lista de números de serie ingresados durante procesos de cobro POS o despacho de pedidos.
+                    """
+    )
     @PostMapping("/serials/validate")
     public ValidateSerialsResponse validateSerials(@Valid @RequestBody ValidateSerialsRequest request) {
         return serialValidationService.validate(request);
     }
 
+    @Operation(
+            summary = "Consultar lotes próximos a vencer",
+            description = """
+                    Recupera el listado paginado de lotes cuya fecha de caducidad se encuentra dentro del rango de días estipulado (por defecto 30 días) para prevenir pérdidas por vencimiento.
+                    
+                    **Permisos requeridos:**
+                    * `inventory.stock.read`
+                    """
+    )
     @GetMapping("/lots/expiring")
     @RequirePermission("inventory.stock.read")
     public PageResponse<ExpiringLotDto> expiringLots(

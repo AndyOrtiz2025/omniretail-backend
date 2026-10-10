@@ -6,6 +6,8 @@ import com.omniretail.backend.logistics.entity.PickingSourceType;
 import com.omniretail.backend.logistics.service.LogisticsHistoryService;
 import com.omniretail.backend.shared.dto.PageResponse;
 import com.omniretail.backend.shared.security.RequirePermission;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import java.time.LocalDate;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -16,6 +18,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+@Tag(
+        name = "Historial y Auditoría Logística",
+        description = "Consulta histórica unificada y trazabilidad completa de órdenes de preparación, empaque y despacho (pedidos de e-commerce y transferencias)."
+)
 @RestController
 @RequestMapping("/logistics/history")
 @RequiredArgsConstructor
@@ -23,6 +29,15 @@ public class LogisticsHistoryController {
 
     private final LogisticsHistoryService historyService;
 
+    @Operation(
+            summary = "Buscar en el historial de operaciones logísticas",
+            description = """
+                    Recupera el historial paginado de movimientos logísticos con filtros por estado de orden, método de entrega y rango de fechas.
+                    
+                    **Permisos requeridos:**
+                    * `logistics.history.read`
+                    """
+    )
     @GetMapping
     @RequirePermission("logistics.history.read")
     public PageResponse<LogisticsHistoryRowResponse> search(
@@ -40,6 +55,19 @@ public class LogisticsHistoryController {
                 branchId, search, status, deliveryMethod, from, to, page, size);
     }
 
+    @Operation(
+            summary = "Obtener trazabilidad completa de un flujo logístico",
+            description = """
+                    Recupera la línea de tiempo auditada (eventos de recolección, embalaje, etiquetado y salida) para un pedido o transferencia.
+                    
+                    **Parámetros:**
+                    * `sourceType`: Tipo de origen (`ORDER`, `TRANSFER`).
+                    * `sourceId`: Identificador único de la orden u operación.
+                    
+                    **Permisos requeridos:**
+                    * `logistics.history.read`
+                    """
+    )
     @GetMapping("/{sourceType}/{sourceId}")
     @RequirePermission("logistics.history.read")
     public LogisticsHistoryDetailResponse detail(
