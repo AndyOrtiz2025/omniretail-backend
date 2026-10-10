@@ -19,6 +19,10 @@ public interface LocationRepository extends JpaRepository<Location, UUID> {
 
     List<Location> findByTenantIdAndIdIn(UUID tenantId, Collection<UUID> ids);
 
+    /** Ubicaciones de una sucursal en un estado, por codigo (lectura sin paginar: son pocas por sucursal). */
+    List<Location> findByTenantIdAndBranchIdAndStatusOrderByCodeAsc(
+            UUID tenantId, UUID branchId, LocationStatus status);
+
     boolean existsByTenantIdAndBranchIdAndCode(
             UUID tenantId, UUID branchId, String code);
 

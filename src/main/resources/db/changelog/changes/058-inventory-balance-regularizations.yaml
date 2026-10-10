@@ -1,0 +1,166 @@
+databaseChangeLog:
+  - changeSet:
+      id: 058-inventory-balance-regularizations
+      author: omniretail
+      changes:
+        - createTable:
+            tableName: inventory_balance_regularizations
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: branch_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: product_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              # Siempre NULL: la regularizacion consolida el balance heredado sin ubicacion.
+              - column:
+                  name: from_location_id
+                  type: UUID
+              - column:
+                  name: to_location_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: idempotency_key
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: fingerprint
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: reason
+                  type: VARCHAR(200)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: performed_by_user_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: moved_quantity
+                  type: NUMERIC(12,3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: moved_reserved_quantity
+                  type: NUMERIC(12,3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: destination_quantity_before
+                  type: NUMERIC(12,3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: destination_quantity_after
+                  type: NUMERIC(12,3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: movement_id
+                  type: UUID
+              - column:
+                  name: result_payload
+                  type: JSONB
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: inventory_balance_regularizations
+            baseColumnNames: tenant_id
+            referencedTableName: tenants
+            referencedColumnNames: id
+            constraintName: fk_inventory_balance_regularizations_tenant
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: inventory_balance_regularizations
+            baseColumnNames: branch_id
+            referencedTableName: branches
+            referencedColumnNames: id
+            constraintName: fk_inventory_balance_regularizations_branch
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: inventory_balance_regularizations
+            baseColumnNames: product_id
+            referencedTableName: products
+            referencedColumnNames: id
+            constraintName: fk_inventory_balance_regularizations_product
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: inventory_balance_regularizations
+            baseColumnNames: to_location_id
+            referencedTableName: locations
+            referencedColumnNames: id
+            constraintName: fk_inventory_balance_regularizations_location
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: inventory_balance_regularizations
+            baseColumnNames: performed_by_user_id
+            referencedTableName: users
+            referencedColumnNames: id
+            constraintName: fk_inventory_balance_regularizations_user
+            onDelete: RESTRICT
+        - addForeignKeyConstraint:
+            baseTableName: inventory_balance_regularizations
+            baseColumnNames: movement_id
+            referencedTableName: inventory_movements
+            referencedColumnNames: id
+            constraintName: fk_inventory_balance_regularizations_movement
+            onDelete: RESTRICT
+        - addUniqueConstraint:
+            tableName: inventory_balance_regularizations
+            columnNames: tenant_id, idempotency_key
+            constraintName: uk_inventory_balance_regularizations_tenant_key
+        - sql:
+            sql: >-
+              ALTER TABLE inventory_balance_regularizations
+              ADD CONSTRAINT ck_inventory_balance_regularizations_quantities
+              CHECK (moved_quantity > 0
+                     AND moved_reserved_quantity >= 0
+                     AND moved_reserved_quantity <= moved_quantity
+                     AND destination_quantity_before >= 0
+                     AND destination_quantity_after = destination_quantity_before + moved_quantity)
+        - createIndex:
+            tableName: inventory_balance_regularizations
+            indexName: idx_inventory_balance_regularizations_scope_created
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: branch_id
+              - column:
+                  name: product_id
+              - column:
+                  name: created_at
