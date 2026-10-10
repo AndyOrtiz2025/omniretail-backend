@@ -34,7 +34,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Catálogo de Productos",
+        name = "Product catalog",
         description = "Gestión central del catálogo maestro de productos (creación, edición, consulta, búsqueda avanzada, archivo y reactivación)."
 )
 @RestController
@@ -47,7 +47,7 @@ public class ProductController {
     @GetMapping
     @RequirePermission("catalog.products.read")
     @Operation(
-            summary = "Listar y buscar productos con filtros avanzados y paginación",
+            summary = "List and search products",
             description = """
                     Recupera el catálogo paginado de productos del tenant con soporte de búsqueda textual por SKU/código de barras/nombre y filtros combinados.
                     
@@ -101,7 +101,7 @@ public class ProductController {
     }
 
     @Operation(
-            summary = "Crear nuevo producto",
+            summary = "Create product",
             description = """
                     Registra un nuevo producto o artículo en el catálogo maestro del tenant.
                     
@@ -117,7 +117,7 @@ public class ProductController {
     }
 
     @Operation(
-            summary = "Obtener detalle completo de un producto por ID",
+            summary = "Get product by ID",
             description = """
                     Recupera la ficha técnica integral del producto: datos maestros, categoría, unidades de medida, precios, código de barras y estado.
                     
@@ -132,7 +132,7 @@ public class ProductController {
     }
 
     @Operation(
-            summary = "Actualizar datos maestros de un producto",
+            summary = "Update product",
             description = """
                     Actualiza los campos editables del producto (nombre, descripción, categoría, estado y configuración comercial).
                     
@@ -148,7 +148,7 @@ public class ProductController {
     }
 
     @Operation(
-            summary = "Archivar producto",
+            summary = "Archive product",
             description = """
                     Marca el producto como archivado/inactivo. Se preserva el historial de movimientos y ventas pasadas pero se restringe su selección en nuevas transacciones comerciales.
                     
@@ -164,7 +164,7 @@ public class ProductController {
     }
 
     @Operation(
-            summary = "Restaurar producto previamente archivado",
+            summary = "Restore archived product",
             description = """
                     Reactiva un producto archivado devolviéndolo al catálogo operativo activo para venta y control de inventario.
                     

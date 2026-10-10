@@ -15,7 +15,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Suscripción del Tenant",
+        name = "Tenant subscription",
         description = "Administración del plan activo del tenant, consumo de recursos contratados y gestión de complementos (addons)."
 )
 @RestController
@@ -26,7 +26,7 @@ public class TenantSubscriptionController {
     private final TenantSubscriptionService subscriptionService;
 
     @Operation(
-            summary = "Consultar suscripción actual del tenant",
+            summary = "Get current tenant subscription",
             description = """
                     Recupera los detalles de la suscripción vigente del tenant autenticado: plan base asociado, addons contratados, límites asignados y estado de facturación.
                     
@@ -41,7 +41,7 @@ public class TenantSubscriptionController {
     }
 
     @Operation(
-            summary = "Actualizar complementos (addons) de la suscripción",
+            summary = "Update subscription add-ons",
             description = """
                     Modifica los complementos (`addonCodes`) asignados a la suscripción activa del tenant (`ecommerce_delivery`, `advanced_reports`).
                     

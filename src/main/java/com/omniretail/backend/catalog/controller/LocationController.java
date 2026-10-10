@@ -29,7 +29,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Ubicaciones Físicas de Almacén",
+        name = "Warehouse locations",
         description = "Administración de la topología física de almacenamiento en sucursales (zonas, pasillos, estanterías, racks y niveles)."
 )
 @RestController
@@ -40,7 +40,7 @@ public class LocationController {
     private final LocationService locationService;
 
     @Operation(
-            summary = "Listar ubicaciones de almacén con paginación",
+            summary = "List locations",
             description = """
                     Recupera la lista paginada de ubicaciones físicas de almacén con múltiples criterios de filtrado por sucursal, padre jerárquico, tipo y estado.
                     
@@ -72,7 +72,7 @@ public class LocationController {
     }
 
     @Operation(
-            summary = "Obtener detalle de ubicación física por ID",
+            summary = "Get location by ID",
             description = """
                     Recupera la información completa de una posición de almacenamiento (código, nombre, tipo, jerarquía y sucursal).
                     
@@ -87,7 +87,7 @@ public class LocationController {
     }
 
     @Operation(
-            summary = "Crear nueva ubicación física de almacén",
+            summary = "Create location",
             description = """
                     Registra una nueva posición o contenedor físico de almacenamiento en la sucursal designada.
                     
@@ -103,7 +103,7 @@ public class LocationController {
     }
 
     @Operation(
-            summary = "Actualizar ubicación física existente",
+            summary = "Update location",
             description = """
                     Modifica los datos descriptivos, código de localización o jerarquía de una posición de almacén.
                     
@@ -120,7 +120,7 @@ public class LocationController {
     }
 
     @Operation(
-            summary = "Archivar o desactivar ubicación física",
+            summary = "Archive location",
             description = """
                     Desactiva la posición de almacenamiento, impidiendo que se le asignen nuevas existencias de inventario.
                     

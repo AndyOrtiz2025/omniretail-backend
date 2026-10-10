@@ -13,7 +13,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Resumen de Turno de Caja POS",
+        name = "POS cash shift summary",
         description = "Consulta de totales acumulados, desglose por forma de pago y balance en tiempo real del turno de caja."
 )
 @RestController
@@ -24,7 +24,7 @@ public class CashShiftSummaryController {
     private final CashShiftSummaryService cashShiftSummaryService;
 
     @Operation(
-            summary = "Obtener balance y resumen acumulado del turno de caja",
+            summary = "Get cash shift summary",
             description = """
                     Calcula y retorna en tiempo real las ventas acumuladas por método de pago (efectivo, tarjeta, transferencia), entradas/salidas de dinero y el efectivo proyectado en gaveta para el turno especificado.
                     

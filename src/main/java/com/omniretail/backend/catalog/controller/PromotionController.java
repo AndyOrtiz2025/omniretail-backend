@@ -25,7 +25,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Promociones y Descuentos",
+        name = "Promotions",
         description = "Administración de campañas comerciales, promociones temporales, descuentos por porcentaje o monto fijo y vigencias."
 )
 @RestController
@@ -36,7 +36,7 @@ public class PromotionController {
     private final PromotionService promotionService;
 
     @Operation(
-            summary = "Listar promociones con paginación",
+            summary = "List promotions",
             description = """
                     Recupera el listado paginado de promociones comerciales registradas en el tenant, permitiendo filtrar por un producto particular.
                     
@@ -56,7 +56,7 @@ public class PromotionController {
     }
 
     @Operation(
-            summary = "Obtener detalle de promoción por ID",
+            summary = "Get promotion by ID",
             description = """
                     Recupera la información completa de una promoción: tipo de descuento (`percentage`, `fixed_discount`, `fixed_price`), valor, fechas de vigencia, estado (`active`, `ended`, `cancelled`) y artículos incluidos.
                     
@@ -71,7 +71,7 @@ public class PromotionController {
     }
 
     @Operation(
-            summary = "Crear nueva promoción",
+            summary = "Create promotion",
             description = """
                     Registra una nueva promoción o campaña de descuento en el catálogo comercial.
                     
@@ -87,7 +87,7 @@ public class PromotionController {
     }
 
     @Operation(
-            summary = "Actualizar datos de una promoción",
+            summary = "Update promotion",
             description = """
                     Modifica los parámetros comerciales, fechas de vigencia o alcance de una promoción existente.
                     
@@ -102,7 +102,7 @@ public class PromotionController {
     }
 
     @Operation(
-            summary = "Finalizar promoción anticipadamente",
+            summary = "End promotion early",
             description = """
                     Da por terminada de manera inmediata una promoción activa, desactivando los precios promocionales asociados.
                     
@@ -115,7 +115,7 @@ public class PromotionController {
     public PromotionResponse end(@PathVariable UUID id) { return promotionService.end(id); }
 
     @Operation(
-            summary = "Cancelar promoción",
+            summary = "Cancel promotion",
             description = """
                     Cancela una promoción programada o activa, revocando sus beneficios comerciales.
                     

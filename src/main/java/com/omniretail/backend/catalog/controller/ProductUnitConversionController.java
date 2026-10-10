@@ -18,7 +18,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Conversiones de Unidad por Producto",
+        name = "Product unit conversions",
         description = "Configuración y reemplazo de conversiones de unidades de medida particulares para un producto específico."
 )
 @RestController
@@ -29,7 +29,7 @@ public class ProductUnitConversionController {
     private final UnitConversionService service;
 
     @Operation(
-            summary = "Listar conversiones de unidad del producto",
+            summary = "List product unit conversions",
             description = """
                     Recupera las reglas de conversión y factores de empaque aplicables exclusivamente al producto indicado.
                     
@@ -41,7 +41,7 @@ public class ProductUnitConversionController {
     public List<UnitConversionResponse> list(@PathVariable UUID productId) { return service.listForProduct(productId); }
 
     @Operation(
-            summary = "Reemplazar conversiones de unidad del producto",
+            summary = "Replace product unit conversions",
             description = """
                     Sobrescribe la lista de equivalencias de conversión de unidades asignadas al producto.
                     

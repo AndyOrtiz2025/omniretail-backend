@@ -13,13 +13,13 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/public/{slug}/config")
 @RequiredArgsConstructor
-@Tag(name = "Configuración pública de tienda")
+@Tag(name = "Public storefront configuration")
 public class PublicStorefrontConfigController {
 
     private final PublicStorefrontConfigService publicStorefrontConfigService;
 
     @GetMapping
-    @Operation(summary = "Consultar configuración pública de una tienda")
+    @Operation(summary = "Get public storefront configuration")
     public PublicStorefrontConfigResponse get(@PathVariable String slug) {
         return publicStorefrontConfigService.getConfig(slug);
     }

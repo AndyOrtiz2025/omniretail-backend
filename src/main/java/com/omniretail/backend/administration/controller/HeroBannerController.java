@@ -21,7 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 @Tag(
-        name = "Banners promocionales (Hero Banner)",
+        name = "Hero banners",
         description = "Administración de diapositivas (slides), imágenes y carrusel principal mostrado en la portada de la tienda en línea."
 )
 @RestController
@@ -32,7 +32,7 @@ public class HeroBannerController {
     private final HeroBannerConfigService heroBannerConfigService;
 
     @Operation(
-            summary = "Obtener configuración de banners principales",
+            summary = "Get hero banner configuration",
             description = """
                     Recupera las 3 diapositivas (`slides`, índices `0` a `2`) configuradas en la portada de la tienda (`title`, `description`, `imageUrl`).
                     
@@ -50,7 +50,7 @@ public class HeroBannerController {
     }
 
     @Operation(
-            summary = "Actualizar configuración de banners principales",
+            summary = "Update hero banner configuration",
             description = """
                     Guarda la configuración de exactamente 3 diapositivas (`slides`) del carrusel principal (`title`, `description` e `imageUrl` opcional).
                     
@@ -68,7 +68,7 @@ public class HeroBannerController {
     }
 
     @Operation(
-            summary = "Subir imagen para un slide específico",
+            summary = "Upload hero banner slide image",
             description = """
                     Carga un archivo de imagen (JPEG, PNG o WebP, máximo 5 MB) y lo asigna al slide ubicado en el índice especificado dentro del carrusel.
                     
@@ -91,7 +91,7 @@ public class HeroBannerController {
     }
 
     @Operation(
-            summary = "Eliminar imagen de un slide específico",
+            summary = "Delete hero banner slide image",
             description = """
                     Remueve la imagen asociada a la diapositiva en el índice provisto (`0`, `1` o `2`), dejando `imageUrl` en `null`.
                     

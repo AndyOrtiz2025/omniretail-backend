@@ -18,7 +18,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Valores de Atributos de Producto",
+        name = "Product attributes",
         description = "Asignación y consulta de especificaciones técnicas y características dinámicas por producto."
 )
 @RestController
@@ -29,7 +29,7 @@ public class ProductAttributeController {
     private final ProductAttributeService attributeService;
 
     @Operation(
-            summary = "Obtener atributos asignados a un producto",
+            summary = "List product attributes",
             description = """
                     Recupera la lista de valores de atributos personalizados asignados a un producto específico.
                     
@@ -44,7 +44,7 @@ public class ProductAttributeController {
     }
 
     @Operation(
-            summary = "Reemplazar atributos de un producto",
+            summary = "Replace product attributes",
             description = """
                     Sobrescribe la totalidad de atributos configurados en el producto con el nuevo conjunto provisto en el cuerpo de la petición.
                     

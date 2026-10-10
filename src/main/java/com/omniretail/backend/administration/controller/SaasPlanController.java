@@ -15,7 +15,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Planes SaaS",
+        name = "SaaS plans",
         description = "Consulta y administración de niveles de suscripción de la plataforma multinquilino (cuotas de usuarios, sucursales y características habilitadas)."
 )
 @RestController
@@ -26,7 +26,7 @@ public class SaasPlanController {
     private final SaasPlanService planService;
 
     @Operation(
-            summary = "Listar planes SaaS disponibles",
+            summary = "List available SaaS plans",
             description = """
                     Recupera el catálogo de planes de suscripción ofrecidos por la plataforma, con opción de filtrar únicamente aquellos vigentes y contratables.
                     
@@ -44,7 +44,7 @@ public class SaasPlanController {
     }
 
     @Operation(
-            summary = "Obtener detalle de un plan SaaS por ID",
+            summary = "Get SaaS plan by ID",
             description = """
                     Recupera la ficha técnica y comercial de un plan: costo recurrente, límite de sucursales, tope de usuarios concurrentes y módulos disponibles.
                     

@@ -20,7 +20,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Conteo Físico y Conciliación de Inventario",
+        name = "Inventory physical counts",
         description = "Tomas físicas de inventario (auditorías y arqueos de stock), instantáneas teóricas y conciliación automática de discrepancias."
 )
 @RestController
@@ -31,7 +31,7 @@ public class InventoryCountController {
     private final InventoryCountService countService;
 
     @Operation(
-            summary = "Obtener instantánea (snapshot) teórica para conteo físico",
+            summary = "Get physical count snapshot",
             description = """
                     Captura el estado actual de las existencias teóricas registradas en el sistema para un producto y sucursal, sirviendo de base para la comparación con el conteo en piso.
                     
@@ -54,7 +54,7 @@ public class InventoryCountController {
     }
 
     @Operation(
-            summary = "Conciliar conteo físico contra existencias del sistema",
+            summary = "Reconcile physical inventory count",
             description = """
                     Registra las cantidades físicas reales contadas y concilia automáticamente contra el balance teórico, generando los ajustes de inventario necesarios para cuadrar el stock.
                     

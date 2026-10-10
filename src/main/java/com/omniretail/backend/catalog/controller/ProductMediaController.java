@@ -27,7 +27,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 @Tag(
-        name = "Multimedia y Galería de Productos",
+        name = "Product media",
         description = "Administración de imágenes, archivos multimedia, galería de fotos y asignación de imagen principal para productos del catálogo."
 )
 @RestController
@@ -38,7 +38,7 @@ public class ProductMediaController {
     private final ProductMediaService service;
 
     @Operation(
-            summary = "Listar galería multimedia de un producto",
+            summary = "List product media",
             description = """
                     Recupera la lista de todas las imágenes y recursos multimedia asociados al producto indicado.
                     
@@ -50,7 +50,7 @@ public class ProductMediaController {
     public List<ProductMediaResponse> list(@PathVariable UUID productId) { return service.list(productId); }
 
     @Operation(
-            summary = "Registrar medio multimedia mediante URL externa",
+            summary = "Create product media from URL",
             description = """
                     Asocia una imagen al producto indicando una URL pública externa.
                     
@@ -63,7 +63,7 @@ public class ProductMediaController {
             @Valid @RequestBody ProductMediaCreateRequest request) { return service.createExternal(productId, request); }
 
     @Operation(
-            summary = "Subir archivo de imagen al producto",
+            summary = "Upload product media file",
             description = """
                     Carga un archivo de imagen (PNG, JPG, WebP) directamente al almacenamiento del servidor y lo vincula al producto.
                     
@@ -80,7 +80,7 @@ public class ProductMediaController {
     }
 
     @Operation(
-            summary = "Actualizar metadatos de un medio multimedia",
+            summary = "Update product media",
             description = """
                     Modifica el texto alternativo (alt), orden numérico de visualización o estado de imagen principal.
                     
@@ -93,7 +93,7 @@ public class ProductMediaController {
             @Valid @RequestBody ProductMediaUpdateRequest request) { return service.update(productId, mediaId, request); }
 
     @Operation(
-            summary = "Eliminar medio multimedia de un producto",
+            summary = "Delete product media",
             description = """
                     Elimina la imagen de la galería del producto y remueve su archivo asociado del almacenamiento.
                     
@@ -105,7 +105,7 @@ public class ProductMediaController {
     public void delete(@PathVariable UUID productId, @PathVariable UUID mediaId) { service.delete(productId, mediaId); }
 
     @Operation(
-            summary = "Marcar medio como imagen principal del producto",
+            summary = "Set primary product media",
             description = """
                     Establece el medio indicado como la imagen de portada / thumbnail principal del producto en la tienda y POS.
                     

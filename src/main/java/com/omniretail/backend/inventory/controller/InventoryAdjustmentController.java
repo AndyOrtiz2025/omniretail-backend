@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Ajustes Manuales de Inventario",
+        name = "Inventory adjustments",
         description = "Ajustes de existencias por diferencias físicas, mermas, caducidades, muestras comerciales o correcciones extraordinarias."
 )
 @RestController
@@ -27,7 +27,7 @@ public class InventoryAdjustmentController {
     private final InventoryAdjustmentService inventoryAdjustmentService;
 
     @Operation(
-            summary = "Realizar ajuste manual de existencias",
+            summary = "Create manual inventory adjustment",
             description = """
                     Modifica directamente la existencia física de un producto en una sucursal específica con justificación obligatoria (positivo por sobrante o negativo por merma, rotura o pérdida).
                     

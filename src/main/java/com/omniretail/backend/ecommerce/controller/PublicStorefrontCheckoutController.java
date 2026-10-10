@@ -19,7 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/public/{slug}/checkout")
 @RequiredArgsConstructor
 @Tag(
-        name = "Checkout Público de la Tienda (Storefront)",
+        name = "Public storefront checkout",
         description = "Procesamiento público del carrito y confirmación de pedidos/compras para la tienda en línea.")
 public class PublicStorefrontCheckoutController {
 
@@ -28,7 +28,7 @@ public class PublicStorefrontCheckoutController {
     @PostMapping
     @SecurityRequirements
     @Operation(
-            summary = "Procesar checkout y generar pedido",
+            summary = "Process storefront checkout",
             description = "Registra y procesa una orden de compra desde el storefront público para el negocio (`slug`). Requiere el encabezado obligatorio `Idempotency-Key` para prevenir órdenes duplicadas.")
     public StorefrontCheckoutResponse checkout(
             @PathVariable String slug,

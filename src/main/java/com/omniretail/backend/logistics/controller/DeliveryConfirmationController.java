@@ -14,7 +14,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Confirmación de Entrega a Domicilio",
+        name = "Delivery confirmation",
         description = "Confirmación final de entrega a domicilio por paquetería o chofer de última milla."
 )
 @RestController
@@ -25,7 +25,7 @@ public class DeliveryConfirmationController {
     private final DeliveryConfirmationService deliveryConfirmationService;
 
     @Operation(
-            summary = "Confirmar entrega a domicilio completada",
+            summary = "Confirm home delivery",
             description = """
                     Registra la confirmación de entrega del paquete en el domicilio del destinatario, finalizando el ciclo logístico con estado `delivered`.
                     

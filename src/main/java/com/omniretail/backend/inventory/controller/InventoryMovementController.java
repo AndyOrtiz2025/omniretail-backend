@@ -20,7 +20,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Kardex y Movimientos de Inventario",
+        name = "Inventory movements",
         description = "Historial cronológico de transacciones sobre inventario (entradas por compra, salidas por venta, mermas, transferencias y ajustes manuales)."
 )
 @RestController
@@ -31,7 +31,7 @@ public class InventoryMovementController {
     private final InventoryService inventoryService;
 
     @Operation(
-            summary = "Consultar movimientos de inventario (Kardex)",
+            summary = "List inventory movements",
             description = """
                     Recupera el historial paginado de movimientos de inventario con filtros por sucursal, producto, tipo de transacción y rango de fechas.
                     

@@ -28,7 +28,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 @Tag(
-        name = "Categorías de Productos",
+        name = "Product categories",
         description = "Administración de la jerarquía de categorías del catálogo comercial, imágenes descriptivas y estados de visibilidad."
 )
 @RestController
@@ -39,7 +39,7 @@ public class CategoryController {
     private final CategoryService categoryService;
 
     @Operation(
-            summary = "Listar categorías de productos",
+            summary = "List categories",
             description = """
                     Recupera el listado completo de categorías registradas en el tenant, con soporte para filtrar por estado operativo.
                     
@@ -58,7 +58,7 @@ public class CategoryController {
     }
 
     @Operation(
-            summary = "Obtener detalle de una categoría por ID",
+            summary = "Get category by ID",
             description = """
                     Recupera la información completa de una categoría (`name`, `slug`, `description`, `parentId`, `status`, `imageUrl` y subcategorías).
                     
@@ -73,7 +73,7 @@ public class CategoryController {
     }
 
     @Operation(
-            summary = "Crear nueva categoría",
+            summary = "Create category",
             description = """
                     Registra una nueva categoría en el catálogo del tenant (`name`, `slug`, `description`, `parentId`, `status`).
                     
@@ -89,7 +89,7 @@ public class CategoryController {
     }
 
     @Operation(
-            summary = "Actualizar categoría existente",
+            summary = "Update category",
             description = """
                     Actualiza los datos descriptivos (`name`, `slug`, `description`, `parentId`, `status`) de una categoría específica.
                     
@@ -106,7 +106,7 @@ public class CategoryController {
     }
 
     @Operation(
-            summary = "Archivar o desactivar categoría",
+            summary = "Archive category",
             description = """
                     Cambia el estado de la categoría a inactiva o archivada, evitando que sea seleccionada en nuevos productos.
                     
@@ -122,7 +122,7 @@ public class CategoryController {
     }
 
     @Operation(
-            summary = "Subir imagen ilustrativa de categoría",
+            summary = "Upload category image",
             description = """
                     Carga un archivo de imagen (PNG, JPG, WebP) representativo de la categoría para su visualización en el storefront y POS.
                     
@@ -137,7 +137,7 @@ public class CategoryController {
     }
 
     @Operation(
-            summary = "Eliminar imagen ilustrativa de categoría",
+            summary = "Delete category image",
             description = """
                     Elimina la imagen asociada a la categoría, retornando la entidad actualizada sin contenido multimedia.
                     

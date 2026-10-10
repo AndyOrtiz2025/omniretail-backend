@@ -20,7 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/public/{slug}/tracking")
 @RequiredArgsConstructor
-@Tag(name = "Seguimiento de pedidos", description = "Consulta pública del estado de un pedido de la tienda en línea.")
+@Tag(name = "Order tracking", description = "Consulta pública del estado de un pedido de la tienda en línea.")
 public class PublicOrderTrackingController {
 
     private final OrderTrackingService orderTrackingService;
@@ -28,7 +28,7 @@ public class PublicOrderTrackingController {
     @GetMapping("/{token}")
     @SecurityRequirements
     @Operation(
-            summary = "Consultar un pedido por su código de seguimiento",
+            summary = "Get order by tracking code",
             description = "Devuelve número, estado, total y productos de un pedido de la tienda en línea. No requiere "
                     + "sesión y nunca incluye datos del cliente. Cualquier motivo de \"no encontrado\" (tienda, "
                     + "configuración, código o canal) responde el mismo error genérico.")

@@ -17,7 +17,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Alertas de Inventario",
+        name = "Inventory alerts",
         description = "Notificaciones y monitoreo de productos por desabastecimiento, nivel crítico o cercanía al stock mínimo."
 )
 @RestController
@@ -28,7 +28,7 @@ public class InventoryAlertController {
     private final InventoryAlertService inventoryAlertService;
 
     @Operation(
-            summary = "Listar alertas de inventario por sucursal",
+            summary = "List inventory alerts",
             description = """
                     Recupera el listado paginado de alertas de stock vigentes en una sucursal, con filtro opcional por nivel de severidad.
                     

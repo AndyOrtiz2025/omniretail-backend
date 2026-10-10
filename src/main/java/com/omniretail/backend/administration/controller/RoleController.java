@@ -30,7 +30,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/administration/roles")
 @RequiredArgsConstructor
-@Tag(name = "Roles y permisos", description = "Gestión de roles de usuario, permisos canónicos y control de acceso RBAC.")
+@Tag(name = "Roles and permissions", description = "Gestión de roles de usuario, permisos canónicos y control de acceso RBAC.")
 public class RoleController {
 
     private final RoleService roleService;
@@ -38,7 +38,7 @@ public class RoleController {
     @RequirePermission("admin.roles.read")
     @GetMapping
     @Operation(
-            summary = "Listar roles paginados",
+            summary = "List roles",
             description = "Devuelve los roles configurados en el negocio con soporte de paginación y filtro opcional por estado.")
     public PageResponse<RoleResponse> list(
             @RequestParam(required = false) RoleStatus status, @PageableDefault(size = 20) Pageable pageable) {
@@ -48,7 +48,7 @@ public class RoleController {
     @RequirePermission("admin.roles.read")
     @GetMapping("/active")
     @Operation(
-            summary = "Listar roles activos",
+            summary = "List active roles",
             description = "Devuelve la lista simplificada de roles activos para asignación a empleados.")
     public List<RoleResponse> listActive() {
         return roleService.listActiveRoles();
@@ -57,7 +57,7 @@ public class RoleController {
     @RequirePermission("admin.roles.read")
     @GetMapping("/{id}")
     @Operation(
-            summary = "Consultar rol por ID",
+            summary = "Get role by ID",
             description = "Obtiene el detalle de un rol específico incluyendo su lista completa de permisos asignados.")
     public RoleResponse getById(@PathVariable UUID id) {
         return roleService.getRoleById(id);
@@ -67,7 +67,7 @@ public class RoleController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(
-            summary = "Crear nuevo rol",
+            summary = "Create role",
             description = "Crea un nuevo rol con permisos personalizados. Valida la regla anti-escalamiento de permisos.")
     public RoleResponse create(@Valid @RequestBody CreateRoleRequest request) {
         return roleService.createRole(request);
@@ -76,7 +76,7 @@ public class RoleController {
     @RequirePermission("admin.roles.manage")
     @PutMapping("/{id}")
     @Operation(
-            summary = "Actualizar rol",
+            summary = "Update role",
             description = "Modifica el nombre o permisos de un rol existente. Los roles de sistema no pueden ser alterados.")
     public RoleResponse update(@PathVariable UUID id, @Valid @RequestBody UpdateRoleRequest request) {
         return roleService.updateRole(id, request);
@@ -86,7 +86,7 @@ public class RoleController {
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Operation(
-            summary = "Archivar rol",
+            summary = "Archive role",
             description = "Aplica borrado lógico archivando el rol si no está asignado como rol de sistema protegido.")
     public void delete(@PathVariable UUID id) {
         roleService.archiveRole(id);

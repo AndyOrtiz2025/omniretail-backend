@@ -26,7 +26,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Recepción de Mercancía en Almacén",
+        name = "Goods receipts",
         description = "Ingreso físico de mercancía proveniente de órdenes de compra, validación de remisiones, captura de lotes/series y entrada definitiva al stock."
 )
 @RestController
@@ -37,7 +37,7 @@ public class GoodsReceiptController {
     private final GoodsReceiptService goodsReceiptService;
 
     @Operation(
-            summary = "Listar recepciones de mercancía con paginación",
+            summary = "List goods receipts",
             description = """
                     Recupera el historial de recepciones de mercancía registradas en el almacén con filtros por sucursal, orden de compra origen y estado.
                     
@@ -62,7 +62,7 @@ public class GoodsReceiptController {
     }
 
     @Operation(
-            summary = "Obtener detalle de recepción de mercancía por ID",
+            summary = "Get goods receipt by ID",
             description = """
                     Recupera la ficha completa de recepción: partidas contadas, orden de compra origen, lotes y números de serie ingresados.
                     
@@ -76,7 +76,7 @@ public class GoodsReceiptController {
     }
 
     @Operation(
-            summary = "Crear recepción de mercancía (Borrador)",
+            summary = "Create draft goods receipt",
             description = """
                     Inicia el proceso de descarga física en estado `draft` para una orden de compra recepcionable (`approved`, `sent` o `partially_received`).
                     
@@ -94,7 +94,7 @@ public class GoodsReceiptController {
     }
 
     @Operation(
-            summary = "Actualizar recepción de mercancía borrador",
+            summary = "Update draft goods receipt",
             description = """
                     Modifica las cantidades físicas contadas, ubicaciones o detalles de trazabilidad en una recepción en estado `draft`.
                     
@@ -112,7 +112,7 @@ public class GoodsReceiptController {
     }
 
     @Operation(
-            summary = "Confirmar recepción de mercancía (Ingreso a Inventario)",
+            summary = "Confirm goods receipt",
             description = """
                     Confirma la recepción (`confirmed`), acredita formalmente las existencias en el inventario de la sucursal receptora y actualiza el estado de la orden de compra (`partially_received` o `received`).
                     
@@ -129,7 +129,7 @@ public class GoodsReceiptController {
     }
 
     @Operation(
-            summary = "Eliminar recepción borrador",
+            summary = "Delete draft goods receipt",
             description = """
                     Descarta y elimina una recepción preliminar en estado `draft` que aún no ha impactado existencias de inventario.
                     

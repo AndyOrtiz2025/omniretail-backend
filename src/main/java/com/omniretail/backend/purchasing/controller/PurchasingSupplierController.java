@@ -23,7 +23,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Gestión de Proveedores de Compras",
+        name = "Purchasing suppliers",
         description = "Consulta de proveedores activos para compras, catálogo de productos provistos, métricas de incidentes y fichas técnicas."
 )
 @RestController
@@ -34,7 +34,7 @@ public class PurchasingSupplierController {
     private final PurchasingSupplierService purchasingSupplierService;
 
     @Operation(
-            summary = "Listar proveedores activos (selectores)",
+            summary = "List active purchasing suppliers",
             description = """
                     Recupera la lista simplificada de proveedores activos (`active`) del tenant, ideal para poblar selectores y formularios de órdenes de compra.
                     
@@ -51,7 +51,7 @@ public class PurchasingSupplierController {
     }
 
     @Operation(
-            summary = "Listar proveedores con paginación y búsqueda",
+            summary = "List purchasing suppliers",
             description = """
                     Recupera el padrón general de proveedores con búsqueda textual y filtro por estado.
                     
@@ -77,7 +77,7 @@ public class PurchasingSupplierController {
     }
 
     @Operation(
-            summary = "Listar catálogo de productos ofrecidos por el proveedor",
+            summary = "List supplier products",
             description = """
                     Recupera de forma paginada (`page` comenzando en 1) los artículos provistos por este proveedor junto con sus números de parte (`supplierSku`), costos pactados y escalas de volumen.
                     
@@ -98,7 +98,7 @@ public class PurchasingSupplierController {
     }
 
     @Operation(
-            summary = "Consultar incidencias de recepción asociadas al proveedor",
+            summary = "List supplier receipt incidents",
             description = """
                     Recupera de forma paginada (`page` comenzando en 1) las incidencias de recepción (`status`: `open`, `resolved`) registradas al recibir mercancía de este proveedor.
                     
@@ -119,7 +119,7 @@ public class PurchasingSupplierController {
     }
 
     @Operation(
-            summary = "Obtener detalle completo de proveedor por ID",
+            summary = "Get purchasing supplier by ID",
             description = """
                     Recupera la ficha operativa del proveedor para compras (datos comerciales, contacto y estado).
                     

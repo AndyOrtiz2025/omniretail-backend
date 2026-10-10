@@ -18,7 +18,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Balances de Inventario",
+        name = "Inventory balances",
         description = "Consulta de saldos de existencias físicas, reservadas y disponibles por sucursal y producto."
 )
 @RestController
@@ -29,7 +29,7 @@ public class InventoryController {
     private final InventoryService inventoryService;
 
     @Operation(
-            summary = "Consultar balances de stock por sucursal y producto",
+            summary = "List inventory balances",
             description = """
                     Recupera el listado paginado de saldos de inventario para una sucursal dada, con desglose de cantidad disponible, cantidad reservada en pedidos pendientes y total en mano.
                     

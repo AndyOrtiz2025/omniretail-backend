@@ -19,7 +19,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Historial y Auditoría Logística",
+        name = "Logistics history",
         description = "Consulta histórica unificada y trazabilidad completa de órdenes de preparación, empaque y despacho (pedidos de e-commerce y transferencias)."
 )
 @RestController
@@ -30,7 +30,7 @@ public class LogisticsHistoryController {
     private final LogisticsHistoryService historyService;
 
     @Operation(
-            summary = "Buscar en el historial de operaciones logísticas",
+            summary = "Search logistics history",
             description = """
                     Recupera el historial paginado de movimientos logísticos con filtros por búsqueda textual, estado de pedido, estado de transferencia, método de entrega y rango de fechas.
                     
@@ -68,7 +68,7 @@ public class LogisticsHistoryController {
     }
 
     @Operation(
-            summary = "Obtener trazabilidad completa de un flujo logístico",
+            summary = "Get logistics flow traceability",
             description = """
                     Recupera la línea de tiempo auditada (eventos de recolección, embalaje, etiquetado y salida) para un pedido o transferencia.
                     

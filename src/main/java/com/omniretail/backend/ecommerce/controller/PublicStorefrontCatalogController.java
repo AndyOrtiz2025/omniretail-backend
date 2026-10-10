@@ -18,7 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/public/{slug}/products")
 @RequiredArgsConstructor
 @Tag(
-        name = "Catálogo Público de la Tienda (Storefront)",
+        name = "Public storefront catalog",
         description = "Endpoints públicos para consultar el catálogo de productos publicados de la tienda online sin requerir autenticación.")
 public class PublicStorefrontCatalogController {
 
@@ -27,7 +27,7 @@ public class PublicStorefrontCatalogController {
     @GetMapping
     @SecurityRequirements
     @Operation(
-            summary = "Listar productos del catálogo público",
+            summary = "List storefront products",
             description = "Obtiene el listado completo de productos activos y publicados para la tienda identificada por su slug.")
     public List<PublicStorefrontProductResponse> list(@PathVariable String slug) {
         return publicStorefrontCatalogService.listProducts(slug);
@@ -36,7 +36,7 @@ public class PublicStorefrontCatalogController {
     @GetMapping("/{id}")
     @SecurityRequirements
     @Operation(
-            summary = "Consultar detalle de un producto por ID",
+            summary = "Get storefront product by ID",
             description = "Obtiene el detalle completo de un producto específico publicado en la tienda por su identificador UUID.")
     public PublicStorefrontProductResponse getById(@PathVariable String slug, @PathVariable UUID id) {
         return publicStorefrontCatalogService.getProduct(slug, id);

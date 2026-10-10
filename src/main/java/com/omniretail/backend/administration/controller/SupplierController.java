@@ -30,7 +30,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/administration/suppliers")
 @RequiredArgsConstructor
-@Tag(name = "Proveedores", description = "Directorio maestro de proveedores, datos de contacto comercial y plazos de crédito.")
+@Tag(name = "Suppliers", description = "Directorio maestro de proveedores, datos de contacto comercial y plazos de crédito.")
 public class SupplierController {
 
     private final SupplierService supplierService;
@@ -38,7 +38,7 @@ public class SupplierController {
     @RequirePermission("admin.suppliers.manage")
     @GetMapping
     @Operation(
-            summary = "Listar proveedores paginados",
+            summary = "List suppliers",
             description = "Devuelve los proveedores del negocio con soporte de paginación (`page` comenzando en 1) y filtro opcional por estado (`active`, `inactive`, `archived`).")
     public PageResponse<SupplierResponse> list(
             @RequestParam(required = false) SupplierStatus status, @PageableDefault(size = 20) Pageable pageable) {
@@ -48,7 +48,7 @@ public class SupplierController {
     @RequirePermission("admin.suppliers.manage")
     @GetMapping("/active")
     @Operation(
-            summary = "Listar proveedores activos",
+            summary = "List active suppliers",
             description = "Devuelve la lista simplificada de proveedores activos para órdenes de compra y selectores rápidos.")
     public List<SupplierResponse> listActive() {
         return supplierService.listActiveSuppliers();
@@ -57,7 +57,7 @@ public class SupplierController {
     @RequirePermission("admin.suppliers.manage")
     @GetMapping("/{id}")
     @Operation(
-            summary = "Consultar proveedor por ID",
+            summary = "Get supplier by ID",
             description = "Obtiene los detalles comerciales, NIT, teléfono y términos de crédito de un proveedor.")
     public SupplierResponse getById(@PathVariable UUID id) {
         return supplierService.getSupplierById(id);
@@ -67,7 +67,7 @@ public class SupplierController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(
-            summary = "Crear nuevo proveedor",
+            summary = "Create supplier",
             description = "Registra un nuevo proveedor validando nombre y código único por negocio.")
     public SupplierResponse create(@Valid @RequestBody CreateSupplierRequest request) {
         return supplierService.createSupplier(request);
@@ -76,7 +76,7 @@ public class SupplierController {
     @RequirePermission("admin.suppliers.manage")
     @PutMapping("/{id}")
     @Operation(
-            summary = "Actualizar proveedor",
+            summary = "Update supplier",
             description = "Modifica los datos comerciales, dirección o contacto de un proveedor existente.")
     public SupplierResponse update(@PathVariable UUID id, @Valid @RequestBody UpdateSupplierRequest request) {
         return supplierService.updateSupplier(id, request);
@@ -86,7 +86,7 @@ public class SupplierController {
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Operation(
-            summary = "Archivar proveedor",
+            summary = "Archive supplier",
             description = "Aplica borrado lógico archivando el proveedor para impedir nuevas órdenes de compra.")
     public void archive(@PathVariable UUID id) {
         supplierService.archiveSupplier(id);

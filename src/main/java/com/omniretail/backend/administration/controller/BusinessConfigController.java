@@ -15,7 +15,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Configuración del negocio",
+        name = "Business configuration",
         description = "Configuración operativa del tenant (preset de giro comercial, capacidades operativas de inventario/catálogo, seguimiento por defecto y métodos de pago permitidos en POS)."
 )
 @RestController
@@ -26,7 +26,7 @@ public class BusinessConfigController {
     private final BusinessConfigService businessConfigService;
 
     @Operation(
-            summary = "Obtener configuración general del negocio",
+            summary = "Get business configuration",
             description = """
                     Retorna la configuración operativa vigente del tenant actual (`preset`, banderas de capacidades de inventario y catálogo, `allowedPosPaymentMethods` y `defaultProductTracking`).
                     
@@ -42,7 +42,7 @@ public class BusinessConfigController {
     }
 
     @Operation(
-            summary = "Actualizar configuración general del negocio",
+            summary = "Update business configuration",
             description = """
                     Actualiza la configuración operativa del negocio:
                     * `preset`: Giro comercial (`hardware_store`, `pharmacy`, `grocery`, `services`, `custom`).

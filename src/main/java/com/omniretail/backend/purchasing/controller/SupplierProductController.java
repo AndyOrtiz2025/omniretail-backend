@@ -30,7 +30,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Catálogo de Productos por Proveedor",
+        name = "Supplier products",
         description = "Vinculación entre productos y proveedores: costos de adquisición, SKUs de proveedor, lead times, proveedor preferido y escalas de costo por volumen."
 )
 @RestController
@@ -41,7 +41,7 @@ public class SupplierProductController {
     private final SupplierProductService supplierProductService;
 
     @Operation(
-            summary = "Listar vinculaciones de producto-proveedor con paginación",
+            summary = "List supplier-product links",
             description = """
                     Recupera el listado administrativo paginado (`page` comenzando en 1) de productos asociados a proveedores con filtros por proveedor, producto, estado activo y condición de preferido.
                     
@@ -65,7 +65,7 @@ public class SupplierProductController {
     }
 
     @Operation(
-            summary = "Listar productos de proveedores activos (operativo)",
+            summary = "List active supplier products",
             description = """
                     Recupera los productos y costos activos asociados a un proveedor o producto para operaciones de abastecimiento en tiempo real.
                     
@@ -84,7 +84,7 @@ public class SupplierProductController {
     }
 
     @Operation(
-            summary = "Obtener detalle de relación producto-proveedor por ID",
+            summary = "Get supplier-product link by ID",
             description = """
                     Recupera la ficha de vinculación: costo unitario base, SKU del fabricante, lead time en días y escalas de volumen.
                     
@@ -99,7 +99,7 @@ public class SupplierProductController {
     }
 
     @Operation(
-            summary = "Vincular producto a proveedor",
+            summary = "Create supplier-product link",
             description = """
                     Registra un nuevo producto en el catálogo del proveedor con su costo y condiciones de suministro.
                     
@@ -115,7 +115,7 @@ public class SupplierProductController {
     }
 
     @Operation(
-            summary = "Actualizar condiciones de producto-proveedor",
+            summary = "Update supplier-product link",
             description = """
                     Actualiza el costo de compra, SKU del proveedor o tiempo de entrega pactado.
                     
@@ -131,7 +131,7 @@ public class SupplierProductController {
     }
 
     @Operation(
-            summary = "Archivar vinculación producto-proveedor",
+            summary = "Archive supplier-product link",
             description = """
                     Desactiva la relación comercial con el proveedor para este artículo sin eliminar el histórico previo.
                     
@@ -147,7 +147,7 @@ public class SupplierProductController {
     }
 
     @Operation(
-            summary = "Reactivar vinculación producto-proveedor",
+            summary = "Reactivate supplier-product link",
             description = """
                     Vuelve a activar la relación de suministro previamente archivada.
                     
@@ -162,7 +162,7 @@ public class SupplierProductController {
     }
 
     @Operation(
-            summary = "Establecer como proveedor preferido",
+            summary = "Set preferred supplier",
             description = """
                     Designa a este proveedor como la fuente de suministro primaria para el producto, utilizándose por defecto en órdenes automáticas de resurtido.
                     
@@ -177,7 +177,7 @@ public class SupplierProductController {
     }
 
     @Operation(
-            summary = "Reemplazar escalas de costo por volumen",
+            summary = "Replace supplier volume cost tiers",
             description = """
                     Sobrescribe los rangos de precios de compra con descuento que ofrece el proveedor a partir de determinadas cantidades mínimas de adquisición.
                     

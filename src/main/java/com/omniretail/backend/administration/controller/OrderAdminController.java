@@ -23,7 +23,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Gestión de Pedidos de E-commerce (Backoffice)",
+        name = "Order administration",
         description = "Administración, consulta y avance del flujo de vida de los pedidos generados a través de la tienda virtual."
 )
 @RestController
@@ -34,7 +34,7 @@ public class OrderAdminController {
     private final OrderAdminService orderAdminService;
 
     @Operation(
-            summary = "Listar pedidos con paginación y filtros",
+            summary = "List orders",
             description = """
                     Recupera el listado paginado de órdenes de compra del storefront con soporte de filtrado por estado.
                     
@@ -56,7 +56,7 @@ public class OrderAdminController {
     }
 
     @Operation(
-            summary = "Obtener detalle completo de pedido",
+            summary = "Get order by ID",
             description = """
                     Recupera el detalle integral de una orden: productos adquiridos, desglose de impuestos, costos de flete, dirección de entrega y datos del comprador.
                     
@@ -71,7 +71,7 @@ public class OrderAdminController {
     }
 
     @Operation(
-            summary = "Actualizar estado de un pedido",
+            summary = "Update order status",
             description = """
                     Permite a un operador avanzar o modificar el estado del pedido en su ciclo de vida (`pending`, `confirmed`, `preparing`, `picking`, `packing`, `ready_for_pickup`, `ready_for_dispatch`, `dispatched`, `delivered`, `cancelled`).
                     

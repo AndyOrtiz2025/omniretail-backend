@@ -37,7 +37,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(
-        name = "Ventas en Punto de Venta (POS)",
+        name = "POS sales",
         description = "Cobro de tickets de venta, consulta de histórico de transacciones, detalle de tickets y anulación de ventas con reversión de inventario."
 )
 @RestController
@@ -49,7 +49,7 @@ public class SaleController {
     private final PosSalesHistoryService historyService;
 
     @Operation(
-            summary = "Registrar y cobrar venta en POS",
+            summary = "Create POS sale",
             description = """
                     Procesa una transacción de venta en punto de venta: valida stock disponible, calcula impuestos y descuentos, aplica pagos divididos (efectivo, tarjeta, vales), rebaja existencias y genera el ticket de venta.
                     
@@ -65,7 +65,7 @@ public class SaleController {
     }
 
     @Operation(
-            summary = "Listar ventas de una sucursal por rango de fechas",
+            summary = "List branch sales",
             description = """
                     Recupera el listado paginado de ventas de una sucursal específica con filtros por estado y marca de tiempo UTC.
                     
@@ -93,7 +93,7 @@ public class SaleController {
     }
 
     @Operation(
-            summary = "Búsqueda avanzada en el historial de ventas",
+            summary = "Search sales history",
             description = """
                     Consulta paginada (`page` comenzando en 1) con búsqueda textual y filtros combinados sobre el historial de ventas del punto de venta:
                     * `branchId`: Identificador de la sucursal (obligatorio).
@@ -124,7 +124,7 @@ public class SaleController {
     }
 
     @Operation(
-            summary = "Obtener detalle completo de un ticket de venta",
+            summary = "Get sale by ID",
             description = """
                     Recupera la información pormenorizada de una venta: partidas de productos, precios aplicados, impuestos desglosados, pagos recibidos, cambio otorgado y datos del cajero.
                     
@@ -139,7 +139,7 @@ public class SaleController {
     }
 
     @Operation(
-            summary = "Anular ticket de venta",
+            summary = "Cancel sale",
             description = """
                     Cancela una venta previamente cobrada: devuelve automáticamente los artículos al inventario disponible de la sucursal y ajusta el balance del turno de caja.
                     
