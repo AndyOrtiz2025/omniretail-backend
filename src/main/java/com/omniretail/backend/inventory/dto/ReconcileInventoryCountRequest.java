@@ -22,10 +22,10 @@ public record ReconcileInventoryCountRequest(
         UUID locationId,
         @NotBlank @Size(max = 200) String reason,
         @NotNull @PositiveOrZero @Digits(integer = 9, fraction = 3) BigDecimal expectedQuantity,
-        @Valid List<LotCount> lots,
+        List<@NotNull @Valid LotCount> lots,
         List<@NotBlank @Size(max = 100) String> expectedSerialNumbers,
         List<@NotBlank @Size(max = 100) String> foundSerialNumbers,
-        @Valid List<Addition> additions) {
+        List<@NotNull @Valid Addition> additions) {
 
     public record LotCount(
             @NotNull UUID lotId,

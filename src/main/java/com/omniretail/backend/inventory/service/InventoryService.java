@@ -58,6 +58,9 @@ import org.springframework.transaction.annotation.Transactional;
 @Transactional(readOnly = true)
 public class InventoryService {
 
+    private static final String PRODUCT_ID = "productId";
+    private static final String CREATED_AT = "createdAt";
+
     private final CurrentUser currentUser;
     private final TenantCapabilityGuard tenantCapabilityGuard;
     private final BranchRepository branchRepository;
@@ -223,7 +226,7 @@ public class InventoryService {
     }
 
     private static Pageable movementPageable(Pageable pageable) {
-        Set<String> supported = Set.of("createdAt", "quantity", "type", "productId", "branchId");
+        Set<String> supported = Set.of(CREATED_AT, "quantity", "type", PRODUCT_ID, "branchId");
         pageable.getSort().forEach(order -> {
             if (!supported.contains(order.getProperty())) {
                 throw new BusinessException(
@@ -233,7 +236,7 @@ public class InventoryService {
             }
         });
         Sort sort = pageable.getSort().isUnsorted()
-                ? Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id"))
+                ? Sort.by(Sort.Order.desc(CREATED_AT), Sort.Order.desc("id"))
                 : pageable.getSort().and(Sort.by(Sort.Order.desc("id")));
         return PageRequest.of(
                 Math.max(pageable.getPageNumber(), 0),
@@ -243,8 +246,8 @@ public class InventoryService {
 
     private static Pageable balancePageable(Pageable pageable, Integer requestedSize) {
         Set<String> supported = Set.of(
-                "id", "productId", "locationId", "quantity", "reservedQuantity",
-                "createdAt", "updatedAt");
+                "id", PRODUCT_ID, "locationId", "quantity", "reservedQuantity",
+                CREATED_AT, "updatedAt");
         pageable.getSort().forEach(order -> {
             if (!supported.contains(order.getProperty())) {
                 throw new BusinessException(
@@ -260,14 +263,18 @@ public class InventoryService {
                     "INVENTORY_BALANCE_PAGE_SIZE_INVALID",
                     "El tamano de pagina debe estar entre 1 y 2000.");
         }
-        Sort sort = pageable.getSort().isUnsorted()
-                ? Sort.by(
-                        Sort.Order.asc("productId"),
-                        Sort.Order.asc("locationId"),
-                        Sort.Order.asc("id"))
-                : pageable.getSort().getOrderFor("id") == null
-                        ? pageable.getSort().and(Sort.by(Sort.Order.asc("id")))
-                        : pageable.getSort();
+        Sort sort;
+        if (pageable.getSort().isUnsorted()) {
+            sort = Sort.by(
+                    Sort.Order.asc(PRODUCT_ID),
+                    Sort.Order.asc("locationId"),
+                    Sort.Order.asc("id"));
+        } else if (pageable.getSort().getOrderFor("id") == null) {
+            // Desempate unico: el id siempre cierra el orden solicitado.
+            sort = pageable.getSort().and(Sort.by(Sort.Order.asc("id")));
+        } else {
+            sort = pageable.getSort();
+        }
         return PageRequest.of(
                 Math.max(pageable.getPageNumber(), 0),
                 pageSize,

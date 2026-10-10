@@ -406,6 +406,76 @@ class InventoryCountServiceTest {
                 normal.branch(), normal.product(), null));
     }
 
+    @Test
+    void foundSerialOutsideTheCountedGroupKeepsItsRejectionCodes() {
+        Fixture ghost = fixture(false, true);
+        insertBalance(ghost, "1", "0");
+        insertSerial(ghost, null, "SER-A", "AVAILABLE");
+        assertCode("SERIAL_NOT_FOUND", () -> countService.reconcile(request(
+                ghost, "1", null, List.of("SER-A"), List.of("GHOST"), null)));
+
+        Fixture elsewhere = fixture(false, true);
+        insertBalance(elsewhere, "1", "0");
+        insertSerial(elsewhere, null, "SER-A", "AVAILABLE");
+        insertSerialAt(elsewhere, insertLocation(elsewhere), null, "LOC-OTHER", "AVAILABLE");
+        assertCode("SERIAL_LOCATION_MISMATCH", () -> countService.reconcile(request(
+                elsewhere, "1", null, List.of("SER-A"), List.of("LOC-OTHER"), null)));
+
+        Fixture absent = fixture(false, true);
+        insertBalance(absent, "1", "0");
+        insertSerial(absent, null, "SER-A", "AVAILABLE");
+        insertSerial(absent, null, "GONE", "WRITTEN_OFF");
+        assertCode("SERIAL_NOT_PRESENT", () -> countService.reconcile(request(
+                absent, "1", null, List.of("SER-A"), List.of("GONE"), null)));
+
+        Fixture otherLot = fixture(true, true);
+        UUID lotA = insertLot(otherLot, "LOT-A");
+        UUID lotB = insertLot(otherLot, "LOT-B");
+        insertBalance(otherLot, "2", "0");
+        insertLotBalance(otherLot, lotA, "1", "0");
+        insertLotBalance(otherLot, lotB, "1", "0");
+        insertSerial(otherLot, lotA, "A-1", "AVAILABLE");
+        insertSerial(otherLot, lotB, "B-1", "AVAILABLE");
+        assertCode("SERIAL_LOT_MISMATCH", () -> countService.reconcile(request(
+                otherLot,
+                "2",
+                List.of(
+                        new LotCount(lotA, BigDecimal.ONE, BigDecimal.ONE,
+                                List.of("A-1"), List.of("B-1")),
+                        new LotCount(lotB, BigDecimal.ONE, BigDecimal.ZERO,
+                                List.of("B-1"), List.of())),
+                null, null, null)));
+
+        assertThat(movementCount(ghost) + movementCount(elsewhere) + movementCount(absent)
+                        + movementCount(otherLot))
+                .isZero();
+    }
+
+    @Test
+    void firstUnknownSerialInSortedOrderDecidesTheRejection() {
+        Fixture fixture = fixture(false, true);
+        insertBalance(fixture, "1", "0");
+        insertSerial(fixture, null, "SER-A", "AVAILABLE");
+        insertSerial(fixture, null, "A-GONE", "WRITTEN_OFF");
+
+        // "A-GONE" ordena antes que "Z-GHOST" (inexistente): el primero decide, aunque el segundo tambien falle.
+        assertCode("SERIAL_NOT_PRESENT", () -> countService.reconcile(request(
+                fixture, "1", null, List.of("SER-A"), List.of("Z-GHOST", "A-GONE"), null)));
+        assertThat(movementCount(fixture)).isZero();
+    }
+
+    @Test
+    void nullElementsInLotsAndAdditionsAreInvalidPayloadNotServerErrors() {
+        Fixture fixture = fixture(true, false);
+        insertBalance(fixture, "0", "0");
+
+        assertCode("COUNT_INVALID_PAYLOAD", () -> countService.reconcile(request(
+                fixture, "0", java.util.Arrays.asList((LotCount) null), null, null, null)));
+        assertCode("COUNT_INVALID_PAYLOAD", () -> countService.reconcile(request(
+                fixture, "0", List.of(), null, null, java.util.Arrays.asList((Addition) null))));
+        assertThat(movementCount(fixture)).isZero();
+    }
+
     private ReconcileInventoryCountRequest request(
             Fixture fixture,
             String expectedQuantity,

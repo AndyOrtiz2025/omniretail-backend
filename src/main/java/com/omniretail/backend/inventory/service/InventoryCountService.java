@@ -468,32 +468,38 @@ public class InventoryCountService {
                 BigDecimal.valueOf(missing.size()));
     }
 
+    /**
+     * Siempre lanza: un serial encontrado que no pertenece al grupo contado nunca es valido. Solo se
+     * inspecciona el primer serial desconocido (ordenado), con la prioridad de siempre: no existe, otra
+     * sucursal/ubicacion, ya no presente y, por descarte, pertenece a otro lote.
+     */
     private void rejectUnknownSerials(
             UUID tenantId, Product product, UUID branchId, UUID locationId, List<String> unknown) {
+        if (unknown.isEmpty()) {
+            throw new IllegalStateException("Se esperaba al menos un serial desconocido.");
+        }
         Map<String, InventorySerial> known = serialRepository
                 .findByTenantIdAndProductIdAndSerialNumberIn(tenantId, product.getId(), unknown)
                 .stream()
                 .collect(Collectors.toMap(InventorySerial::getSerialNumber, Function.identity()));
-        for (String number : unknown) {
-            InventorySerial serial = known.get(number);
-            if (serial == null) {
-                throw new BusinessException(
-                        HttpStatus.NOT_FOUND, "SERIAL_NOT_FOUND", "Uno o mas numeros de serie no existen.");
-            }
-            if (!serial.getBranchId().equals(branchId)
-                    || !Objects.equals(serial.getLocationId(), locationId)) {
-                throw new BusinessException(
-                        HttpStatus.BAD_REQUEST, "SERIAL_LOCATION_MISMATCH",
-                        "Uno o mas numeros de serie no pertenecen a la ubicacion indicada.");
-            }
-            if (!PHYSICAL_STATUSES.contains(serial.getStatus())) {
-                throw BusinessException.conflict(
-                        "SERIAL_NOT_PRESENT", "Uno o mas numeros de serie ya no estan presentes.");
-            }
+        InventorySerial serial = known.get(unknown.getFirst());
+        if (serial == null) {
             throw new BusinessException(
-                    HttpStatus.BAD_REQUEST, "SERIAL_LOT_MISMATCH",
-                    "Uno o mas numeros de serie no pertenecen al lote indicado.");
+                    HttpStatus.NOT_FOUND, "SERIAL_NOT_FOUND", "Uno o mas numeros de serie no existen.");
         }
+        if (!serial.getBranchId().equals(branchId)
+                || !Objects.equals(serial.getLocationId(), locationId)) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST, "SERIAL_LOCATION_MISMATCH",
+                    "Uno o mas numeros de serie no pertenecen a la ubicacion indicada.");
+        }
+        if (!PHYSICAL_STATUSES.contains(serial.getStatus())) {
+            throw BusinessException.conflict(
+                    "SERIAL_NOT_PRESENT", "Uno o mas numeros de serie ya no estan presentes.");
+        }
+        throw new BusinessException(
+                HttpStatus.BAD_REQUEST, "SERIAL_LOT_MISMATCH",
+                "Uno o mas numeros de serie no pertenecen al lote indicado.");
     }
 
     private List<InventoryInboundTraceDetail> normalizeAdditions(
@@ -502,6 +508,9 @@ public class InventoryCountService {
         List<InventoryInboundTraceDetail> normalized = new ArrayList<>();
         Set<String> serials = new HashSet<>();
         for (Addition addition : additions) {
+            if (addition == null) {
+                throw invalidPayload("Cada unidad adicional del conteo debe estar definida.");
+            }
             List<InventoryInboundTraceDetail> details = mutationService.validateAndNormalize(
                     tenantId,
                     product,

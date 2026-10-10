@@ -115,6 +115,21 @@ class InventoryCountControllerTest {
                 .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
     }
 
+    @Test
+    void reconcileRejectsNullElementsInLotsAndAdditionsWithValidationError() throws Exception {
+        for (String field : new String[] {"lots", "additions"}) {
+            mockMvc.perform(post(RECONCILE)
+                            .header("Authorization", token())
+                            .contentType(APPLICATION_JSON)
+                            .content("{\"branchId\":\"" + UUID.randomUUID()
+                                    + "\",\"productId\":\"" + UUID.randomUUID()
+                                    + "\",\"reason\":\"Conteo\",\"expectedQuantity\":0,\""
+                                    + field + "\":[null]}"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+        }
+    }
+
     private String token() {
         User user = User.builder()
                 .name("Usuario inventario")
