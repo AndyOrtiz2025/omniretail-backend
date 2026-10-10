@@ -42,6 +42,7 @@ import com.omniretail.backend.shared.security.PermissionResolver;
 import com.omniretail.backend.shared.security.SaasCapability;
 import com.omniretail.backend.shared.security.TenantCapabilityGuard;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.EntityNotFoundException;
 import jakarta.persistence.LockModeType;
 import jakarta.persistence.LockTimeoutException;
 import jakarta.persistence.PessimisticLockException;
@@ -57,6 +58,7 @@ import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -144,6 +146,19 @@ public class InventoryBalanceRegularizationService {
     private static final String SQLSTATE_LOCK_NOT_AVAILABLE = "55P03";
     private static final String SQLSTATE_DEADLOCK_DETECTED = "40P01";
 
+    private static final String NOT_REQUIRED_MESSAGE =
+            "El producto no tiene saldo heredado sin ubicación que regularizar.";
+    private static final String PRODUCT_NOT_FOUND_CODE = "PRODUCT_NOT_FOUND";
+    private static final String PRODUCT_NOT_FOUND_MESSAGE = "Producto no encontrado.";
+    private static final String LOCATION_NOT_FOUND_CODE = "LOCATION_NOT_FOUND";
+    private static final String LOCATION_NOT_FOUND_MESSAGE = "Ubicación no encontrada.";
+
+    /** Nombres de los campos de cada asignacion en {@code inventory_reservations.allocations}. */
+    private static final String FIELD_BALANCE_ID = "balanceId";
+    private static final String FIELD_LOCATION_ID = "locationId";
+    private static final String FIELD_RESERVED_QUANTITY = "reservedQuantity";
+    private static final String FIELD_CONSUMED_QUANTITY = "consumedQuantity";
+
     private static final Set<InventorySerialStatus> OPEN_SERIAL_STATUSES = EnumSet.of(
             InventorySerialStatus.AVAILABLE, InventorySerialStatus.RESERVED, InventorySerialStatus.IN_TRANSIT);
 
@@ -172,7 +187,7 @@ public class InventoryBalanceRegularizationService {
     @Transactional(readOnly = true)
     public LegacyBalanceRegularizationPreviewResponse preview(
             UUID branchId, UUID productId, UUID locationId) {
-        return preview(branchId, productId, locationId, false);
+        return buildPreview(branchId, productId, locationId, false);
     }
 
     /**
@@ -183,6 +198,12 @@ public class InventoryBalanceRegularizationService {
      */
     @Transactional(readOnly = true)
     public LegacyBalanceRegularizationPreviewResponse preview(
+            UUID branchId, UUID productId, UUID locationId, boolean assign) {
+        return buildPreview(branchId, productId, locationId, assign);
+    }
+
+    /** Cuerpo comun de ambas firmas publicas: asi ninguna invoca a la otra a traves de this. */
+    private LegacyBalanceRegularizationPreviewResponse buildPreview(
             UUID branchId, UUID productId, UUID locationId, boolean assign) {
         AuthenticatedUser actor = currentUser.require();
         UUID tenantId = actor.tenantId();
@@ -328,17 +349,112 @@ public class InventoryBalanceRegularizationService {
         // Acota toda espera de bloqueo de esta transaccion (no sustituye al orden de bloqueos).
         applyLockTimeout();
 
-        // 1) configuracion y producto. Normal: producto FOR SHARE. Asignacion inicial: FOR NO KEY UPDATE, que
-        // excluye a las decisiones concurrentes y sigue sin chocar con el KEY SHARE de los movimientos. La
-        // lectura previa solo elige el modo; la decision se toma con el bloqueo ya tomado.
-        UUID assignedHint = currentAssignment(tenantId, branchId, productId);
-        boolean exclusive = assignMode && assignedHint == null;
+        // 1) configuracion y producto (FOR SHARE, o FOR NO KEY UPDATE en la asignacion inicial). Tras el
+        // bloqueo: replay, estado vigente del producto y de la ubicacion, y politica de destino.
+        ProductLock productLock = lockProduct(actor, request, scope, requestFingerprint);
+        if (productLock.replay() != null) {
+            return productLock.replay();
+        }
+        UUID assigned = productLock.assigned();
+        boolean assigning = productLock.assigning();
+
+        // 2) balances agregados NULL y destino, por id. Cada fila se bloquea individualmente y se refresca.
+        LockedBalances balances = lockBalances(tenantId, branchId, productId, destinationLocationId);
+
+        // Una solicitud con la misma clave que esperaba estos bloqueos ve aqui el resultado de la primera
+        // (en modo normal los bloqueos compartidos de arriba no la detienen).
+        replay = replayIfRecorded(actor, request.idempotencyKey(), requestFingerprint);
+        if (replay != null) {
+            return replay;
+        }
+
+        // 3) reservas activas, 4) lotes y 5) series fisicas del balance NULL, en ese orden.
+        List<InventoryReservation> lockedReservations = lockActiveReservations(tenantId, branchId, productId);
+        LockedLots lots = lockLots(tenantId, branchId, productId, destinationLocationId);
+        List<InventorySerial> sourceSerials = serialRepository.findPhysicalForUpdateWithoutLocation(
+                tenantId, branchId, productId, OPEN_SERIAL_STATUSES);
+
+        State state = loadState(
+                tenantId,
+                scope,
+                new LockedPart(
+                        balances.source(), balances.destination(), lockedReservations, lots.source(),
+                        sourceSerials));
+        Analysis analysis = analyze(tenantId, scope, state);
+        throwFirst(analysis.blockers());
+
+        requireSnapshot(request, state, assigned, assignMode);
+
+        // ---- mutacion (se aplica completa o se revierte completa)
+        if (assigning) {
+            assignInitialLocation(tenantId, branchId, productId, destinationLocationId);
+        }
+        Consolidation consolidation = consolidate(
+                balances, lots, sourceSerials, analysis.affected(), destinationLocationId);
+        return recordOperation(
+                new OperationContext(actor, request, requestFingerprint, scope), productLock, consolidation);
+    }
+
+    /** Resultado de tomar el producto: replay ya registrado, o la asignacion vigente y si se asignara ahora. */
+    private record ProductLock(
+            UUID assigned, boolean assigning, LegacyBalanceRegularizationResultResponse replay) {}
+
+    private record OperationContext(
+            AuthenticatedUser actor,
+            RegularizeLegacyBalanceRequest request,
+            String requestFingerprint,
+            Scope scope) {}
+
+    private record LockedBalances(
+            InventoryBalance source, InventoryBalance destination, UUID sourceId, UUID destinationId) {}
+
+    private record LockedLots(
+            List<InventoryLotBalance> source, Map<UUID, InventoryLotBalance> destinationByLot) {}
+
+    /** Lo que movio la consolidacion (valores ya finales) para auditoria y resultado. */
+    private record Consolidation(
+            BigDecimal movedQuantity,
+            BigDecimal movedReserved,
+            BigDecimal destinationBefore,
+            BigDecimal destinationAfter,
+            BigDecimal destinationReservedAfter,
+            Map<UUID, BigDecimal> movedByLot,
+            List<InventorySerial> serials,
+            int reservationsReassigned,
+            int lotsMerged) {}
+
+    /**
+     * Toma configuracion y producto. Normal: producto {@code FOR SHARE}. Asignacion inicial (modo
+     * {@code assign} y sin ubicacion asignada): {@code FOR NO KEY UPDATE}, que excluye a las decisiones
+     * concurrentes sin chocar con el KEY SHARE de los movimientos; la lectura previa solo elige el modo, la
+     * decision se toma con el bloqueo ya tomado. Orden tras el bloqueo: replay (una solicitud con la misma
+     * clave que esperaba este bloqueo ve el resultado ya registrado, o {@code KEY_REUSED} si es otra), estado
+     * vigente de producto y ubicacion, asignacion vigente y politica de destino.
+     */
+    private ProductLock lockProduct(
+            AuthenticatedUser actor,
+            RegularizeLegacyBalanceRequest request,
+            Scope scope,
+            String requestFingerprint) {
+        UUID tenantId = actor.tenantId();
+        UUID branchId = request.branchId();
+        UUID productId = request.productId();
+        boolean assignMode = request.assigning();
+        boolean exclusive = assignMode && currentAssignment(tenantId, branchId, productId) == null;
         if (exclusive) {
             requireAssignmentPermissions(actor);
         }
         boolean enabled = exclusive
                 ? operationalLocations.lockAssignmentScope(tenantId, productId)
                 : operationalLocations.lockDecisionScope(tenantId, productId);
+
+        LegacyBalanceRegularizationResultResponse replay =
+                replayIfRecorded(actor, request.idempotencyKey(), requestFingerprint);
+        if (replay != null) {
+            return new ProductLock(null, false, replay);
+        }
+        refreshLockedScope(scope, branchId);
+
         UUID assigned = currentAssignment(tenantId, branchId, productId);
         if (assignMode && assigned == null && !exclusive) {
             // Alguien limpio la asignacion entre la lectura y el bloqueo compartido: asignar ahora exigiria el
@@ -348,38 +464,54 @@ public class InventoryBalanceRegularizationService {
                     "La asignación del producto cambió desde la vista previa. Vuelva a cargarla.");
         }
         throwFirst(policyBlockers(enabled, assigned, scope, assignMode));
-        boolean assigning = assignMode && assigned == null;
+        return new ProductLock(assigned, assignMode && assigned == null, null);
+    }
 
-        // 2) balances agregados NULL y destino, por id. Cada fila se bloquea individualmente y se refresca.
+    /**
+     * Con el producto bloqueado, vuelve a leer producto y ubicacion (las instancias gestionadas se cargaron
+     * antes de esperar) y revalida elegibilidad y pertenencia: un producto que dejo de ser fisico o de
+     * controlar stock, o cuya trazabilidad cambio mientras se esperaba, no se regulariza con datos previos.
+     * El estado de la ubicacion sigue sin bloqueo propio: la carrera con su inactivacion es preexistente.
+     */
+    private void refreshLockedScope(Scope scope, UUID branchId) {
+        try {
+            entityManager.refresh(scope.product());
+        } catch (EntityNotFoundException exception) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, PRODUCT_NOT_FOUND_CODE, PRODUCT_NOT_FOUND_MESSAGE);
+        }
+        try {
+            entityManager.refresh(scope.location());
+        } catch (EntityNotFoundException exception) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, LOCATION_NOT_FOUND_CODE, LOCATION_NOT_FOUND_MESSAGE);
+        }
+        requireEligibleProduct(scope.product());
+        requireLocationInBranch(scope.location(), branchId);
+    }
+
+    private LockedBalances lockBalances(
+            UUID tenantId, UUID branchId, UUID productId, UUID destinationLocationId) {
         UUID sourceId = balanceRepository
                 .findDefaultBalanceId(tenantId, branchId, productId)
-                .orElseThrow(() -> BusinessException.conflict(
-                        NOT_REQUIRED_CODE, "El producto no tiene saldo heredado sin ubicación que regularizar."));
+                .orElseThrow(() -> BusinessException.conflict(NOT_REQUIRED_CODE, NOT_REQUIRED_MESSAGE));
         balanceRepository.ensureLocationBalanceExists(tenantId, branchId, productId, destinationLocationId);
         UUID destinationId = balanceRepository
                 .findBalanceIdAtLocation(tenantId, branchId, productId, destinationLocationId)
                 .orElseThrow(() -> new IllegalStateException("No se pudo inicializar el balance destino."));
-        Map<UUID, InventoryBalance> lockedBalances = new HashMap<>();
+        Map<UUID, InventoryBalance> locked = new HashMap<>();
         for (UUID balanceId : Stream.of(sourceId, destinationId).sorted().toList()) {
             InventoryBalance balance = balanceRepository
                     .findByTenantIdAndId(tenantId, balanceId)
                     .orElseThrow(() -> BusinessException.conflict(
                             INCONSISTENT_CODE, "El balance cambió durante la regularización."));
             entityManager.refresh(balance);
-            lockedBalances.put(balanceId, balance);
+            locked.put(balanceId, balance);
         }
-        InventoryBalance source = lockedBalances.get(sourceId);
-        InventoryBalance destination = lockedBalances.get(destinationId);
+        return new LockedBalances(locked.get(sourceId), locked.get(destinationId), sourceId, destinationId);
+    }
 
-        // Una solicitud con la misma clave que esperaba estos bloqueos ve aqui el resultado de la primera
-        // (los bloqueos compartidos de arriba no la detienen).
-        replay = replayIfRecorded(actor, request.idempotencyKey(), requestFingerprint);
-        if (replay != null) {
-            return replay;
-        }
-
-        // 3) reservas activas del producto: bloqueo individual por id y refresco, como el ciclo de vida.
-        List<InventoryReservation> lockedReservations = new ArrayList<>();
+    /** Reservas activas del producto: bloqueo individual por id y refresco, como el ciclo de vida. */
+    private List<InventoryReservation> lockActiveReservations(UUID tenantId, UUID branchId, UUID productId) {
+        List<InventoryReservation> locked = new ArrayList<>();
         for (InventoryReservation snapshot : reservationRepository.findByScopeAndStatusOrderById(
                 tenantId, branchId, productId, InventoryReservationStatus.active)) {
             InventoryReservation reservation = reservationRepository
@@ -388,11 +520,14 @@ public class InventoryBalanceRegularizationService {
                             INCONSISTENT_CODE, "Una reserva cambió durante la regularización."));
             entityManager.refresh(reservation, LockModeType.PESSIMISTIC_WRITE);
             if (reservation.getStatus() == InventoryReservationStatus.active) {
-                lockedReservations.add(reservation);
+                locked.add(reservation);
             }
         }
+        return locked;
+    }
 
-        // 4) lotes: filas NULL por lote y la fila destino del mismo lote (creada si no existe).
+    /** Lotes: filas NULL por lote y la fila destino del mismo lote (creada si no existe). */
+    private LockedLots lockLots(UUID tenantId, UUID branchId, UUID productId, UUID destinationLocationId) {
         List<InventoryLotBalance> sourceLots = lotBalanceRepository
                 .findAllForUpdateWithoutLocation(tenantId, branchId, productId);
         Map<UUID, InventoryLotBalance> destinationLots = new HashMap<>();
@@ -407,37 +542,38 @@ public class InventoryBalanceRegularizationService {
                             .orElseThrow(() -> BusinessException.conflict(
                                     INCONSISTENT_CODE, "El balance de lote destino no está disponible.")));
         }
+        return new LockedLots(sourceLots, destinationLots);
+    }
 
-        // 5) series fisicas del balance NULL.
-        List<InventorySerial> sourceSerials = serialRepository.findPhysicalForUpdateWithoutLocation(
-                tenantId, branchId, productId, OPEN_SERIAL_STATUSES);
-
-        State state = loadState(
-                tenantId,
-                scope,
-                new LockedPart(source, destination, lockedReservations, sourceLots, sourceSerials));
-        Analysis analysis = analyze(tenantId, scope, state);
-        throwFirst(analysis.blockers());
-
-        requireSnapshot(request, state, assigned, assignMode);
-
-        // ---- mutacion (todo o nada)
-        if (assigning) {
-            // Asignacion inicial: condicional en SQL (solo si sigue sin ubicacion) y sin limpiar el contexto de
-            // persistencia, para no perder los balances, reservas y series ya bloqueados y modificados.
-            int assignedRows = settingsRepository.assignIfUnassigned(
-                    tenantId, branchId, productId, destinationLocationId);
-            if (assignedRows != 1) {
-                throw BusinessException.conflict(
-                        ASSIGNMENT_CONFLICT_CODE,
-                        "El producto ya tiene una ubicación operativa asignada; no se puede asignar otra.");
-            }
+    /**
+     * Asignacion inicial: condicional en SQL (solo si sigue sin ubicacion) y sin limpiar el contexto de
+     * persistencia, para no perder los balances, reservas y series ya bloqueados y modificados.
+     */
+    private void assignInitialLocation(
+            UUID tenantId, UUID branchId, UUID productId, UUID destinationLocationId) {
+        int assignedRows = settingsRepository.assignIfUnassigned(
+                tenantId, branchId, productId, destinationLocationId);
+        if (assignedRows != 1) {
+            throw BusinessException.conflict(
+                    ASSIGNMENT_CONFLICT_CODE,
+                    "El producto ya tiene una ubicación operativa asignada; no se puede asignar otra.");
         }
+    }
+
+    /** Mueve saldo, reservado, lotes y series al destino y reasigna las allocations de las reservas. */
+    private Consolidation consolidate(
+            LockedBalances balances,
+            LockedLots lots,
+            List<InventorySerial> sourceSerials,
+            List<InventoryReservation> affected,
+            UUID destinationLocationId) {
+        InventoryBalance source = balances.source();
+        InventoryBalance destination = balances.destination();
         BigDecimal movedQuantity = source.getQuantity();
         BigDecimal movedReserved = source.getReservedQuantity();
         BigDecimal destinationBefore = destination.getQuantity();
         Map<UUID, BigDecimal> movedByLot = new HashMap<>();
-        for (InventoryLotBalance sourceLot : sourceLots) {
+        for (InventoryLotBalance sourceLot : lots.source()) {
             movedByLot.put(sourceLot.getLotId(), sourceLot.getQuantity());
         }
         try {
@@ -447,9 +583,9 @@ public class InventoryBalanceRegularizationService {
                 source.releaseReservation(movedReserved);
             }
             source.deduct(movedQuantity);
-            for (InventoryLotBalance sourceLot : sourceLots) {
+            for (InventoryLotBalance sourceLot : lots.source()) {
                 BigDecimal lotQuantity = sourceLot.getQuantity();
-                destinationLots.get(sourceLot.getLotId()).add(lotQuantity);
+                lots.destinationByLot().get(sourceLot.getLotId()).add(lotQuantity);
                 sourceLot.deduct(lotQuantity);
             }
         } catch (IllegalStateException exception) {
@@ -459,10 +595,31 @@ public class InventoryBalanceRegularizationService {
         for (InventorySerial serial : sourceSerials) {
             serial.setLocationId(destinationLocationId);
         }
-        for (InventoryReservation reservation : analysis.affected()) {
-            reservation.setAllocations(
-                    rewriteAllocations(reservation, sourceId, destinationId, destinationLocationId));
+        for (InventoryReservation reservation : affected) {
+            reservation.setAllocations(rewriteAllocations(
+                    reservation, balances.sourceId(), balances.destinationId(), destinationLocationId));
         }
+        return new Consolidation(
+                movedQuantity,
+                movedReserved,
+                destinationBefore,
+                destination.getQuantity(),
+                destination.getReservedQuantity(),
+                movedByLot,
+                sourceSerials,
+                affected.size(),
+                lots.source().size());
+    }
+
+    /** Auditoria, movimiento {@code transfer}, trazas y resultado persistido (idempotencia). */
+    private LegacyBalanceRegularizationResultResponse recordOperation(
+            OperationContext context, ProductLock productLock, Consolidation done) {
+        AuthenticatedUser actor = context.actor();
+        RegularizeLegacyBalanceRequest request = context.request();
+        UUID tenantId = actor.tenantId();
+        UUID branchId = request.branchId();
+        UUID productId = request.productId();
+        UUID destinationLocationId = request.locationId();
 
         InventoryBalanceRegularization regularization = InventoryBalanceRegularization.builder()
                 .branchId(branchId)
@@ -470,13 +627,13 @@ public class InventoryBalanceRegularizationService {
                 .fromLocationId(null)
                 .toLocationId(destinationLocationId)
                 .idempotencyKey(request.idempotencyKey())
-                .fingerprint(requestFingerprint)
+                .fingerprint(context.requestFingerprint())
                 .reason(request.reason().trim())
                 .performedByUserId(actor.userId())
-                .movedQuantity(movedQuantity)
-                .movedReservedQuantity(movedReserved)
-                .destinationQuantityBefore(destinationBefore)
-                .destinationQuantityAfter(destination.getQuantity())
+                .movedQuantity(done.movedQuantity())
+                .movedReservedQuantity(done.movedReserved())
+                .destinationQuantityBefore(done.destinationBefore())
+                .destinationQuantityAfter(done.destinationAfter())
                 .resultPayload("{}")
                 .build();
         regularization.setTenantId(tenantId);
@@ -494,16 +651,16 @@ public class InventoryBalanceRegularizationService {
                 .productId(productId)
                 .type(InventoryMovementType.transfer)
                 .reason(request.reason().trim())
-                .quantity(movedQuantity)
-                .quantityBefore(destinationBefore)
-                .quantityAfter(destination.getQuantity())
+                .quantity(done.movedQuantity())
+                .quantityBefore(done.destinationBefore())
+                .quantityAfter(done.destinationAfter())
                 .fromLocationId(null)
                 .toLocationId(destinationLocationId)
                 .referenceType(REFERENCE_TYPE)
                 .referenceId(regularization.getId())
                 .performedByUserId(actor.userId())
                 .build());
-        saveTraces(tenantId, movement.getId(), scope.product(), movedByLot, sourceSerials);
+        saveTraces(tenantId, movement.getId(), context.scope().product(), done.movedByLot(), done.serials());
 
         LegacyBalanceRegularizationResultResponse result = new LegacyBalanceRegularizationResultResponse(
                 regularization.getId(),
@@ -513,24 +670,25 @@ public class InventoryBalanceRegularizationService {
                 productId,
                 null,
                 destinationLocationId,
-                movedQuantity,
-                movedReserved,
-                destinationBefore,
-                destination.getQuantity(),
-                destination.getReservedQuantity(),
-                analysis.affected().size(),
-                sourceLots.size(),
-                sourceSerials.size(),
+                done.movedQuantity(),
+                done.movedReserved(),
+                done.destinationBefore(),
+                done.destinationAfter(),
+                done.destinationReservedAfter(),
+                done.reservationsReassigned(),
+                done.lotsMerged(),
+                done.serials().size(),
                 movement.getId(),
-                assigning,
-                assigned);
+                productLock.assigning(),
+                productLock.assigned());
         regularization.setMovementId(movement.getId());
         regularization.setResultPayload(jsonMapper.writeValueAsString(result));
         regularizationRepository.saveAndFlush(regularization);
         log.info(
                 "Regularizacion de balance heredado: tenant={} sucursal={} producto={} destino={} "
                         + "cantidad={} reservado={} asignacionInicial={}",
-                tenantId, branchId, productId, destinationLocationId, movedQuantity, movedReserved, assigning);
+                tenantId, branchId, productId, destinationLocationId, done.movedQuantity(),
+                done.movedReserved(), productLock.assigning());
         return result;
     }
 
@@ -575,60 +733,67 @@ public class InventoryBalanceRegularizationService {
         UUID branchId = scope.location().getBranchId();
         UUID productId = scope.product().getId();
         UUID destinationLocationId = scope.location().getId();
+        boolean lockedRun = locked != null;
 
         List<InventoryBalance> balances = balanceRepository
                 .findByTenantIdAndBranchIdAndProductId(tenantId, branchId, productId);
-        InventoryBalance source = locked != null
-                ? locked.source()
-                : balances.stream().filter(balance -> balance.getLocationId() == null).findFirst().orElse(null);
-        InventoryBalance destination = locked != null
-                ? locked.destination()
-                : balances.stream()
-                        .filter(balance -> destinationLocationId.equals(balance.getLocationId()))
-                        .findFirst()
-                        .orElse(null);
-        List<InventoryBalance> others = balances.stream()
-                .filter(balance -> balance.getLocationId() != null
-                        && !destinationLocationId.equals(balance.getLocationId()))
-                .filter(balance -> balance.getQuantity().signum() > 0
-                        || balance.getReservedQuantity().signum() > 0)
-                .toList();
-
         List<InventoryLotBalance> allLots = lotBalanceRepository
                 .findByTenantBranchAndProduct(tenantId, branchId, productId);
-        List<InventoryLotBalance> sourceLots = locked != null
-                ? locked.sourceLots()
-                : allLots.stream()
-                        .filter(lot -> lot.getLocationId() == null)
-                        .filter(lot -> lot.getQuantity().signum() > 0 || lot.getReservedQuantity().signum() > 0)
-                        .sorted(Comparator.comparing(InventoryLotBalance::getLotId))
-                        .toList();
-        List<InventoryLotBalance> otherLots = allLots.stream()
-                .filter(lot -> lot.getLocationId() != null
-                        && !destinationLocationId.equals(lot.getLocationId()))
-                .filter(lot -> lot.getQuantity().signum() > 0 || lot.getReservedQuantity().signum() > 0)
-                .toList();
-
         List<InventorySerial> allSerials = serialRepository
                 .findByTenantIdAndBranchIdAndProductIdOrderBySerialNumberAsc(tenantId, branchId, productId);
-        List<InventorySerial> sourceSerials = locked != null
-                ? locked.sourceSerials()
-                : allSerials.stream()
-                        .filter(serial -> serial.getLocationId() == null)
+        return new State(
+                lockedRun ? locked.source() : balanceAt(balances, null),
+                lockedRun ? locked.destination() : balanceAt(balances, destinationLocationId),
+                balances.stream()
+                        .filter(balance -> isOutside(balance.getLocationId(), destinationLocationId))
+                        .filter(balance -> hasStock(balance.getQuantity(), balance.getReservedQuantity()))
+                        .toList(),
+                lockedRun ? locked.sourceLots() : unlocatedLots(allLots),
+                allLots.stream()
+                        .filter(lot -> isOutside(lot.getLocationId(), destinationLocationId))
+                        .filter(lot -> hasStock(lot.getQuantity(), lot.getReservedQuantity()))
+                        .toList(),
+                lockedRun ? locked.sourceSerials() : unlocatedSerials(allSerials),
+                allSerials.stream()
+                        .filter(serial -> isOutside(serial.getLocationId(), destinationLocationId))
                         .filter(serial -> OPEN_SERIAL_STATUSES.contains(serial.getStatus()))
-                        .toList();
-        List<InventorySerial> otherSerials = allSerials.stream()
-                .filter(serial -> serial.getLocationId() != null
-                        && !destinationLocationId.equals(serial.getLocationId()))
+                        .toList(),
+                lockedRun
+                        ? locked.reservations()
+                        : reservationRepository.findByScopeAndStatusOrderById(
+                                tenantId, branchId, productId, InventoryReservationStatus.active));
+    }
+
+    /** Balance de una ubicacion ({@code null} = el heredado sin ubicacion), o null si no existe. */
+    private static InventoryBalance balanceAt(List<InventoryBalance> balances, UUID locationId) {
+        return balances.stream()
+                .filter(balance -> Objects.equals(balance.getLocationId(), locationId))
+                .findFirst()
+                .orElse(null);
+    }
+
+    /** Fila con ubicacion distinta del destino (la fila sin ubicacion no cuenta como "otra"). */
+    private static boolean isOutside(UUID locationId, UUID destinationLocationId) {
+        return locationId != null && !destinationLocationId.equals(locationId);
+    }
+
+    private static boolean hasStock(BigDecimal quantity, BigDecimal reserved) {
+        return quantity.signum() > 0 || reserved.signum() > 0;
+    }
+
+    private static List<InventoryLotBalance> unlocatedLots(List<InventoryLotBalance> allLots) {
+        return allLots.stream()
+                .filter(lot -> lot.getLocationId() == null)
+                .filter(lot -> hasStock(lot.getQuantity(), lot.getReservedQuantity()))
+                .sorted(Comparator.comparing(InventoryLotBalance::getLotId))
+                .toList();
+    }
+
+    private static List<InventorySerial> unlocatedSerials(List<InventorySerial> allSerials) {
+        return allSerials.stream()
+                .filter(serial -> serial.getLocationId() == null)
                 .filter(serial -> OPEN_SERIAL_STATUSES.contains(serial.getStatus()))
                 .toList();
-
-        List<InventoryReservation> reservations = locked != null
-                ? locked.reservations()
-                : reservationRepository.findByScopeAndStatusOrderById(
-                        tenantId, branchId, productId, InventoryReservationStatus.active);
-        return new State(
-                source, destination, others, sourceLots, otherLots, sourceSerials, otherSerials, reservations);
     }
 
     /**
@@ -671,8 +836,7 @@ public class InventoryBalanceRegularizationService {
         boolean hasSourceStock = source != null
                 && (source.getQuantity().signum() > 0 || source.getReservedQuantity().signum() > 0);
         if (!hasSourceStock && state.sourceLots().isEmpty() && state.sourceSerials().isEmpty()) {
-            blockers.add(new Blocker(
-                    NOT_REQUIRED_CODE, "El producto no tiene saldo heredado sin ubicación que regularizar."));
+            blockers.add(new Blocker(NOT_REQUIRED_CODE, NOT_REQUIRED_MESSAGE));
             return new Analysis(blockers, List.of(), 0);
         }
         if (!hasSourceStock) {
@@ -700,7 +864,7 @@ public class InventoryBalanceRegularizationService {
         analyzeTraceability(product, state, blockers);
 
         List<InventoryReservation> affected = new ArrayList<>();
-        int emptyAllocations = analyzeReservations(scope, state, blockers, affected);
+        int emptyAllocations = analyzeReservations(state, blockers, affected);
         analyzePicking(tenantId, scope, affected, blockers);
         return new Analysis(blockers, affected, emptyAllocations);
     }
@@ -733,139 +897,152 @@ public class InventoryBalanceRegularizationService {
                     "Hay reservas físicas, series reservadas o en tránsito sobre el saldo sin ubicación."));
             return;
         }
-        if (lotTracked) {
-            BigDecimal lotQuantity = lots.stream()
-                    .map(InventoryLotBalance::getQuantity)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-            if (lotQuantity.compareTo(source.getQuantity()) != 0) {
-                blockers.add(new Blocker(
-                        TRACEABILITY_INCONSISTENT_CODE,
-                        "La suma de los lotes no coincide con el saldo agregado sin ubicación."));
-                return;
-            }
+        String mismatch = traceabilityMismatch(lotTracked, serialTracked, source, lots, serials);
+        if (mismatch != null) {
+            blockers.add(new Blocker(TRACEABILITY_INCONSISTENT_CODE, mismatch));
         }
-        if (serialTracked) {
-            if (BigDecimal.valueOf(serials.size()).compareTo(source.getQuantity()) != 0) {
-                blockers.add(new Blocker(
-                        TRACEABILITY_INCONSISTENT_CODE,
-                        "El número de series no coincide con el saldo agregado sin ubicación."));
-                return;
-            }
-            if (lotTracked) {
-                Map<UUID, Long> serialsByLot = serials.stream()
-                        .filter(serial -> serial.getLotId() != null)
-                        .collect(Collectors.groupingBy(InventorySerial::getLotId, Collectors.counting()));
-                boolean loose = serials.stream().anyMatch(serial -> serial.getLotId() == null);
-                boolean mismatch = lots.stream().anyMatch(lot -> lot.getQuantity().compareTo(
-                        BigDecimal.valueOf(serialsByLot.getOrDefault(lot.getLotId(), 0L))) != 0);
-                if (loose || mismatch) {
-                    blockers.add(new Blocker(
-                            TRACEABILITY_INCONSISTENT_CODE,
-                            "Las series sin ubicación no coinciden con los saldos por lote."));
-                }
-            }
+    }
+
+    /**
+     * Primera incoherencia entre el agregado y su desglose (lotes, series, series por lote), o null si cuadra.
+     * El orden de las comprobaciones es el de siempre: lotes, numero de series y series por lote.
+     */
+    private static String traceabilityMismatch(
+            boolean lotTracked,
+            boolean serialTracked,
+            InventoryBalance source,
+            List<InventoryLotBalance> lots,
+            List<InventorySerial> serials) {
+        if (lotTracked && lotQuantity(lots).compareTo(source.getQuantity()) != 0) {
+            return "La suma de los lotes no coincide con el saldo agregado sin ubicación.";
         }
+        if (!serialTracked) {
+            return null;
+        }
+        if (BigDecimal.valueOf(serials.size()).compareTo(source.getQuantity()) != 0) {
+            return "El número de series no coincide con el saldo agregado sin ubicación.";
+        }
+        if (lotTracked && !serialsMatchLots(lots, serials)) {
+            return "Las series sin ubicación no coinciden con los saldos por lote.";
+        }
+        return null;
+    }
+
+    private static BigDecimal lotQuantity(List<InventoryLotBalance> lots) {
+        return lots.stream().map(InventoryLotBalance::getQuantity).reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    /** Todas las series tienen lote y cada lote tiene tantas series como cantidad. */
+    private static boolean serialsMatchLots(List<InventoryLotBalance> lots, List<InventorySerial> serials) {
+        Map<UUID, Long> serialsByLot = serials.stream()
+                .filter(serial -> serial.getLotId() != null)
+                .collect(Collectors.groupingBy(InventorySerial::getLotId, Collectors.counting()));
+        boolean loose = serials.stream().anyMatch(serial -> serial.getLotId() == null);
+        boolean mismatch = lots.stream().anyMatch(lot -> lot.getQuantity().compareTo(
+                BigDecimal.valueOf(serialsByLot.getOrDefault(lot.getLotId(), 0L))) != 0);
+        return !loose && !mismatch;
     }
 
     /** Devuelve cuantas reservas tienen allocations vacios; llena {@code affected} con las que cambian. */
     private int analyzeReservations(
-            Scope scope, State state, List<Blocker> blockers, List<InventoryReservation> affected) {
+            State state, List<Blocker> blockers, List<InventoryReservation> affected) {
         UUID sourceId = state.source().getId();
         UUID destinationId = state.destination() == null ? null : state.destination().getId();
-        BigDecimal reservedOnSource = BigDecimal.ZERO;
-        BigDecimal reservedOnDestination = BigDecimal.ZERO;
-        int emptyAllocations = 0;
-        boolean invalid = false;
-        boolean otherBalance = false;
+        ReservationTally tally = new ReservationTally();
         for (InventoryReservation reservation : state.reservations()) {
-            Parsed parsed = parse(reservation);
-            if (!parsed.valid()) {
-                invalid = true;
-                continue;
-            }
-            if (parsed.entries().isEmpty()) {
-                emptyAllocations++;
-                reservedOnSource = reservedOnSource.add(reservation.getQuantity());
-                affected.add(reservation);
-                continue;
-            }
-            boolean touchesSource = false;
-            for (Entry entry : parsed.entries()) {
-                if (entry.balanceId().equals(sourceId)) {
-                    touchesSource = true;
-                    reservedOnSource = reservedOnSource.add(entry.reserved());
-                } else if (entry.balanceId().equals(destinationId)) {
-                    reservedOnDestination = reservedOnDestination.add(entry.reserved());
-                } else {
-                    otherBalance = true;
-                }
-            }
-            if (touchesSource) {
+            if (accumulate(reservation, sourceId, destinationId, tally)) {
                 affected.add(reservation);
             }
         }
-        if (invalid) {
+        addReservationBlockers(tally, state, blockers);
+        return tally.emptyAllocations;
+    }
+
+    /** Acumulado de la revision de reservas activas (mutable, de uso local). */
+    private static final class ReservationTally {
+        private BigDecimal reservedOnSource = BigDecimal.ZERO;
+        private BigDecimal reservedOnDestination = BigDecimal.ZERO;
+        private int emptyAllocations;
+        private boolean invalid;
+        private boolean otherBalance;
+
+        /** Suma la asignacion al balance que corresponde; true si era la del balance sin ubicacion. */
+        boolean add(Entry entry, UUID sourceId, UUID destinationId) {
+            if (entry.balanceId().equals(sourceId)) {
+                reservedOnSource = reservedOnSource.add(entry.reserved());
+                return true;
+            }
+            if (entry.balanceId().equals(destinationId)) {
+                reservedOnDestination = reservedOnDestination.add(entry.reserved());
+            } else {
+                otherBalance = true;
+            }
+            return false;
+        }
+    }
+
+    /** true si la reserva cambia con la consolidacion: usa el balance sin ubicacion (explicita o vacia). */
+    private boolean accumulate(
+            InventoryReservation reservation, UUID sourceId, UUID destinationId, ReservationTally tally) {
+        Parsed parsed = parse(reservation);
+        if (!parsed.valid()) {
+            tally.invalid = true;
+            return false;
+        }
+        if (parsed.entries().isEmpty()) {
+            tally.emptyAllocations++;
+            tally.reservedOnSource = tally.reservedOnSource.add(reservation.getQuantity());
+            return true;
+        }
+        boolean touchesSource = false;
+        for (Entry entry : parsed.entries()) {
+            // Operador no cortocircuitante: toda asignacion debe sumarse aunque una anterior ya toque el origen.
+            touchesSource |= tally.add(entry, sourceId, destinationId);
+        }
+        return touchesSource;
+    }
+
+    private static void addReservationBlockers(
+            ReservationTally tally, State state, List<Blocker> blockers) {
+        if (tally.invalid) {
             blockers.add(new Blocker(
                     RESERVATION_INVALID_CODE,
                     "Hay reservas activas con allocations inválidas, parcialmente consumidas o sin cantidad."));
         }
-        if (otherBalance) {
+        if (tally.otherBalance) {
             blockers.add(new Blocker(
                     RESERVATION_OTHER_BALANCE_CODE,
                     "Hay reservas activas asignadas a un balance distinto del heredado y del destino."));
         }
-        if (!invalid && !otherBalance) {
-            if (reservedOnSource.compareTo(state.source().getReservedQuantity()) != 0) {
-                blockers.add(new Blocker(
-                        RESERVATION_DRIFT_CODE,
-                        "Las reservas activas no explican el reservado del balance sin ubicación."));
-            }
-            BigDecimal destinationReserved = reserved(state.destination());
-            if (reservedOnDestination.compareTo(destinationReserved) != 0) {
-                blockers.add(new Blocker(
-                        RESERVATION_DRIFT_CODE,
-                        "Las reservas activas no explican el reservado del balance destino."));
-            }
+        if (tally.invalid || tally.otherBalance) {
+            return;
         }
-        return emptyAllocations;
+        if (tally.reservedOnSource.compareTo(state.source().getReservedQuantity()) != 0) {
+            blockers.add(new Blocker(
+                    RESERVATION_DRIFT_CODE,
+                    "Las reservas activas no explican el reservado del balance sin ubicación."));
+        }
+        if (tally.reservedOnDestination.compareTo(reserved(state.destination())) != 0) {
+            blockers.add(new Blocker(
+                    RESERVATION_DRIFT_CODE,
+                    "Las reservas activas no explican el reservado del balance destino."));
+        }
     }
 
     private Parsed parse(InventoryReservation reservation) {
-        JsonNode root;
-        try {
-            root = jsonMapper.readTree(reservation.getAllocations());
-        } catch (JacksonException exception) {
-            return Parsed.invalid();
-        }
+        JsonNode root = readAllocations(reservation);
         if (root == null || !root.isArray()) {
             return Parsed.invalid();
         }
         List<Entry> entries = new ArrayList<>();
         BigDecimal total = BigDecimal.ZERO;
         for (JsonNode node : root) {
-            if (node == null || !node.isObject()) {
+            Entry entry = parseEntry(node);
+            if (entry == null) {
                 return Parsed.invalid();
             }
-            JsonNode balance = node.get("balanceId");
-            JsonNode reserved = node.get("reservedQuantity");
-            JsonNode consumed = node.get("consumedQuantity");
-            if (balance == null || balance.isNull() || reserved == null || reserved.isNull()) {
-                return Parsed.invalid();
-            }
-            try {
-                UUID balanceId = UUID.fromString(balance.asText());
-                BigDecimal reservedQuantity = new BigDecimal(reserved.asText());
-                BigDecimal consumedQuantity = consumed == null || consumed.isNull()
-                        ? BigDecimal.ZERO
-                        : new BigDecimal(consumed.asText());
-                if (reservedQuantity.signum() <= 0 || consumedQuantity.signum() != 0) {
-                    return Parsed.invalid();
-                }
-                entries.add(new Entry(balanceId, reservedQuantity));
-                total = total.add(reservedQuantity);
-            } catch (IllegalArgumentException exception) {
-                return Parsed.invalid();
-            }
+            entries.add(entry);
+            total = total.add(entry.reserved());
         }
         if (!entries.isEmpty() && total.compareTo(reservation.getQuantity()) != 0) {
             return Parsed.invalid();
@@ -873,12 +1050,52 @@ public class InventoryBalanceRegularizationService {
         return new Parsed(true, List.copyOf(entries));
     }
 
+    /** El JSON de allocations, o null si no es legible. */
+    private JsonNode readAllocations(InventoryReservation reservation) {
+        try {
+            return jsonMapper.readTree(reservation.getAllocations());
+        } catch (JacksonException exception) {
+            return null;
+        }
+    }
+
+    /**
+     * Una asignacion activa valida: objeto con {@code balanceId} UUID, {@code reservedQuantity} positiva y sin
+     * consumo (una reserva activa nunca esta consumida a medias). Null si no cumple.
+     */
+    private static Entry parseEntry(JsonNode node) {
+        if (node == null || !node.isObject()) {
+            return null;
+        }
+        JsonNode balance = node.get(FIELD_BALANCE_ID);
+        JsonNode reserved = node.get(FIELD_RESERVED_QUANTITY);
+        JsonNode consumed = node.get(FIELD_CONSUMED_QUANTITY);
+        if (isAbsent(balance) || isAbsent(reserved)) {
+            return null;
+        }
+        try {
+            UUID balanceId = UUID.fromString(balance.asText());
+            BigDecimal reservedQuantity = new BigDecimal(reserved.asText());
+            BigDecimal consumedQuantity =
+                    isAbsent(consumed) ? BigDecimal.ZERO : new BigDecimal(consumed.asText());
+            if (reservedQuantity.signum() <= 0 || consumedQuantity.signum() != 0) {
+                return null;
+            }
+            return new Entry(balanceId, reservedQuantity);
+        } catch (IllegalArgumentException exception) {
+            return null;
+        }
+    }
+
+    private static boolean isAbsent(JsonNode node) {
+        return node == null || node.isNull();
+    }
+
     private void analyzePicking(
             UUID tenantId, Scope scope, List<InventoryReservation> affected, List<Blocker> blockers) {
         if (affected.isEmpty()) {
             return;
         }
-        UUID branchId = scope.location().getBranchId();
         List<Object[]> rows = entityManager.createQuery(
                         "select item, picking from PickingItem item, PickingOrder picking "
                                 + "where item.pickingOrderId = picking.id "
@@ -887,7 +1104,7 @@ public class InventoryBalanceRegularizationService {
                                 + "and picking.status <> :cancelled",
                         Object[].class)
                 .setParameter("tenantId", tenantId)
-                .setParameter("branchId", branchId)
+                .setParameter("branchId", scope.location().getBranchId())
                 .setParameter("productId", scope.product().getId())
                 .setParameter("cancelled", PickingStatus.cancelled)
                 .getResultList();
@@ -898,16 +1115,9 @@ public class InventoryBalanceRegularizationService {
             for (Object[] row : rows) {
                 PickingItem item = (PickingItem) row[0];
                 PickingOrder picking = (PickingOrder) row[1];
-                if (!item.getSourceLineId().equals(reservation.getSourceLineId())
-                        || !picking.getSourceId().equals(reservation.getSourceId())
-                        || !picking.getSourceType().name().equals(reservation.getSourceType().name())) {
-                    continue;
-                }
-                if (hasPhysicalSelection(item.getPickedTraces())) {
-                    physical = true;
-                }
-                if (item.getLocationId() != null && !destination.equals(item.getLocationId())) {
-                    location = true;
+                if (belongsToReservation(item, picking, reservation)) {
+                    physical |= hasPhysicalSelection(item.getPickedTraces());
+                    location |= item.getLocationId() != null && !destination.equals(item.getLocationId());
                 }
             }
         }
@@ -922,6 +1132,14 @@ public class InventoryBalanceRegularizationService {
                     "Un Picking en curso tiene una ubicación distinta del destino para reservas del saldo "
                             + "sin ubicación."));
         }
+    }
+
+    /** La linea de Picking corresponde a la reserva: misma linea, misma fuente y mismo tipo de fuente. */
+    private static boolean belongsToReservation(
+            PickingItem item, PickingOrder picking, InventoryReservation reservation) {
+        return item.getSourceLineId().equals(reservation.getSourceLineId())
+                && picking.getSourceId().equals(reservation.getSourceId())
+                && picking.getSourceType().name().equals(reservation.getSourceType().name());
     }
 
     private static boolean hasPhysicalSelection(String pickedTraces) {
@@ -941,17 +1159,17 @@ public class InventoryBalanceRegularizationService {
         if (root.isEmpty()) {
             ObjectNode entry = jsonMapper.createObjectNode();
             entry.put("id", UUID.randomUUID().toString());
-            entry.put("balanceId", destinationId.toString());
-            entry.put("locationId", destinationLocationId.toString());
-            entry.put("reservedQuantity", reservation.getQuantity());
-            entry.put("consumedQuantity", BigDecimal.ZERO.setScale(3));
+            entry.put(FIELD_BALANCE_ID, destinationId.toString());
+            entry.put(FIELD_LOCATION_ID, destinationLocationId.toString());
+            entry.put(FIELD_RESERVED_QUANTITY, reservation.getQuantity());
+            entry.put(FIELD_CONSUMED_QUANTITY, BigDecimal.ZERO.setScale(3));
             result.add(entry);
         } else {
             for (JsonNode node : root) {
                 ObjectNode copy = ((ObjectNode) node).deepCopy();
-                if (sourceId.toString().equals(copy.get("balanceId").asText())) {
-                    copy.put("balanceId", destinationId.toString());
-                    copy.put("locationId", destinationLocationId.toString());
+                if (sourceId.toString().equals(copy.get(FIELD_BALANCE_ID).asText())) {
+                    copy.put(FIELD_BALANCE_ID, destinationId.toString());
+                    copy.put(FIELD_LOCATION_ID, destinationLocationId.toString());
                 }
                 result.add(copy);
             }
@@ -1081,8 +1299,15 @@ public class InventoryBalanceRegularizationService {
         return sha256(String.join("\n", parts));
     }
 
+    /**
+     * Forma canonica de una cantidad para las huellas: sin ceros finales y sin notacion cientifica; null se
+     * trata como cero. El resultado coincide exactamente con el que ya se persistio en las huellas anteriores.
+     */
     private static String plain(BigDecimal value) {
-        return (value == null ? BigDecimal.ZERO : value).stripTrailingZeros().toPlainString();
+        if (value == null) {
+            return BigDecimal.ZERO.stripTrailingZeros().toPlainString();
+        }
+        return value.stripTrailingZeros().toPlainString();
     }
 
     private static String sha256(String value) {
@@ -1108,7 +1333,13 @@ public class InventoryBalanceRegularizationService {
         }
         Product product = productRepository.findByTenantIdAndId(tenantId, productId)
                 .orElseThrow(() -> new BusinessException(
-                        HttpStatus.NOT_FOUND, "PRODUCT_NOT_FOUND", "Producto no encontrado."));
+                        HttpStatus.NOT_FOUND, PRODUCT_NOT_FOUND_CODE, PRODUCT_NOT_FOUND_MESSAGE));
+        requireEligibleProduct(product);
+        return product;
+    }
+
+    /** Solo productos fisicos con control de inventario se regularizan (400 en otro caso). */
+    private static void requireEligibleProduct(Product product) {
         if (product.getProductType() != ProductType.physical
                 || !Boolean.TRUE.equals(product.getTrackingStock())) {
             throw new BusinessException(
@@ -1116,7 +1347,15 @@ public class InventoryBalanceRegularizationService {
                     PRODUCT_NOT_ELIGIBLE_CODE,
                     "Solo un producto físico con control de inventario puede regularizarse.");
         }
-        return product;
+    }
+
+    private static void requireLocationInBranch(Location location, UUID branchId) {
+        if (!branchId.equals(location.getBranchId())) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "LOCATION_BRANCH_MISMATCH",
+                    "La ubicación no pertenece a la sucursal indicada.");
+        }
     }
 
     /** Ubicacion asignada leida como escalar (siempre fresca, aunque la entidad ya este cargada). */
@@ -1159,19 +1398,26 @@ public class InventoryBalanceRegularizationService {
     static boolean isLockWaitFailure(Throwable error) {
         Throwable current = error;
         for (int depth = 0; current != null && depth < 16; depth++) {
-            if (current instanceof PessimisticLockingFailureException
-                    || current instanceof PessimisticLockException
-                    || current instanceof LockTimeoutException) {
-                return true;
-            }
-            if (current instanceof SQLException sql
-                    && (SQLSTATE_LOCK_NOT_AVAILABLE.equals(sql.getSQLState())
-                            || SQLSTATE_DEADLOCK_DETECTED.equals(sql.getSQLState()))) {
+            if (isLockWaitType(current) || isLockWaitSqlState(current)) {
                 return true;
             }
             current = current.getCause() == current ? null : current.getCause();
         }
         return false;
+    }
+
+    private static boolean isLockWaitType(Throwable error) {
+        return error instanceof PessimisticLockingFailureException
+                || error instanceof PessimisticLockException
+                || error instanceof LockTimeoutException;
+    }
+
+    private static boolean isLockWaitSqlState(Throwable error) {
+        if (!(error instanceof SQLException sql)) {
+            return false;
+        }
+        String state = sql.getSQLState();
+        return SQLSTATE_LOCK_NOT_AVAILABLE.equals(state) || SQLSTATE_DEADLOCK_DETECTED.equals(state);
     }
 
     private Scope requireScope(
@@ -1180,13 +1426,8 @@ public class InventoryBalanceRegularizationService {
         Product product = requireBranchAndProduct(actor, branchId, productId);
         Location location = locationRepository.findByTenantIdAndId(tenantId, locationId)
                 .orElseThrow(() -> new BusinessException(
-                        HttpStatus.NOT_FOUND, "LOCATION_NOT_FOUND", "Ubicación no encontrada."));
-        if (!branchId.equals(location.getBranchId())) {
-            throw new BusinessException(
-                    HttpStatus.BAD_REQUEST,
-                    "LOCATION_BRANCH_MISMATCH",
-                    "La ubicación no pertenece a la sucursal indicada.");
-        }
+                        HttpStatus.NOT_FOUND, LOCATION_NOT_FOUND_CODE, LOCATION_NOT_FOUND_MESSAGE));
+        requireLocationInBranch(location, branchId);
         return new Scope(product, location);
     }
 

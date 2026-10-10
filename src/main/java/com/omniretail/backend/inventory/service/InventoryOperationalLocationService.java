@@ -821,10 +821,15 @@ public class InventoryOperationalLocationService {
                 .isPresent();
     }
 
+    /**
+     * Ubicacion asignada, leida como escalar: la consulta siempre llega a la base (y vacia antes los cambios
+     * pendientes del propio contexto, salvo en transacciones de solo lectura, que no los tienen). Una
+     * consulta de entidad devolveria la instancia ya gestionada, con el valor anterior a una actualizacion
+     * nativa hecha en la misma transaccion (p. ej. la asignacion inicial de la regularizacion).
+     */
     private UUID assignedLocationId(UUID tenantId, UUID branchId, UUID productId) {
         return settingsRepository
-                .findByTenantIdAndBranchIdAndProductId(tenantId, branchId, productId)
-                .map(ProductInventorySettings::getDefaultLocationId)
+                .findDefaultLocationId(tenantId, branchId, productId)
                 .orElse(null);
     }
 

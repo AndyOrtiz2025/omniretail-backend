@@ -336,23 +336,219 @@ class InventoryBalanceRegularizationAssignmentConcurrencyTest {
         assertThat(assignedInDb(fixture)).isEqualTo(shelf);
     }
 
+    /** Misma clave y mismo cuerpo, enviados a la vez: se aplica una vez y el otro recibe lo registrado. */
+    @Test
+    void theSameKeyAndBodySentTogetherIsAppliedOnceAndReplayedForTheOther() throws Exception {
+        Fixture fixture = fixture();
+        UUID shelf = location(fixture);
+        UUID nullBalance = balance(fixture, null, "10.000", "0.000");
+        RegularizeLegacyBalanceRequest request = request(fixture, shelf, UUID.randomUUID());
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        List<Outcome> outcomes = new ArrayList<>();
+        try {
+            Future<Outcome> first = pool.submit(() -> attempt(ready, start, request));
+            Future<Outcome> second = pool.submit(() -> attempt(ready, start, request));
+            await(ready);
+            start.countDown();
+            outcomes.add(first.get(30, TimeUnit.SECONDS));
+            outcomes.add(second.get(30, TimeUnit.SECONDS));
+        } finally {
+            start.countDown();
+            pool.shutdownNow();
+        }
+
+        assertThat(outcomes).allMatch(Outcome::succeeded);
+        assertThat(outcomes).filteredOn(Outcome::idempotent).hasSize(1);
+        assertThat(outcomes.get(0).regularizationId()).isEqualTo(outcomes.get(1).regularizationId());
+        assertBalance(nullBalance, "0.000", "0.000");
+        assertBalance(balanceId(fixture, shelf), "10.000", "0.000");
+        assertThat(assignedInDb(fixture)).isEqualTo(shelf);
+        assertThat(count("SELECT COUNT(*) FROM inventory_balance_regularizations WHERE tenant_id = ?",
+                        fixture.tenantId()))
+                .isOne();
+        assertThat(count("SELECT COUNT(*) FROM inventory_movements WHERE tenant_id = ?", fixture.tenantId()))
+                .isOne();
+    }
+
+    /**
+     * Misma clave con otro destino, a la vez: el que pierde recibe {@code KEY_REUSED} (la clave ya esta
+     * registrada con otra solicitud), no {@code ASSIGNMENT_CONFLICT}: el replay se evalua antes que la politica.
+     */
+    @Test
+    void theSameKeyWithAnotherDestinationIsRejectedAsKeyReusedNotAsAssignmentConflict() throws Exception {
+        Fixture fixture = fixture();
+        UUID shelfA = location(fixture);
+        UUID shelfB = location(fixture);
+        UUID nullBalance = balance(fixture, null, "10.000", "0.000");
+        UUID key = UUID.randomUUID();
+        RegularizeLegacyBalanceRequest toA = request(fixture, shelfA, key);
+        RegularizeLegacyBalanceRequest toB = request(fixture, shelfB, key);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        List<Outcome> outcomes = new ArrayList<>();
+        try {
+            Future<Outcome> first = pool.submit(() -> attempt(ready, start, toA));
+            Future<Outcome> second = pool.submit(() -> attempt(ready, start, toB));
+            await(ready);
+            start.countDown();
+            outcomes.add(first.get(30, TimeUnit.SECONDS));
+            outcomes.add(second.get(30, TimeUnit.SECONDS));
+        } finally {
+            start.countDown();
+            pool.shutdownNow();
+        }
+
+        assertThat(outcomes).filteredOn(Outcome::succeeded).hasSize(1);
+        assertThat(outcomes).filteredOn(outcome -> !outcome.succeeded())
+                .singleElement()
+                .extracting(Outcome::code)
+                .isEqualTo(InventoryBalanceRegularizationService.IDEMPOTENCY_KEY_REUSED_CODE);
+        UUID winner = assignedInDb(fixture);
+        assertThat(winner).isIn(shelfA, shelfB);
+        UUID loser = winner.equals(shelfA) ? shelfB : shelfA;
+        assertBalance(nullBalance, "0.000", "0.000");
+        assertBalance(balanceId(fixture, winner), "10.000", "0.000");
+        assertThat(count("SELECT COUNT(*) FROM inventory_balances WHERE tenant_id = ? AND location_id = ?",
+                        fixture.tenantId(), loser))
+                .isZero();
+        assertThat(count("SELECT COUNT(*) FROM inventory_balance_regularizations WHERE tenant_id = ?",
+                        fixture.tenantId()))
+                .isOne();
+    }
+
+    /** Distinta clave y otro destino con la ubicacion ya asignada: {@code ASSIGNMENT_CONFLICT}. */
+    @Test
+    void aDifferentKeyToAnotherDestinationAfterTheAssignmentIsAnAssignmentConflict() throws Exception {
+        Fixture fixture = fixture();
+        UUID shelfA = location(fixture);
+        UUID shelfB = location(fixture);
+        UUID nullBalance = balance(fixture, null, "10.000", "0.000");
+        RegularizeLegacyBalanceRequest toA = request(fixture, shelfA, UUID.randomUUID());
+        RegularizeLegacyBalanceRequest toB = request(fixture, shelfB, UUID.randomUUID());
+        CountDownLatch applied = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        Future<Outcome> loser;
+        try {
+            Future<?> holder = pool.submit(() -> new TransactionTemplate(transactionManager)
+                    .executeWithoutResult(status -> {
+                        regularizationService.regularize(toA);
+                        applied.countDown();
+                        await(release);
+                    }));
+            await(applied);
+            loser = pool.submit(() -> attempt(new CountDownLatch(1), new CountDownLatch(0), toB));
+            // El segundo espera el producto (NO KEY UPDATE) retenido por la primera asignacion.
+            awaitBlockedSessions(1);
+            release.countDown();
+            holder.get(20, TimeUnit.SECONDS);
+            Outcome outcome = loser.get(20, TimeUnit.SECONDS);
+            assertThat(outcome.succeeded()).isFalse();
+            assertThat(outcome.code())
+                    .isEqualTo(InventoryBalanceRegularizationService.ASSIGNMENT_CONFLICT_CODE);
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+
+        assertThat(assignedInDb(fixture)).isEqualTo(shelfA);
+        assertBalance(nullBalance, "0.000", "0.000");
+        assertBalance(balanceId(fixture, shelfA), "10.000", "0.000");
+    }
+
+    /** Un producto que deja de ser elegible mientras se espera el bloqueo no se regulariza con datos previos. */
+    @Test
+    void aProductNoLongerEligibleWhileWaitingForTheLockIsRejected() throws Exception {
+        Fixture fixture = fixture();
+        UUID shelf = location(fixture);
+        UUID nullBalance = balance(fixture, null, "10.000", "0.000");
+        RegularizeLegacyBalanceRequest request = request(fixture, shelf, UUID.randomUUID());
+        Outcome outcome = executeWhileAnotherTransactionUpdatesTheProduct(
+                fixture, request, "UPDATE products SET tracking_stock = false WHERE id = ?");
+
+        assertThat(outcome.succeeded()).isFalse();
+        assertThat(outcome.code()).isEqualTo(InventoryBalanceRegularizationService.PRODUCT_NOT_ELIGIBLE_CODE);
+        assertThat(assignedInDb(fixture)).isNull();
+        assertBalance(nullBalance, "10.000", "0.000");
+        assertThat(count("SELECT COUNT(*) FROM inventory_balance_regularizations WHERE tenant_id = ?",
+                        fixture.tenantId()))
+                .isZero();
+    }
+
+    /** Los indicadores de trazabilidad se leen con el bloqueo ya tomado, no de la lectura previa. */
+    @Test
+    void aTrackingFlagChangedWhileWaitingForTheLockIsHonoured() throws Exception {
+        Fixture fixture = fixture();
+        UUID shelf = location(fixture);
+        UUID nullBalance = balance(fixture, null, "10.000", "0.000");
+        RegularizeLegacyBalanceRequest request = request(fixture, shelf, UUID.randomUUID());
+        Outcome outcome = executeWhileAnotherTransactionUpdatesTheProduct(
+                fixture, request, "UPDATE products SET tracking_lot = true WHERE id = ?");
+
+        // Ya trazable por lote y sin desglose de lotes: no se regulariza como si no lo fuera.
+        assertThat(outcome.succeeded()).isFalse();
+        assertThat(outcome.code())
+                .isEqualTo(InventoryBalanceRegularizationService.TRACEABILITY_INCONSISTENT_CODE);
+        assertThat(assignedInDb(fixture)).isNull();
+        assertBalance(nullBalance, "10.000", "0.000");
+    }
+
     // ------------------------------------------------------------ utilidades
 
-    private record Outcome(boolean succeeded, String code) {}
+    /**
+     * Una transaccion actualiza el producto y lo retiene; la regularizacion (que ya leyo el producto) espera su
+     * bloqueo; al confirmarse el cambio la regularizacion reanuda y debe ver el producto vigente.
+     */
+    private Outcome executeWhileAnotherTransactionUpdatesTheProduct(
+            Fixture fixture, RegularizeLegacyBalanceRequest request, String updateSql) throws Exception {
+        CountDownLatch updated = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> editor = pool.submit(() -> new TransactionTemplate(transactionManager)
+                    .executeWithoutResult(status -> {
+                        jdbc.update(updateSql, fixture.productId());
+                        updated.countDown();
+                        await(release);
+                    }));
+            await(updated);
+            Future<Outcome> waiting = pool.submit(() -> attempt(new CountDownLatch(1), new CountDownLatch(0), request));
+            awaitBlockedSessions(1);
+            release.countDown();
+            editor.get(20, TimeUnit.SECONDS);
+            return waiting.get(20, TimeUnit.SECONDS);
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    private record Outcome(boolean succeeded, boolean idempotent, UUID regularizationId, String code) {}
 
     private Outcome attempt(
             CountDownLatch ready, CountDownLatch start, RegularizeLegacyBalanceRequest request) {
         ready.countDown();
         await(start);
         try {
-            regularizationService.regularize(request);
-            return new Outcome(true, null);
+            LegacyBalanceRegularizationResultResponse result = regularizationService.regularize(request);
+            return new Outcome(true, result.idempotent(), result.regularizationId(), null);
         } catch (BusinessException exception) {
-            return new Outcome(false, exception.getCode());
+            return new Outcome(false, false, null, exception.getCode());
         }
     }
 
+    private long count(String sql, Object... arguments) {
+        return jdbc.queryForObject(sql, Long.class, arguments);
+    }
+
     private RegularizeLegacyBalanceRequest request(Fixture fixture, UUID location) {
+        return request(fixture, location, UUID.randomUUID());
+    }
+
+    private RegularizeLegacyBalanceRequest request(Fixture fixture, UUID location, UUID key) {
         given(currentUser.require()).willReturn(new AuthenticatedUser(
                 fixture.userId(), fixture.tenantId(), UserType.employee, ROLE_ID, fixture.branchId(),
                 UUID.randomUUID()));
@@ -366,7 +562,7 @@ class InventoryBalanceRegularizationAssignmentConcurrencyTest {
         LegacyBalanceRegularizationPreviewResponse preview = regularizationService.preview(
                 fixture.branchId(), fixture.productId(), location, true);
         return new RegularizeLegacyBalanceRequest(
-                fixture.branchId(), fixture.productId(), location, UUID.randomUUID(),
+                fixture.branchId(), fixture.productId(), location, key,
                 "Asignacion inicial concurrente", preview.sourceQuantity(), preview.sourceReservedQuantity(),
                 preview.destinationQuantity(), preview.snapshotFingerprint(), true);
     }
