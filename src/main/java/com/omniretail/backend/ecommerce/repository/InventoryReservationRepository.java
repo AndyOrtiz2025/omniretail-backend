@@ -37,6 +37,21 @@ public interface InventoryReservationRepository extends JpaRepository<InventoryR
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     Optional<InventoryReservation> findByTenantIdAndId(UUID tenantId, UUID id);
 
+    /** Reservas activas del producto en la sucursal, ordenadas por id (lectura sin bloqueo). */
+    @Query("""
+            select reservation from InventoryReservation reservation
+            where reservation.tenantId = :tenantId
+              and reservation.branchId = :branchId
+              and reservation.productId = :productId
+              and reservation.status = :status
+            order by reservation.id
+            """)
+    List<InventoryReservation> findByScopeAndStatusOrderById(
+            @Param("tenantId") UUID tenantId,
+            @Param("branchId") UUID branchId,
+            @Param("productId") UUID productId,
+            @Param("status") InventoryReservationStatus status);
+
     @Query("""
             select reservation from InventoryReservation reservation
             where reservation.tenantId = :tenantId

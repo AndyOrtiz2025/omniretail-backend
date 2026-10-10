@@ -8,9 +8,11 @@ import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.repository.LocationRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.inventory.entity.InventoryBalance;
+import com.omniretail.backend.inventory.entity.InventoryBalanceRegularization;
 import com.omniretail.backend.inventory.entity.InventoryMovement;
 import com.omniretail.backend.inventory.entity.InventoryMovementType;
 import com.omniretail.backend.inventory.entity.ProductInventorySettings;
+import com.omniretail.backend.inventory.repository.InventoryBalanceRegularizationRepository;
 import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
 import com.omniretail.backend.inventory.repository.InventoryLotBalanceRepository;
 import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
@@ -19,8 +21,10 @@ import com.omniretail.backend.inventory.repository.ProductInventorySettingsRepos
 import com.omniretail.backend.shared.exception.BusinessException;
 import jakarta.persistence.EntityManager;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -102,6 +106,7 @@ public class InventoryOperationalLocationService {
     private final InventoryLotBalanceRepository lotBalanceRepository;
     private final InventorySerialRepository serialRepository;
     private final InventoryMovementRepository movementRepository;
+    private final InventoryBalanceRegularizationRepository regularizationRepository;
     private final LocationRepository locationRepository;
     private final ProductRepository productRepository;
     private final EntityManager entityManager;
@@ -201,6 +206,49 @@ public class InventoryOperationalLocationService {
                 .setParameter("tenantId", tenantId)
                 .getResultList();
         return !rows.isEmpty() && Boolean.TRUE.equals(rows.get(0));
+    }
+
+    /**
+     * Alcance de bloqueo de las operaciones que mueven saldo entre balances sin pasar por la politica de
+     * entradas (regularizaciones): toma la configuracion y el producto en modo compartido, el mismo prefijo de
+     * orden que reservas, ventas y recepciones. Nunca toma el producto en modo exclusivo. Devuelve si las
+     * ubicaciones estan habilitadas; con la capacidad apagada no toma el bloqueo del producto.
+     */
+    @Transactional
+    public boolean lockDecisionScope(UUID tenantId, UUID productId) {
+        boolean enabled = locationsEnabledForDecision(tenantId);
+        if (enabled) {
+            lockProductShared(tenantId, productId);
+        }
+        return enabled;
+    }
+
+    /**
+     * Alcance de bloqueo de la asignacion inicial de ubicacion (regularizacion con {@code assignDestination}):
+     * configuracion en modo compartido y producto en {@code FOR NO KEY UPDATE}. Devuelve si las ubicaciones
+     * estan habilitadas; con la capacidad apagada no toma el bloqueo del producto.
+     *
+     * <p>Por que {@code NO KEY UPDATE} y no el {@code FOR UPDATE} del cambio de asignacion: conflicta con el
+     * {@code FOR SHARE} de todas las decisiones (ventas, reservas, entradas, restauraciones, regularizaciones),
+     * asi que ninguna puede leer la asignacion vieja mientras se asigna; pero NO conflicta con el
+     * {@code FOR KEY SHARE} que toma la clave foranea de cada movimiento insertado. Quien mantiene un balance
+     * bloqueado (despacho, consumo o cancelacion de reservas) y espera ese {@code KEY SHARE} no queda
+     * esperando a esta transaccion, que a su vez espera esos balances: sin ciclo. Orden de bloqueos intacto:
+     * configuracion -> producto -> balance. Debe tomarse antes de cualquier balance.
+     */
+    @Transactional
+    public boolean lockAssignmentScope(UUID tenantId, UUID productId) {
+        boolean enabled = locationsEnabledForDecision(tenantId);
+        if (enabled) {
+            lockProductNoKeyUpdate(tenantId, productId);
+        }
+        return enabled;
+    }
+
+    /** Ubicacion asignada al producto en la sucursal, o null. Solo lectura, sin bloqueos. */
+    @Transactional(readOnly = true)
+    public UUID assignedLocation(UUID tenantId, UUID branchId, UUID productId) {
+        return assignedLocationId(tenantId, branchId, productId);
     }
 
     /** Sin configuracion del negocio se considera deshabilitado (comportamiento heredado). */
@@ -518,6 +566,24 @@ public class InventoryOperationalLocationService {
     }
 
     /**
+     * Bloqueo de la fila del producto en modo {@code FOR NO KEY UPDATE}: excluye a quien tiene o pide
+     * {@code FOR SHARE} (las decisiones) y a otro cambio de asignacion, sin chocar con el {@code KEY SHARE}
+     * de las claves foraneas. Tambien valida que el producto exista para el tenant.
+     */
+    private void lockProductNoKeyUpdate(UUID tenantId, UUID productId) {
+        List<?> rows = entityManager
+                .createNativeQuery(
+                        "SELECT id FROM products WHERE tenant_id = :tenantId AND id = :productId "
+                                + "FOR NO KEY UPDATE")
+                .setParameter("tenantId", tenantId)
+                .setParameter("productId", productId)
+                .getResultList();
+        if (rows.isEmpty()) {
+            throw productNotFound();
+        }
+    }
+
+    /**
      * Bloqueo compartido de la fila del producto (FOR SHARE): conflicta con el cambio de ubicacion asignada y
      * con las ediciones de catalogo, pero no con otras decisiones ni con el KEY SHARE que toma una clave
      * foranea al insertar movimientos. Tambien valida que el producto exista para el tenant.
@@ -647,12 +713,70 @@ public class InventoryOperationalLocationService {
                     "La cantidad a restaurar supera lo descontado por la venta original.");
         }
         UUID origin = locations.iterator().next();
+        if (origin == null) {
+            RestoreOrigin regularized = regularizedOrigin(tenantId, branchId, productId, sold);
+            if (regularized != null) {
+                return regularized;
+            }
+        }
         if (origin != null && !isExistingBranchLocation(tenantId, branchId, origin)) {
             return RestoreOrigin.failed(
                     RESTORE_ORIGIN_INVALID_CODE,
                     "La ubicación de origen de la venta ya no existe en la sucursal.");
         }
         return RestoreOrigin.of(origin);
+    }
+
+    /**
+     * Una salida historica del balance sin ubicacion no puede volver a ese balance si el saldo heredado fue
+     * regularizado despues de la venta: recrearia stock en una ubicacion que ya no es operativa. El destino
+     * solo se acepta cuando el historial lo demuestra sin ambiguedad: todas las regularizaciones posteriores a
+     * la venta apuntan a la misma ubicacion, que sigue siendo la asignada y esta activa. Devuelve {@code null}
+     * si no hubo regularizacion posterior (el origen sigue siendo el balance sin ubicacion).
+     */
+    private RestoreOrigin regularizedOrigin(
+            UUID tenantId, UUID branchId, UUID productId, List<InventoryMovement> sold) {
+        Instant soldAt = sold.stream()
+                .map(InventoryMovement::getCreatedAt)
+                .filter(Objects::nonNull)
+                .max(Comparator.naturalOrder())
+                .orElse(null);
+        if (soldAt == null) {
+            return RestoreOrigin.failed(
+                    RESTORE_ORIGIN_AMBIGUOUS_CODE,
+                    "No se puede fechar la salida original para decidir el destino de la restauración.");
+        }
+        List<InventoryBalanceRegularization> later = regularizationRepository
+                .findByTenantIdAndBranchIdAndProductIdAndCreatedAtAfterOrderByCreatedAtAscIdAsc(
+                        tenantId, branchId, productId, soldAt);
+        if (later.isEmpty()) {
+            return null;
+        }
+        Set<UUID> destinations = later.stream()
+                .map(InventoryBalanceRegularization::getToLocationId)
+                .collect(Collectors.toSet());
+        if (destinations.size() != 1) {
+            log.warn(
+                    "Restauracion bloqueada: regularizaciones con destinos distintos tenant={} sucursal={} "
+                            + "producto={} destinos={}",
+                    tenantId, branchId, productId, destinations);
+            return RestoreOrigin.failed(
+                    RESTORE_ORIGIN_AMBIGUOUS_CODE,
+                    "El saldo heredado se regularizó hacia más de una ubicación; no se puede elegir el destino.");
+        }
+        UUID destination = destinations.iterator().next();
+        if (!destination.equals(assignedLocationId(tenantId, branchId, productId))
+                || !isUsableLocation(tenantId, branchId, destination)) {
+            log.warn(
+                    "Restauracion bloqueada: el destino regularizado {} ya no es la ubicacion operativa "
+                            + "activa tenant={} sucursal={} producto={}",
+                    destination, tenantId, branchId, productId);
+            return RestoreOrigin.failed(
+                    RESTORE_ORIGIN_INVALID_CODE,
+                    "El saldo heredado se regularizó hacia una ubicación que ya no es la operativa activa "
+                            + "del producto.");
+        }
+        return RestoreOrigin.of(destination);
     }
 
     /**

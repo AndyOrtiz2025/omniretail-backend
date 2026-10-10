@@ -69,6 +69,20 @@ public interface InventoryBalanceRepository extends JpaRepository<InventoryBalan
             @Param("branchId") UUID branchId,
             @Param("productId") UUID productId);
 
+    /** Id del balance de una ubicacion, sin cargar ni bloquear la entidad. */
+    @Query("""
+            select balance.id from InventoryBalance balance
+            where balance.tenantId = :tenantId
+              and balance.branchId = :branchId
+              and balance.productId = :productId
+              and balance.locationId = :locationId
+            """)
+    Optional<UUID> findBalanceIdAtLocation(
+            @Param("tenantId") UUID tenantId,
+            @Param("branchId") UUID branchId,
+            @Param("productId") UUID productId,
+            @Param("locationId") UUID locationId);
+
     List<InventoryBalance> findByTenantId(UUID tenantId);
 
     List<InventoryBalance> findByTenantIdAndBranchIdAndLocationIdIsNull(UUID tenantId, UUID branchId);

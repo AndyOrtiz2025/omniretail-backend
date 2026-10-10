@@ -21,6 +21,22 @@ public interface ProductInventorySettingsRepository
 
     List<ProductInventorySettings> findByTenantIdAndBranchId(UUID tenantId, UUID branchId);
 
+    /**
+     * Ubicacion asignada leida como escalar: siempre consulta la base, aunque la entidad de configuracion ya
+     * este en el contexto de persistencia. Es la lectura que debe usarse tras tomar un bloqueo, porque una
+     * consulta de entidad devolveria la instancia gestionada (con el valor anterior al bloqueo).
+     */
+    @Query("""
+            select settings.defaultLocationId from ProductInventorySettings settings
+            where settings.tenantId = :tenantId
+              and settings.branchId = :branchId
+              and settings.productId = :productId
+            """)
+    Optional<UUID> findDefaultLocationId(
+            @Param("tenantId") UUID tenantId,
+            @Param("branchId") UUID branchId,
+            @Param("productId") UUID productId);
+
     /** true si alguna configuracion de producto usa la ubicacion como su ubicacion asignada. */
     boolean existsByTenantIdAndDefaultLocationId(UUID tenantId, UUID defaultLocationId);
 
@@ -54,6 +70,30 @@ public interface ProductInventorySettingsRepository
             @Param("productId") UUID productId,
             @Param("minStock") BigDecimal minStock,
             @Param("reorderPoint") BigDecimal reorderPoint,
+            @Param("defaultLocationId") UUID defaultLocationId);
+
+    /**
+     * Asignacion inicial de la ubicacion operativa: solo escribe si el producto no tiene ninguna (sin fila o
+     * con {@code default_location_id} nulo) y conserva umbrales existentes ({@code min_stock} usa su valor
+     * por defecto al crear la fila). Devuelve las filas afectadas: 0 si otra transaccion ya asigno una
+     * ubicacion. A diferencia de {@link #upsert}, no limpia el contexto de persistencia: puede ejecutarse
+     * con entidades bloqueadas y modificadas sin perder cambios pendientes.
+     */
+    @Modifying
+    @Query(value = """
+            INSERT INTO product_inventory_settings
+                (tenant_id, branch_id, product_id, default_location_id)
+            VALUES (:tenantId, :branchId, :productId, :defaultLocationId)
+            ON CONFLICT (tenant_id, branch_id, product_id)
+            DO UPDATE SET
+                default_location_id = EXCLUDED.default_location_id,
+                updated_at = now()
+            WHERE product_inventory_settings.default_location_id IS NULL
+            """, nativeQuery = true)
+    int assignIfUnassigned(
+            @Param("tenantId") UUID tenantId,
+            @Param("branchId") UUID branchId,
+            @Param("productId") UUID productId,
             @Param("defaultLocationId") UUID defaultLocationId);
 
     @Query(
