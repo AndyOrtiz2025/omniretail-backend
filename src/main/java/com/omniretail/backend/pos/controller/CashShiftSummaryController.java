@@ -2,6 +2,7 @@ package com.omniretail.backend.pos.controller;
 
 import com.omniretail.backend.pos.dto.CashShiftSummaryResponse;
 import com.omniretail.backend.pos.service.CashShiftSummaryService;
+import com.omniretail.backend.shared.security.RequirePermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import java.util.UUID;
