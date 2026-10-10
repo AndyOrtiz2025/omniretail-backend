@@ -102,4 +102,35 @@ class MediaStorageServiceTest {
         assertThat(service.isManaged("https://cdn.example.com/logo.png")).isFalse();
         assertThat(service.isManaged(null)).isFalse();
     }
+
+    @Test
+    void tellsWhichTenantAndScopeAManagedUrlBelongsTo() {
+        UUID tenant = UUID.randomUUID();
+        UUID other = UUID.randomUUID();
+        UUID owner = UUID.randomUUID();
+        MediaStorageService service = new MediaStorageService(directory.toString(), 1024);
+        String ownEcommerce = "/media/" + tenant + "/ecommerce/" + tenant + "/" + UUID.randomUUID() + ".png";
+        String ownProduct = "/media/" + tenant + "/products/" + owner + "/" + UUID.randomUUID() + ".jpg";
+        String foreignProduct = "/media/" + other + "/products/" + owner + "/" + UUID.randomUUID() + ".jpg";
+
+        assertThat(service.isManagedByTenant(ownEcommerce, tenant)).isTrue();
+        assertThat(service.isManagedByTenant(ownProduct, tenant)).isTrue();
+        assertThat(service.isManagedByTenant(foreignProduct, tenant)).isFalse();
+        assertThat(service.isManagedIn(ownEcommerce, tenant, MediaStorageService.SCOPE_ECOMMERCE)).isTrue();
+        assertThat(service.isManagedIn(ownProduct, tenant, MediaStorageService.SCOPE_ECOMMERCE)).isFalse();
+        assertThat(service.isManagedIn(foreignProduct, other, MediaStorageService.SCOPE_ECOMMERCE)).isFalse();
+        assertThat(service.isManagedIn(ownEcommerce, other, MediaStorageService.SCOPE_ECOMMERCE)).isFalse();
+    }
+
+    @Test
+    void ownershipChecksIgnoreExternalUrlsAndNulls() {
+        UUID tenant = UUID.randomUUID();
+        MediaStorageService service = new MediaStorageService(directory.toString(), 1024);
+
+        assertThat(service.isManagedByTenant("https://cdn.example.com/logo.png", tenant)).isFalse();
+        assertThat(service.isManagedByTenant(null, tenant)).isFalse();
+        assertThat(service.isManagedByTenant("/media/" + tenant + "/ecommerce/" + tenant + "/x.png", null)).isFalse();
+        assertThat(service.isManagedIn(null, tenant, MediaStorageService.SCOPE_ECOMMERCE)).isFalse();
+        assertThat(service.isManagedIn("/media/otra-cosa", tenant, MediaStorageService.SCOPE_ECOMMERCE)).isFalse();
+    }
 }

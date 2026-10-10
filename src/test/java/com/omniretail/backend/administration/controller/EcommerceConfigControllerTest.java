@@ -22,6 +22,7 @@ import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.entity.User;
 import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.administration.repository.BranchRepository;
+import com.omniretail.backend.administration.repository.EcommerceConfigRepository;
 import com.omniretail.backend.administration.repository.RoleRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.administration.repository.UserRepository;
@@ -86,6 +87,9 @@ class EcommerceConfigControllerTest {
 
     @Autowired
     private MediaStorageService mediaStorageService;
+
+    @Autowired
+    private EcommerceConfigRepository ecommerceConfigRepository;
 
     @MockitoBean
     private TenantEntitlementResolver entitlementResolver;
@@ -623,6 +627,167 @@ class EcommerceConfigControllerTest {
 
         assertThat(Files.exists(fileFor(kept))).isTrue();
         assertThat(Files.exists(fileFor(removed))).isFalse();
+    }
+
+    @Test
+    void putRejectsMediaThatBelongsToAnotherTenantAndNeverTouchesIt() throws Exception {
+        Tenant attacker = persistTenant();
+        Tenant victim = persistTenant();
+        String token = tokenFor(attacker);
+        String victimFile = storedFile(victim, "products");
+
+        mockMvc.perform(put(ECOMMERCE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(ecommerceBodyWithLogo(victimFile)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("La imagen indicada no pertenece al negocio activo."));
+        mockMvc.perform(put(HERO_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(slidesWithImages(null, victimFile, null)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("La imagen indicada no pertenece al negocio activo."));
+
+        assertThat(Files.exists(fileFor(victimFile))).isTrue();
+    }
+
+    @Test
+    void removingALogoThatPointsToProtectedMediaNeverDeletesTheFile() throws Exception {
+        Tenant attacker = persistTenant();
+        Tenant victim = persistTenant();
+        String token = tokenFor(attacker);
+        savedEcommerceConfig(token);
+        String victimFile = storedFile(victim, "products");
+        String ownProductFile = storedFile(attacker, "products");
+
+        // Aunque una URL ajena o de otra zona llegara a la configuracion (datos antiguos), nunca se borra.
+        for (String url : List.of(victimFile, ownProductFile)) {
+            forceLogo(attacker, url);
+
+            mockMvc.perform(put(ECOMMERCE_URL)
+                            .header("Authorization", bearer(token))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(ecommerceBody(false, null)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.logoUrl").value(nullValue()));
+            assertThat(Files.exists(fileFor(url))).isTrue();
+
+            forceLogo(attacker, url);
+            mockMvc.perform(delete(ECOMMERCE_URL + "/logo").header("Authorization", bearer(token)))
+                    .andExpect(status().isOk());
+            assertThat(Files.exists(fileFor(url))).isTrue();
+        }
+    }
+
+    @Test
+    void anImageUsedByTwoSlidesIsOnlyDeletedWhenNoneUsesIt() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        mockMvc.perform(put(HERO_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(slidesBody(3)))
+                .andExpect(status().isOk());
+        String shared = slideImageOf(mockMvc.perform(multipart(HERO_URL + "/slides/0/image").file(png())
+                        .header("Authorization", bearer(token)))
+                .andReturn()
+                .getResponse()
+                .getContentAsString(), 0);
+        mockMvc.perform(put(HERO_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(slidesWithImages(shared, shared, null)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(delete(HERO_URL + "/slides/0/image").header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.slides[1].imageUrl").value(shared));
+        assertThat(Files.exists(fileFor(shared))).isTrue();
+
+        // Reemplazar la imagen de la otra diapositiva tampoco borra lo que aun se use (nada la usa ya: se borra).
+        mockMvc.perform(multipart(HERO_URL + "/slides/1/image").file(png())
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk());
+        assertThat(Files.exists(fileFor(shared))).isFalse();
+    }
+
+    @Test
+    void replacingASlideImageKeepsTheFileWhileAnotherSlideStillUsesIt() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        mockMvc.perform(put(HERO_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(slidesBody(3)))
+                .andExpect(status().isOk());
+        String shared = slideImageOf(mockMvc.perform(multipart(HERO_URL + "/slides/0/image").file(png())
+                        .header("Authorization", bearer(token)))
+                .andReturn()
+                .getResponse()
+                .getContentAsString(), 0);
+        mockMvc.perform(put(HERO_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(slidesWithImages(shared, shared, null)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(multipart(HERO_URL + "/slides/0/image").file(png())
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk());
+
+        assertThat(Files.exists(fileFor(shared))).isTrue();
+    }
+
+    @Test
+    void anImageSharedByTheLogoAndASlideIsKeptUntilNoneUsesIt() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        savedEcommerceConfig(token);
+        String logo = urlOf(mockMvc.perform(multipart(ECOMMERCE_URL + "/logo").file(png())
+                        .header("Authorization", bearer(token)))
+                .andReturn()
+                .getResponse()
+                .getContentAsString());
+        mockMvc.perform(put(HERO_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(slidesWithImages(logo, null, null)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(delete(ECOMMERCE_URL + "/logo").header("Authorization", bearer(token)))
+                .andExpect(status().isOk());
+        assertThat(Files.exists(fileFor(logo))).isTrue();
+
+        mockMvc.perform(delete(HERO_URL + "/slides/0/image").header("Authorization", bearer(token)))
+                .andExpect(status().isOk());
+        assertThat(Files.exists(fileFor(logo))).isFalse();
+    }
+
+    private String storedFile(Tenant tenant, String scope) {
+        return mediaStorageService.storeImage(tenant.getId(), scope, UUID.randomUUID(), png());
+    }
+
+    private void forceLogo(Tenant tenant, String url) {
+        var config = ecommerceConfigRepository.findByTenantId(tenant.getId()).orElseThrow();
+        config.setLogoUrl(url);
+        ecommerceConfigRepository.save(config);
+    }
+
+    private static String slidesWithImages(String first, String second, String third) {
+        String[] images = {first, second, third};
+        StringBuilder slides = new StringBuilder();
+        for (int i = 0; i < images.length; i++) {
+            if (i > 0) {
+                slides.append(',');
+            }
+            slides.append("{\"title\":\"Slide ").append(i + 1).append("\",\"description\":\"Desc\"");
+            if (images[i] != null) {
+                slides.append(",\"imageUrl\":\"").append(images[i]).append('"');
+            }
+            slides.append('}');
+        }
+        return "{\"slides\":[" + slides + "]}";
     }
 
     private void savedEcommerceConfig(String token) throws Exception {

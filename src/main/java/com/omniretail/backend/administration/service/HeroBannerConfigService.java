@@ -34,6 +34,7 @@ public class HeroBannerConfigService {
     private final CurrentUser currentUser;
     private final JsonMapper jsonMapper;
     private final MediaStorageService mediaStorageService;
+    private final EcommerceMediaReferences mediaReferences;
 
     @Transactional(readOnly = true)
     public HeroBannerConfigResponse getBanner() {
@@ -56,6 +57,7 @@ public class HeroBannerConfigService {
         List<HeroBannerSlideDto> slides = request.slides().stream()
                 .map(HeroBannerConfigService::normalizeSlide)
                 .toList();
+        slides.forEach(slide -> mediaReferences.requireNotForeignMedia(tenantId, slide.imageUrl()));
 
         HeroBannerConfig config = configRepository.findByTenantId(tenantId).orElseGet(() -> {
             HeroBannerConfig created = new HeroBannerConfig();
@@ -66,14 +68,12 @@ public class HeroBannerConfigService {
         config.setSlides(jsonMapper.writeValueAsString(slides));
         configRepository.save(config);
 
-        // Las imagenes gestionadas que ya no estan en ninguna diapositiva se borran al confirmar.
-        for (HeroBannerSlideDto previous : previousSlides) {
-            String previousUrl = previous.imageUrl();
-            boolean stillUsed = slides.stream().anyMatch(slide -> Objects.equals(slide.imageUrl(), previousUrl));
-            if (!stillUsed) {
-                mediaStorageService.deleteAfterCommit(previousUrl);
-            }
-        }
+        // Las imagenes de la tienda que ya no usa nadie (ni el logo ni otra diapositiva) se borran al confirmar.
+        previousSlides.stream()
+                .map(HeroBannerSlideDto::imageUrl)
+                .filter(Objects::nonNull)
+                .distinct()
+                .forEach(previousUrl -> mediaReferences.deleteAfterCommitIfUnreferenced(tenantId, previousUrl));
         return new HeroBannerConfigResponse(slides);
     }
 
@@ -95,7 +95,7 @@ public class HeroBannerConfigService {
             slides.set(index, new HeroBannerSlideDto(current.title(), current.description(), newUrl));
             config.setSlides(jsonMapper.writeValueAsString(slides));
             configRepository.saveAndFlush(config);
-            mediaStorageService.deleteAfterCommit(current.imageUrl());
+            mediaReferences.deleteAfterCommitIfUnreferenced(tenantId, current.imageUrl());
             return new HeroBannerConfigResponse(List.copyOf(slides));
         } catch (RuntimeException exception) {
             mediaStorageService.deleteQuietly(newUrl);
@@ -115,7 +115,7 @@ public class HeroBannerConfigService {
         slides.set(index, new HeroBannerSlideDto(current.title(), current.description(), null));
         config.setSlides(jsonMapper.writeValueAsString(slides));
         configRepository.saveAndFlush(config);
-        mediaStorageService.deleteAfterCommit(current.imageUrl());
+        mediaReferences.deleteAfterCommitIfUnreferenced(tenantId, current.imageUrl());
         return new HeroBannerConfigResponse(List.copyOf(slides));
     }
 

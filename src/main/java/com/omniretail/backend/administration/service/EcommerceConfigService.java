@@ -35,6 +35,7 @@ public class EcommerceConfigService {
     private final TenantCapabilityGuard tenantCapabilityGuard;
     private final CurrentUser currentUser;
     private final MediaStorageService mediaStorageService;
+    private final EcommerceMediaReferences mediaReferences;
 
     @Transactional(readOnly = true)
     public EcommerceConfigResponse getConfig() {
@@ -62,7 +63,9 @@ public class EcommerceConfigService {
         config.setEnabled(request.enabled());
         config.setStoreName(request.storeName().trim());
         String previousLogoUrl = config.getLogoUrl();
-        config.setLogoUrl(normalize(request.logoUrl()));
+        String newLogoUrl = normalize(request.logoUrl());
+        mediaReferences.requireNotForeignMedia(tenantId, newLogoUrl);
+        config.setLogoUrl(newLogoUrl);
         config.setContactPhone(normalizePhone(request.contactPhone()));
         config.setContactEmail(normalizeEmail(request.contactEmail()));
         config.setRequireAccountForCheckout(request.requireAccountForCheckout());
@@ -74,7 +77,7 @@ public class EcommerceConfigService {
         EcommerceConfigResponse response = EcommerceConfigResponse.from(configRepository.save(config));
         // Si el PUT cambia o quita el logo, el archivo gestionado anterior ya no se usa: se borra al confirmar.
         if (!Objects.equals(previousLogoUrl, config.getLogoUrl())) {
-            mediaStorageService.deleteAfterCommit(previousLogoUrl);
+            mediaReferences.deleteAfterCommitIfUnreferenced(tenantId, previousLogoUrl);
         }
         return response;
     }
@@ -93,7 +96,7 @@ public class EcommerceConfigService {
         try {
             config.setLogoUrl(newUrl);
             EcommerceConfig saved = configRepository.saveAndFlush(config);
-            mediaStorageService.deleteAfterCommit(previous);
+            mediaReferences.deleteAfterCommitIfUnreferenced(tenantId, previous);
             return EcommerceConfigResponse.from(saved);
         } catch (RuntimeException exception) {
             mediaStorageService.deleteQuietly(newUrl);
@@ -109,7 +112,7 @@ public class EcommerceConfigService {
         String previous = config.getLogoUrl();
         config.setLogoUrl(null);
         EcommerceConfig saved = configRepository.saveAndFlush(config);
-        mediaStorageService.deleteAfterCommit(previous);
+        mediaReferences.deleteAfterCommitIfUnreferenced(tenantId, previous);
         return EcommerceConfigResponse.from(saved);
     }
 

@@ -92,6 +92,27 @@ public class MediaStorageService {
         return url != null && MANAGED_URL.matcher(url).matches();
     }
 
+    /** true si la URL es un archivo gestionado que pertenece al negocio indicado (en cualquier zona). */
+    public boolean isManagedByTenant(String url, UUID tenantId) {
+        Matcher matcher = managedMatcher(url);
+        return matcher != null && tenantId != null && matcher.group(1).equalsIgnoreCase(tenantId.toString());
+    }
+
+    /** true si la URL es un archivo gestionado del negocio indicado dentro de la zona indicada. */
+    public boolean isManagedIn(String url, UUID tenantId, String scope) {
+        Matcher matcher = managedMatcher(url);
+        return matcher != null
+                && tenantId != null
+                && matcher.group(1).equalsIgnoreCase(tenantId.toString())
+                && matcher.group(2).equals(scope);
+    }
+
+    private static Matcher managedMatcher(String url) {
+        if (url == null) return null;
+        Matcher matcher = MANAGED_URL.matcher(url);
+        return matcher.matches() ? matcher : null;
+    }
+
     public void deleteAfterCommit(String url) {
         if (!isManaged(url)) return;
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
