@@ -37,11 +37,8 @@ public class ProductUnitConversionController {
                     * `catalog.units.read`
                     """
     )
-    @GetMapping
-    @RequirePermission("catalog.units.read")
-    public List<UnitConversionResponse> list(@PathVariable UUID productId) {
-        return service.listForProduct(productId);
-    }
+    @GetMapping @RequirePermission("catalog.units.read")
+    public List<UnitConversionResponse> list(@PathVariable UUID productId) { return service.listForProduct(productId); }
 
     @Operation(
             summary = "Reemplazar conversiones de unidad del producto",
@@ -52,11 +49,7 @@ public class ProductUnitConversionController {
                     * `catalog.units.manage`
                     """
     )
-    @PutMapping
-    @RequirePermission("catalog.units.manage")
-    public List<UnitConversionResponse> replace(
-            @PathVariable UUID productId,
-            @Valid @RequestBody ReplaceProductUnitConversionsRequest request) {
-        return service.replaceForProduct(productId, request);
-    }
+    @PutMapping @RequirePermission("catalog.units.manage")
+    public List<UnitConversionResponse> replace(@PathVariable UUID productId,
+            @Valid @RequestBody ReplaceProductUnitConversionsRequest request) { return service.replaceForProduct(productId, request); }
 }

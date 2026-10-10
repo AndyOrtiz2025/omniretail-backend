@@ -112,9 +112,7 @@ public class PromotionController {
     )
     @PutMapping("/{id}/end")
     @RequirePermission("catalog.promotions.manage")
-    public PromotionResponse end(@PathVariable UUID id) {
-        return promotionService.end(id);
-    }
+    public PromotionResponse end(@PathVariable UUID id) { return promotionService.end(id); }
 
     @Operation(
             summary = "Cancelar promoción",

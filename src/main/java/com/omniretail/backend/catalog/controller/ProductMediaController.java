@@ -46,11 +46,8 @@ public class ProductMediaController {
                     * `catalog.products.read`
                     """
     )
-    @GetMapping
-    @RequirePermission("catalog.products.read")
-    public List<ProductMediaResponse> list(@PathVariable UUID productId) {
-        return service.list(productId);
-    }
+    @GetMapping @RequirePermission("catalog.products.read")
+    public List<ProductMediaResponse> list(@PathVariable UUID productId) { return service.list(productId); }
 
     @Operation(
             summary = "Registrar medio multimedia mediante URL externa",
@@ -61,14 +58,9 @@ public class ProductMediaController {
                     * `catalog.products.update`
                     """
     )
-    @PostMapping
-    @ResponseStatus(HttpStatus.CREATED)
-    @RequirePermission("catalog.products.update")
-    public ProductMediaResponse create(
-            @PathVariable UUID productId,
-            @Valid @RequestBody ProductMediaCreateRequest request) {
-        return service.createExternal(productId, request);
-    }
+    @PostMapping @ResponseStatus(HttpStatus.CREATED) @RequirePermission("catalog.products.update")
+    public ProductMediaResponse create(@PathVariable UUID productId,
+            @Valid @RequestBody ProductMediaCreateRequest request) { return service.createExternal(productId, request); }
 
     @Operation(
             summary = "Subir archivo de imagen al producto",
@@ -80,13 +72,9 @@ public class ProductMediaController {
                     """
     )
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @ResponseStatus(HttpStatus.CREATED)
-    @RequirePermission("catalog.products.update")
-    public ProductMediaResponse upload(
-            @PathVariable UUID productId,
-            @RequestPart("file") MultipartFile file,
-            @RequestParam(required = false) String altText,
-            @RequestParam(required = false) Integer sortOrder,
+    @ResponseStatus(HttpStatus.CREATED) @RequirePermission("catalog.products.update")
+    public ProductMediaResponse upload(@PathVariable UUID productId, @RequestPart("file") MultipartFile file,
+            @RequestParam(required = false) String altText, @RequestParam(required = false) Integer sortOrder,
             @RequestParam(required = false) Boolean primary) {
         return service.upload(productId, file, altText, sortOrder, primary);
     }
@@ -100,14 +88,9 @@ public class ProductMediaController {
                     * `catalog.products.update`
                     """
     )
-    @PutMapping("/{mediaId}")
-    @RequirePermission("catalog.products.update")
-    public ProductMediaResponse update(
-            @PathVariable UUID productId,
-            @PathVariable UUID mediaId,
-            @Valid @RequestBody ProductMediaUpdateRequest request) {
-        return service.update(productId, mediaId, request);
-    }
+    @PutMapping("/{mediaId}") @RequirePermission("catalog.products.update")
+    public ProductMediaResponse update(@PathVariable UUID productId, @PathVariable UUID mediaId,
+            @Valid @RequestBody ProductMediaUpdateRequest request) { return service.update(productId, mediaId, request); }
 
     @Operation(
             summary = "Eliminar medio multimedia de un producto",
@@ -118,12 +101,8 @@ public class ProductMediaController {
                     * `catalog.products.update`
                     """
     )
-    @DeleteMapping("/{mediaId}")
-    @ResponseStatus(HttpStatus.NO_CONTENT)
-    @RequirePermission("catalog.products.update")
-    public void delete(@PathVariable UUID productId, @PathVariable UUID mediaId) {
-        service.delete(productId, mediaId);
-    }
+    @DeleteMapping("/{mediaId}") @ResponseStatus(HttpStatus.NO_CONTENT) @RequirePermission("catalog.products.update")
+    public void delete(@PathVariable UUID productId, @PathVariable UUID mediaId) { service.delete(productId, mediaId); }
 
     @Operation(
             summary = "Marcar medio como imagen principal del producto",
@@ -134,8 +113,7 @@ public class ProductMediaController {
                     * `catalog.products.update`
                     """
     )
-    @PutMapping("/{mediaId}/primary")
-    @RequirePermission("catalog.products.update")
+    @PutMapping("/{mediaId}/primary") @RequirePermission("catalog.products.update")
     public ProductMediaResponse primary(@PathVariable UUID productId, @PathVariable UUID mediaId) {
         return service.setPrimary(productId, mediaId);
     }

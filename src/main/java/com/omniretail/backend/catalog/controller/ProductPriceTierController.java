@@ -37,11 +37,8 @@ public class ProductPriceTierController {
                     * `catalog.products.read`
                     """
     )
-    @GetMapping
-    @RequirePermission("catalog.products.read")
-    public List<ProductSalesPriceTierResponse> list(@PathVariable UUID productId) {
-        return service.list(productId);
-    }
+    @GetMapping @RequirePermission("catalog.products.read")
+    public List<ProductSalesPriceTierResponse> list(@PathVariable UUID productId) { return service.list(productId); }
 
     @Operation(
             summary = "Reemplazar niveles de precios por volumen de un producto",
@@ -52,11 +49,7 @@ public class ProductPriceTierController {
                     * `catalog.products.update`
                     """
     )
-    @PutMapping
-    @RequirePermission("catalog.products.update")
-    public List<ProductSalesPriceTierResponse> replace(
-            @PathVariable UUID productId,
-            @Valid @RequestBody ReplaceProductSalesPriceTiersRequest request) {
-        return service.replace(productId, request);
-    }
+    @PutMapping @RequirePermission("catalog.products.update")
+    public List<ProductSalesPriceTierResponse> replace(@PathVariable UUID productId,
+            @Valid @RequestBody ReplaceProductSalesPriceTiersRequest request) { return service.replace(productId, request); }
 }

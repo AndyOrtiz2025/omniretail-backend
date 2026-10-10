@@ -37,11 +37,8 @@ public class ProductKitController {
                     * `catalog.products.read`
                     """
     )
-    @GetMapping
-    @RequirePermission("catalog.products.read")
-    public List<ProductKitComponentResponse> list(@PathVariable UUID productId) {
-        return service.list(productId);
-    }
+    @GetMapping @RequirePermission("catalog.products.read")
+    public List<ProductKitComponentResponse> list(@PathVariable UUID productId) { return service.list(productId); }
 
     @Operation(
             summary = "Reemplazar componentes de un kit o combo",
@@ -52,11 +49,7 @@ public class ProductKitController {
                     * `catalog.products.update`
                     """
     )
-    @PutMapping
-    @RequirePermission("catalog.products.update")
-    public List<ProductKitComponentResponse> replace(
-            @PathVariable UUID productId,
-            @Valid @RequestBody ReplaceProductKitComponentsRequest request) {
-        return service.replace(productId, request);
-    }
+    @PutMapping @RequirePermission("catalog.products.update")
+    public List<ProductKitComponentResponse> replace(@PathVariable UUID productId,
+            @Valid @RequestBody ReplaceProductKitComponentsRequest request) { return service.replace(productId, request); }
 }
