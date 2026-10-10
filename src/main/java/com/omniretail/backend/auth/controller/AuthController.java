@@ -8,10 +8,12 @@ import com.omniretail.backend.auth.dto.LoginRequest;
 import com.omniretail.backend.auth.dto.LoginResponse;
 import com.omniretail.backend.auth.dto.MfaChallengeResponse;
 import com.omniretail.backend.auth.dto.SessionBranchResponse;
+import com.omniretail.backend.auth.dto.SessionEntitlementsResponse;
 import com.omniretail.backend.auth.service.ActiveBranchService;
 import com.omniretail.backend.auth.service.AuthService;
 import com.omniretail.backend.auth.service.CurrentSessionService;
 import com.omniretail.backend.auth.service.PasswordChangeService;
+import com.omniretail.backend.auth.service.SessionEntitlementsService;
 import com.omniretail.backend.shared.exception.ApiError;
 import com.omniretail.backend.shared.security.CurrentUser;
 import io.swagger.v3.oas.annotations.Operation;
@@ -34,7 +36,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
-/** {@code /login} es publico; {@code /logout}, {@code /me}, {@code /password/change}, {@code /session/branch} y {@code /session/branches} exigen token (ver SecurityConfig). */
+/** {@code /login} es publico; {@code /logout}, {@code /me}, {@code /password/change}, {@code /session/branch}, {@code /session/branches} y {@code /session/entitlements} exigen token (ver SecurityConfig). */
 @RestController
 @RequestMapping("/auth")
 @RequiredArgsConstructor
@@ -45,6 +47,7 @@ public class AuthController {
     private final CurrentSessionService currentSessionService;
     private final PasswordChangeService passwordChangeService;
     private final ActiveBranchService activeBranchService;
+    private final SessionEntitlementsService sessionEntitlementsService;
     private final CurrentUser currentUser;
 
     @PostMapping("/login")
@@ -218,5 +221,41 @@ public class AuthController {
     })
     public List<SessionBranchResponse> listSessionBranches() {
         return activeBranchService.listSessionBranches(currentUser.require());
+    }
+
+    @GetMapping("/session/entitlements")
+    @Operation(
+            summary = "Session entitlements",
+            description = """
+                    **Solo empleados.** Devuelve las capacidades y límites del plan del negocio de la sesión, para que
+                    la interfaz sepa qué módulos (POS, inventario, recepción...) puede ofrecer. No exige
+                    `admin.plans.read`: es la lectura operativa para roles sin permiso administrativo de planes.
+
+                    - `capabilities` incluye las del plan y las de sus complementos; `effectiveCapabilities` solo las
+                      trae si la suscripción y el plan están activos (misma regla con la que el backend valida cada
+                      operación).
+                    - No incluye facturas, precios, complementos ni otros planes.
+                    - Sin suscripción responde 404 `TENANT_SUBSCRIPTION_NOT_FOUND`.""")
+    @ApiResponses({
+        @ApiResponse(
+                responseCode = "200",
+                description = "Entitlements del negocio de la sesión.",
+                content = @Content(
+                        mediaType = "application/json",
+                        schema = @Schema(implementation = SessionEntitlementsResponse.class))),
+        @ApiResponse(
+                responseCode = "401",
+                description = "Sin token, token inválido o vencido, o sesión revocada. Responde sin cuerpo."),
+        @ApiResponse(
+                responseCode = "403",
+                description = "`ENTITLEMENTS_NOT_ALLOWED`: la sesión no es de un empleado activo de la tienda.",
+                content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
+        @ApiResponse(
+                responseCode = "404",
+                description = "`TENANT_SUBSCRIPTION_NOT_FOUND` o `SAAS_PLAN_NOT_FOUND`.",
+                content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
+    })
+    public SessionEntitlementsResponse sessionEntitlements() {
+        return sessionEntitlementsService.getSessionEntitlements(currentUser.require());
     }
 }

@@ -1,0 +1,64 @@
+databaseChangeLog:
+  - changeSet:
+      id: 999-13-seed-role-read-permissions
+      author: joga17000
+      context: dev
+      comment: Completa los permisos de solo lectura que necesitan los roles de sistema Cajero, Inventario y Bodeguero para que sus pantallas carguen.
+      changes:
+        # Las pantallas operativas piden catalogos y existencias aparte de sus permisos propios; sin estas lecturas
+        # reciben 403 aunque el rol sea el correcto. Solo lectura: ningun create/update/manage.
+        # 999-01, 999-11 y 999-12 ya estan aplicadas y no se editan (regla del master).
+        #
+        # Cajero:
+        #   - catalog.locations.read:  GET /catalog/locations (la terminal POS y las alertas de inventario).
+        #   - catalog.categories.read: GET /catalog/categories y /{id} (vista rapida de producto, alertas).
+        - sql:
+            sql: |
+              UPDATE roles
+              SET permissions = (
+                SELECT ARRAY(
+                  SELECT DISTINCT permission
+                  FROM unnest(COALESCE(permissions, ARRAY[]::text[])
+                              || ARRAY['catalog.locations.read', 'catalog.categories.read']::text[]) AS permission
+                  ORDER BY permission
+                )
+              )
+              WHERE name = 'Cajero' AND is_system = TRUE;
+        # Inventario:
+        #   - catalog.locations.read:  existencias por ubicacion y ajustes.
+        #   - catalog.attributes.read / catalog.promotions.read: pestañas de la edicion de producto.
+        - sql:
+            sql: |
+              UPDATE roles
+              SET permissions = (
+                SELECT ARRAY(
+                  SELECT DISTINCT permission
+                  FROM unnest(COALESCE(permissions, ARRAY[]::text[])
+                              || ARRAY['catalog.locations.read', 'catalog.attributes.read',
+                                       'catalog.promotions.read']::text[]) AS permission
+                  ORDER BY permission
+                )
+              )
+              WHERE name = 'Inventario' AND is_system = TRUE;
+        # Bodeguero (recepciones: lista y detalle de documentos):
+        #   - purchasing.orders.read:  GET /purchasing/orders (ordenes a recibir).
+        #   - receiving.receipts.read: GET /purchasing/receipts.
+        #   - catalog.products.read, catalog.units.read, catalog.locations.read, inventory.stock.read:
+        #     producto, unidades, ubicaciones y configuracion de inventario del detalle de recepcion.
+        - sql:
+            sql: |
+              UPDATE roles
+              SET permissions = (
+                SELECT ARRAY(
+                  SELECT DISTINCT permission
+                  FROM unnest(COALESCE(permissions, ARRAY[]::text[])
+                              || ARRAY['purchasing.orders.read', 'receiving.receipts.read',
+                                       'catalog.products.read', 'catalog.units.read',
+                                       'catalog.locations.read', 'inventory.stock.read']::text[]) AS permission
+                  ORDER BY permission
+                )
+              )
+              WHERE name = 'Bodeguero' AND is_system = TRUE;
+      rollback:
+        - sql:
+            sql: SELECT 1
