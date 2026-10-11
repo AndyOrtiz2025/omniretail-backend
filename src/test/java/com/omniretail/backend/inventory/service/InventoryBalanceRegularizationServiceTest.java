@@ -27,7 +27,6 @@ import com.omniretail.backend.shared.security.TenantEntitlementResolver;
 import com.omniretail.backend.shared.security.TenantEntitlements;
 import java.math.BigDecimal;
 import java.util.EnumSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -89,11 +88,11 @@ class InventoryBalanceRegularizationServiceTest {
                 "SELECT type, quantity, from_location_id, to_location_id, reference_id "
                         + "FROM inventory_movements WHERE tenant_id = ? AND reference_type = ?",
                 fixture.tenantId(), REGULARIZATION_REFERENCE);
-        assertThat(movement.get("type")).isEqualTo("transfer");
+        assertThat(movement).containsEntry("type", "transfer");
         assertThat((BigDecimal) movement.get("quantity")).isEqualByComparingTo("100");
         assertThat(movement.get("from_location_id")).isNull();
-        assertThat(movement.get("to_location_id")).isEqualTo(shelf);
-        assertThat(movement.get("reference_id")).isEqualTo(result.regularizationId());
+        assertThat(movement).containsEntry("to_location_id", shelf);
+        assertThat(movement).containsEntry("reference_id", result.regularizationId());
         // Ningun movimiento artificial de entrada o salida.
         assertThat(jdbc.queryForObject(
                         "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id = ? AND type IN ('in', 'out')",

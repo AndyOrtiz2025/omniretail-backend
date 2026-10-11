@@ -12,7 +12,6 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
-import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import java.util.UUID;
@@ -39,14 +38,12 @@ import org.springframework.web.bind.annotation.RestController;
         name = "Inventory location regularization",
         description = "Consolida el saldo heredado sin ubicación de un producto en su ubicación operativa, "
                 + "con asignación inicial opcional de esa ubicación.")
-@ApiResponses({
-    @ApiResponse(responseCode = "401", description = "Sin token, token inválido o vencido. Responde sin cuerpo."),
-    @ApiResponse(
-            responseCode = "403",
-            description = "Sin el permiso requerido (`ACCESS_DENIED`) o sin acceso a la sucursal "
-                    + "(`BRANCH_ACCESS_DENIED`).",
-            content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
-})
+@ApiResponse(responseCode = "401", description = "Sin token, token inválido o vencido. Responde sin cuerpo.")
+@ApiResponse(
+        responseCode = "403",
+        description = "Sin el permiso requerido (`ACCESS_DENIED`) o sin acceso a la sucursal "
+                + "(`BRANCH_ACCESS_DENIED`).",
+        content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
 public class InventoryBalanceRegularizationController {
 
     private static final String JSON_MEDIA_TYPE = "application/json";
@@ -65,18 +62,16 @@ public class InventoryBalanceRegularizationController {
                     Con `assign=true` evalúa además la asignación inicial del destino cuando el producto aún no \
                     tiene ubicación operativa. La huella incluye la asignación vigente y el modo: una vista previa \
                     solo sirve para ejecutar en su mismo modo.""")
-    @ApiResponses({
-        @ApiResponse(
-                responseCode = "200",
-                description = "Vista previa (`eligible=false` si hay `blockers`).",
-                content = @Content(
-                        mediaType = JSON_MEDIA_TYPE,
-                        schema = @Schema(implementation = LegacyBalanceRegularizationPreviewResponse.class))),
-        @ApiResponse(
-                responseCode = "404",
-                description = "Sucursal, producto o ubicación inexistentes en el tenant.",
-                content = @Content(mediaType = JSON_MEDIA_TYPE, schema = @Schema(implementation = ApiError.class)))
-    })
+    @ApiResponse(
+            responseCode = "200",
+            description = "Vista previa (`eligible=false` si hay `blockers`).",
+            content = @Content(
+                    mediaType = JSON_MEDIA_TYPE,
+                    schema = @Schema(implementation = LegacyBalanceRegularizationPreviewResponse.class)))
+    @ApiResponse(
+            responseCode = "404",
+            description = "Sucursal, producto o ubicación inexistentes en el tenant.",
+            content = @Content(mediaType = JSON_MEDIA_TYPE, schema = @Schema(implementation = ApiError.class)))
     public LegacyBalanceRegularizationPreviewResponse preview(
             @Parameter(description = "Sucursal del inventario.") @RequestParam UUID branchId,
             @Parameter(description = "Producto físico con control de inventario.") @RequestParam UUID productId,
@@ -95,18 +90,16 @@ public class InventoryBalanceRegularizationController {
                     Solo lectura (`inventory.stock.read` y acceso a la sucursal). Devuelve la ubicación asignada \
                     del producto y las ubicaciones activas de esa sucursal que podrían asignarse. Nunca incluye \
                     ubicaciones de otra sucursal; con el control de ubicaciones apagado la lista va vacía.""")
-    @ApiResponses({
-        @ApiResponse(
-                responseCode = "200",
-                description = "Ubicación asignada y ubicaciones asignables.",
-                content = @Content(
-                        mediaType = JSON_MEDIA_TYPE,
-                        schema = @Schema(implementation = RegularizationOptionsResponse.class))),
-        @ApiResponse(
-                responseCode = "404",
-                description = "Sucursal o producto inexistentes en el tenant.",
-                content = @Content(mediaType = JSON_MEDIA_TYPE, schema = @Schema(implementation = ApiError.class)))
-    })
+    @ApiResponse(
+            responseCode = "200",
+            description = "Ubicación asignada y ubicaciones asignables.",
+            content = @Content(
+                    mediaType = JSON_MEDIA_TYPE,
+                    schema = @Schema(implementation = RegularizationOptionsResponse.class)))
+    @ApiResponse(
+            responseCode = "404",
+            description = "Sucursal o producto inexistentes en el tenant.",
+            content = @Content(mediaType = JSON_MEDIA_TYPE, schema = @Schema(implementation = ApiError.class)))
     public RegularizationOptionsResponse options(
             @Parameter(description = "Sucursal del inventario.") @RequestParam UUID branchId,
             @Parameter(description = "Producto físico con control de inventario.") @RequestParam UUID productId) {
@@ -133,30 +126,28 @@ public class InventoryBalanceRegularizationController {
 
                     Idempotente por `idempotencyKey`: la misma clave y la misma solicitud devuelven el resultado \
                     registrado (200); la misma clave con otra solicitud responde `KEY_REUSED`.""")
-    @ApiResponses({
-        @ApiResponse(
-                responseCode = "201",
-                description = "Regularización aplicada.",
-                content = @Content(
-                        mediaType = JSON_MEDIA_TYPE,
-                        schema = @Schema(implementation = LegacyBalanceRegularizationResultResponse.class))),
-        @ApiResponse(
-                responseCode = "200",
-                description = "Reintento idempotente: resultado ya registrado, sin mover inventario otra vez.",
-                content = @Content(
-                        mediaType = JSON_MEDIA_TYPE,
-                        schema = @Schema(implementation = LegacyBalanceRegularizationResultResponse.class))),
-        @ApiResponse(
-                responseCode = "400",
-                description = "Cuerpo inválido (`VALIDATION_ERROR`) o producto no elegible.",
-                content = @Content(mediaType = JSON_MEDIA_TYPE, schema = @Schema(implementation = ApiError.class))),
-        @ApiResponse(
-                responseCode = "409",
-                description = "Bloqueos de inventario o de política, vista previa obsoleta "
-                        + "(`INVENTORY_REGULARIZATION_STALE_SNAPSHOT`), clave reutilizada o "
-                        + "`INVENTORY_REGULARIZATION_BUSY` (nada aplicado, reintentable).",
-                content = @Content(mediaType = JSON_MEDIA_TYPE, schema = @Schema(implementation = ApiError.class)))
-    })
+    @ApiResponse(
+            responseCode = "201",
+            description = "Regularización aplicada.",
+            content = @Content(
+                    mediaType = JSON_MEDIA_TYPE,
+                    schema = @Schema(implementation = LegacyBalanceRegularizationResultResponse.class)))
+    @ApiResponse(
+            responseCode = "200",
+            description = "Reintento idempotente: resultado ya registrado, sin mover inventario otra vez.",
+            content = @Content(
+                    mediaType = JSON_MEDIA_TYPE,
+                    schema = @Schema(implementation = LegacyBalanceRegularizationResultResponse.class)))
+    @ApiResponse(
+            responseCode = "400",
+            description = "Cuerpo inválido (`VALIDATION_ERROR`) o producto no elegible.",
+            content = @Content(mediaType = JSON_MEDIA_TYPE, schema = @Schema(implementation = ApiError.class)))
+    @ApiResponse(
+            responseCode = "409",
+            description = "Bloqueos de inventario o de política, vista previa obsoleta "
+                    + "(`INVENTORY_REGULARIZATION_STALE_SNAPSHOT`), clave reutilizada o "
+                    + "`INVENTORY_REGULARIZATION_BUSY` (nada aplicado, reintentable).",
+            content = @Content(mediaType = JSON_MEDIA_TYPE, schema = @Schema(implementation = ApiError.class)))
     public ResponseEntity<LegacyBalanceRegularizationResultResponse> regularize(
             @Valid @RequestBody RegularizeLegacyBalanceRequest request) {
         LegacyBalanceRegularizationResultResponse result = regularizationService.regularize(request);

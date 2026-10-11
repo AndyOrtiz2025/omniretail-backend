@@ -1305,7 +1305,7 @@ public class InventoryBalanceRegularizationService {
      */
     private static String plain(BigDecimal value) {
         if (value == null) {
-            return BigDecimal.ZERO.stripTrailingZeros().toPlainString();
+            return "0";
         }
         return value.stripTrailingZeros().toPlainString();
     }
