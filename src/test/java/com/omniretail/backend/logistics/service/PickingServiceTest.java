@@ -149,6 +149,68 @@ class PickingServiceTest {
     }
 
     @Test
+    void rejectsAKitWithoutItsHistoricalFulfillmentSnapshot() {
+        Fixture fixture = fixture("home_delivery", false);
+        jdbc.update("UPDATE products SET product_type = 'kit', tracking_stock = false WHERE id = ?", fixture.productId());
+
+        assertCode(
+                () -> service.ensureForOrder(fixture.tenantId(), fixture.orderId()),
+                "PICKING_RESERVATION_REQUIRED");
+    }
+
+    @Test
+    void rejectsAPhysicalProductWithoutAnActiveReservation() {
+        Fixture fixture = fixture("home_delivery", false);
+        jdbc.update("DELETE FROM inventory_reservations WHERE id = ?", fixture.reservationId());
+
+        assertCode(
+                () -> service.ensureForOrder(fixture.tenantId(), fixture.orderId()),
+                "PICKING_RESERVATION_REQUIRED");
+    }
+
+    @Test
+    void rejectsNonKitProductsWithFulfillmentComponents() {
+        Fixture fixture = fixture("home_delivery", false);
+        jdbc.update("""
+                UPDATE order_items
+                SET fulfillment_components = '[{"productId":"%s","quantityPerKit":1}]'::jsonb
+                WHERE id = ?
+                """.formatted(UUID.randomUUID()), fixture.orderItemId());
+
+        assertCode(
+                () -> service.ensureForOrder(fixture.tenantId(), fixture.orderId()),
+                "PICKING_RESERVATION_REQUIRED");
+    }
+
+    @Test
+    void ignoresServiceLinesWhileCreatingPickingForPhysicalProducts() {
+        Fixture fixture = fixture("home_delivery", false);
+        UUID serviceProduct = UUID.randomUUID();
+        UUID serviceItem = UUID.randomUUID();
+        UUID category = jdbc.queryForObject(
+                "SELECT category_id FROM products WHERE id = ?", UUID.class, fixture.productId());
+        UUID unit = jdbc.queryForObject(
+                "SELECT base_unit_id FROM products WHERE id = ?", UUID.class, fixture.productId());
+        jdbc.update("""
+                INSERT INTO products (id, tenant_id, sku, name, product_type, category_id, base_unit_id,
+                    tracking_stock, tracking_lot, tracking_expiration, tracking_serial)
+                VALUES (?, ?, ?, 'Servicio', 'service', ?, ?, false, false, false, false)
+                """, serviceProduct, fixture.tenantId(), "SVC-" + serviceProduct, category, unit);
+        jdbc.update("""
+                INSERT INTO order_items (id, order_id, product_id, sku_snapshot, name_snapshot, quantity,
+                    inventory_quantity, unit_price, discount, subtotal)
+                VALUES (?, ?, ?, 'SVC', 'Servicio', 1, 1, 10, 0, 10)
+                """, serviceItem, fixture.orderId(), serviceProduct);
+
+        PickingOrder picking = service.ensureForOrder(fixture.tenantId(), fixture.orderId()).orElseThrow();
+
+        assertThat(pickingItems.findByTenantIdAndPickingOrderId(fixture.tenantId(), picking.getId()))
+                .singleElement()
+                .extracting(item -> item.getProductId())
+                .isEqualTo(fixture.productId());
+    }
+
+    @Test
     void createsPickingForPosHomeDeliveryOrder() {
         Fixture fixture = fixture("home_delivery", false);
         jdbc.update("UPDATE orders SET source = 'pos' WHERE id = ?", fixture.orderId());

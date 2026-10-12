@@ -103,6 +103,7 @@ public class PickingService {
     private static final TypeReference<List<ReservationAllocation>> ALLOCATIONS_TYPE =
             new TypeReference<>() {};
     private static final String PICKING_PRODUCT_NOT_FOUND = "PICKING_PRODUCT_NOT_FOUND";
+    private static final String PICKING_PRODUCT_NOT_FOUND_MESSAGE = "Producto de Picking no encontrado.";
     private static final String PICKING_RESERVATION_REQUIRED = "PICKING_RESERVATION_REQUIRED";
 
     private final PickingOrderRepository pickingOrderRepository;
@@ -698,7 +699,7 @@ public class PickingService {
         for (PickingItem item : items) {
             Product product = pickingProducts.get(item.getProductId());
             if (product == null) {
-                throw conflict(PICKING_PRODUCT_NOT_FOUND, "Producto de Picking no encontrado.");
+                throw conflict(PICKING_PRODUCT_NOT_FOUND, PICKING_PRODUCT_NOT_FOUND_MESSAGE);
             }
             if (isTraceable(product)) {
                 List<InventoryTraceabilitySelection> selections =
@@ -941,7 +942,7 @@ public class PickingService {
 
     private Product requireProduct(UUID tenantId, UUID productId) {
         return productRepository.findByTenantIdAndId(tenantId, productId)
-                .orElseThrow(() -> notFound(PICKING_PRODUCT_NOT_FOUND, "Producto de Picking no encontrado."));
+                .orElseThrow(() -> notFound(PICKING_PRODUCT_NOT_FOUND, PICKING_PRODUCT_NOT_FOUND_MESSAGE));
     }
 
     private void applyLocation(UUID tenantId, UUID branchId, PickingItem item, UUID requestedLocationId) {
@@ -1096,7 +1097,7 @@ public class PickingService {
     private PickingLineResponse lineResponse(
             UUID tenantId, UUID branchId, UUID orderId, PickingItem item, Product product) {
         if (product == null) {
-            throw conflict(PICKING_PRODUCT_NOT_FOUND, "Producto de Picking no encontrado.");
+            throw conflict(PICKING_PRODUCT_NOT_FOUND, PICKING_PRODUCT_NOT_FOUND_MESSAGE);
         }
         PickingLineResponse.Location location = item.getLocationId() == null
                 ? null
