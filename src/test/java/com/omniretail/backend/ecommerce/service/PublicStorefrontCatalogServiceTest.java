@@ -263,12 +263,8 @@ class PublicStorefrontCatalogServiceTest {
         UUID tapeId = UUID.randomUUID();
         Product kit = product(kitId, UUID.randomUUID(), unitId);
         when(kit.getProductType()).thenReturn(ProductType.kit);
-        Product hammerProduct = trackedProduct(hammerId, unitId);
-        Product tapeProduct = trackedProduct(tapeId, unitId);
-        when(hammerProduct.getProductType()).thenReturn(ProductType.physical);
-        when(hammerProduct.getStatus()).thenReturn(ProductStatus.published);
-        when(tapeProduct.getProductType()).thenReturn(ProductType.physical);
-        when(tapeProduct.getStatus()).thenReturn(ProductStatus.published);
+        Product hammerProduct = eligibleKitComponent(hammerId);
+        Product tapeProduct = eligibleKitComponent(tapeId);
         ProductKitComponent hammer = ProductKitComponent.builder()
                 .kitProductId(kitId).componentProductId(hammerId)
                 .quantityPerKit(new BigDecimal("2")).build();
@@ -364,6 +360,15 @@ class PublicStorefrontCatalogServiceTest {
 
     private Product trackedProduct(UUID productId, UUID unitId) {
         Product product = product(productId, UUID.randomUUID(), unitId);
+        when(product.getTrackingStock()).thenReturn(true);
+        return product;
+    }
+
+    private Product eligibleKitComponent(UUID productId) {
+        Product product = mock(Product.class);
+        when(product.getId()).thenReturn(productId);
+        when(product.getProductType()).thenReturn(ProductType.physical);
+        when(product.getStatus()).thenReturn(ProductStatus.published);
         when(product.getTrackingStock()).thenReturn(true);
         return product;
     }
