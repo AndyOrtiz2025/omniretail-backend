@@ -11,8 +11,8 @@ import org.springframework.http.HttpStatus;
 
 public final class KitFulfillmentSnapshot {
     private static final Pattern ITEM = Pattern.compile(
-            "\\{\\s*\\\"productId\\\"\\s*:\\s*\\\"([0-9a-fA-F-]{36})\\\"\\s*,\\s*"
-                    + "\\\"quantityPerKit\\\"\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)\\s*\\}");
+            "\\{\\s*\\\"productId\\\"\\s*:\\s*\\\"([\\da-fA-F-]{36})\\\"\\s*,\\s*"
+                    + "\\\"quantityPerKit\\\"\\s*:\\s*(\\d+(?:\\.\\d+)?)\\s*\\}");
     private KitFulfillmentSnapshot() { }
     public static String encode(List<ProductKitService.FulfillmentComponent> components) {
         if (components == null || components.isEmpty()) return null;

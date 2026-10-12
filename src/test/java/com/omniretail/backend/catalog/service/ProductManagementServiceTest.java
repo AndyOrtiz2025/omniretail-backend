@@ -553,9 +553,10 @@ class ProductManagementServiceTest {
                 .hasMessageContaining("unidad base");
 
         product.setProductType(ProductType.kit);
-        assertThatThrownBy(() -> service.update(PRODUCT_ID, request(
+        ProductUpdateRequest updateKitRequest = request(
                 "KIT-ALT", null, ProductType.kit, CATEGORY_ID, BASE_UNIT_ID,
-                alternateUnit, null, tracking(false, false, false, false))))
+                alternateUnit, null, tracking(false, false, false, false));
+        assertThatThrownBy(() -> service.update(PRODUCT_ID, updateKitRequest))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("unidad base");
     }

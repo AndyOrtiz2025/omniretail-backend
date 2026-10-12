@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -316,7 +317,7 @@ class StorefrontCheckoutServiceTest {
 
         ArgumentCaptor<ReserveInventoryCommand> reservations =
                 ArgumentCaptor.forClass(ReserveInventoryCommand.class);
-        verify(reservationLifecycleService, org.mockito.Mockito.times(2)).reserve(reservations.capture());
+        verify(reservationLifecycleService, times(2)).reserve(reservations.capture());
         assertThat(reservations.getAllValues()).extracting(ReserveInventoryCommand::productId)
                 .containsExactlyInAnyOrder(firstComponentId, secondComponentId);
         assertThat(reservations.getAllValues()).extracting(ReserveInventoryCommand::quantity)
