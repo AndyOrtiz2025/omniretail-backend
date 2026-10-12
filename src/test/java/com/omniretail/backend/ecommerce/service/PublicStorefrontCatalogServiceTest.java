@@ -271,7 +271,8 @@ class PublicStorefrontCatalogServiceTest {
         ProductKitComponent tape = ProductKitComponent.builder()
                 .kitProductId(kitId).componentProductId(tapeId)
                 .quantityPerKit(BigDecimal.ONE).build();
-        when(tenantRepository.findBySlug("ferreteria-los-simpson")).thenReturn(Optional.of(tenant(tenantId)));
+        Tenant tenant = tenant(tenantId);
+        when(tenantRepository.findBySlug("ferreteria-los-simpson")).thenReturn(Optional.of(tenant));
         when(productRepository.findByTenantIdAndStatusAndChannelEcommerceTrue(tenantId, ProductStatus.published))
                 .thenReturn(List.of(kit));
         when(productKitComponentRepository.findByTenantIdAndKitProductIdIn(tenantId, List.of(kitId)))
