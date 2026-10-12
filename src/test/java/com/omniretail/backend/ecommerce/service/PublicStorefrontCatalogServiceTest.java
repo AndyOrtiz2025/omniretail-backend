@@ -265,6 +265,10 @@ class PublicStorefrontCatalogServiceTest {
         when(kit.getProductType()).thenReturn(ProductType.kit);
         Product hammerProduct = trackedProduct(hammerId, unitId);
         Product tapeProduct = trackedProduct(tapeId, unitId);
+        when(hammerProduct.getProductType()).thenReturn(ProductType.physical);
+        when(hammerProduct.getStatus()).thenReturn(ProductStatus.published);
+        when(tapeProduct.getProductType()).thenReturn(ProductType.physical);
+        when(tapeProduct.getStatus()).thenReturn(ProductStatus.published);
         ProductKitComponent hammer = ProductKitComponent.builder()
                 .kitProductId(kitId).componentProductId(hammerId)
                 .quantityPerKit(new BigDecimal("2")).build();
