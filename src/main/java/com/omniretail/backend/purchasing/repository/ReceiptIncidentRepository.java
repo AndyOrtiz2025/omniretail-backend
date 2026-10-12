@@ -1,5 +1,6 @@
 package com.omniretail.backend.purchasing.repository;
 
+import com.omniretail.backend.purchasing.dto.ReceiptIncidentDashboardRow;
 import com.omniretail.backend.purchasing.entity.ReceiptIncident;
 import com.omniretail.backend.purchasing.entity.ReceiptIncidentStatus;
 import jakarta.persistence.LockModeType;
@@ -130,8 +131,29 @@ public interface ReceiptIncidentRepository extends JpaRepository<ReceiptIncident
                     @Param("status") ReceiptIncidentStatus status,
                     Pageable pageable);
 
-    /** Incidencias creadas en [from, to), abiertas y resueltas. Lo usa el dashboard de administración. */
-    long countByTenantIdAndCreatedAtGreaterThanEqualAndCreatedAtLessThan(UUID tenantId, Instant from, Instant to);
+    /**
+     * Incidencias creadas en [monthStart, nextMonthStart), abiertas y resueltas, con recepción, orden, proveedor
+     * y sucursal resueltos en una sola query. Left joins para no perder incidencias si falta algún dato
+     * relacionado. Lo usa el dashboard de administración.
+     */
+    @Query("""
+            select new com.omniretail.backend.purchasing.dto.ReceiptIncidentDashboardRow(
+                i.id, i.incidentType, i.notes, i.createdAt, i.branchId,
+                r.number, o.number, o.supplierId, s.name, b.name)
+            from ReceiptIncident i
+            left join GoodsReceipt r on r.id = i.goodsReceiptId and r.tenantId = :tenantId
+            left join PurchaseOrder o on o.id = r.purchaseOrderId and o.tenantId = :tenantId
+            left join Supplier s on s.id = o.supplierId and s.tenantId = :tenantId
+            left join Branch b on b.id = i.branchId and b.tenantId = :tenantId
+            where i.tenantId = :tenantId
+              and i.createdAt >= :monthStart
+              and i.createdAt < :nextMonthStart
+            order by i.createdAt desc, i.id desc
+            """)
+    List<ReceiptIncidentDashboardRow> findDashboardRowsCreatedBetween(
+            @Param("tenantId") UUID tenantId,
+            @Param("monthStart") Instant monthStart,
+            @Param("nextMonthStart") Instant nextMonthStart);
 
     boolean existsByTenantIdAndGoodsReceiptIdAndStatus(
             UUID tenantId, UUID goodsReceiptId, ReceiptIncidentStatus status);
