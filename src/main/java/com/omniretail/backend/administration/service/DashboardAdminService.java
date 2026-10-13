@@ -3,6 +3,9 @@ package com.omniretail.backend.administration.service;
 import com.omniretail.backend.administration.dto.DashboardSummaryResponse;
 import com.omniretail.backend.administration.dto.DashboardSummaryResponse.DailySaleDto;
 import com.omniretail.backend.administration.dto.DashboardSummaryResponse.IncidentAnalyticsDto;
+import com.omniretail.backend.administration.dto.DashboardSummaryResponse.IncidentDto;
+import com.omniretail.backend.administration.dto.DashboardSummaryResponse.IncidentSupplierCountDto;
+import com.omniretail.backend.administration.dto.DashboardSummaryResponse.IncidentTypeCountDto;
 import com.omniretail.backend.administration.dto.DashboardSummaryResponse.PendingOrdersByBranchDto;
 import com.omniretail.backend.administration.dto.DashboardSummaryResponse.PendingOrdersByStatusDto;
 import com.omniretail.backend.administration.dto.DashboardSummaryResponse.SalesByBranchDto;
@@ -28,7 +31,11 @@ import com.omniretail.backend.pos.entity.SaleItem;
 import com.omniretail.backend.pos.entity.SaleStatus;
 import com.omniretail.backend.pos.repository.SaleItemRepository;
 import com.omniretail.backend.pos.repository.SaleRepository;
+import com.omniretail.backend.purchasing.dto.ReceiptIncidentDashboardRow;
+import com.omniretail.backend.purchasing.entity.ReceiptIncidentType;
 import com.omniretail.backend.purchasing.repository.ReceiptIncidentRepository;
+import com.omniretail.backend.purchasing.repository.ReceiptIncidentRepository.DashboardSupplierCount;
+import com.omniretail.backend.purchasing.repository.ReceiptIncidentRepository.DashboardTypeCount;
 import com.omniretail.backend.shared.security.CurrentUser;
 import java.math.BigDecimal;
 import java.text.Collator;
@@ -40,6 +47,7 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -47,6 +55,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -68,6 +77,15 @@ public class DashboardAdminService {
             OrderStatus.packing,
             OrderStatus.ready_for_dispatch);
     private static final int TOP_PRODUCTS_LIMIT = 10;
+    private static final int TOP_INCIDENT_SUPPLIERS_LIMIT = 5;
+    private static final int LATEST_INCIDENTS_LIMIT = 5;
+    // Mismas etiquetas que RECEIPT_INCIDENT_TYPE_LABELS del frontend.
+    private static final Map<ReceiptIncidentType, String> INCIDENT_TYPE_LABELS = new EnumMap<>(Map.of(
+            ReceiptIncidentType.missing, "Faltante",
+            ReceiptIncidentType.damaged, "Dañado",
+            ReceiptIncidentType.wrong_item, "Producto incorrecto",
+            ReceiptIncidentType.expired, "Vencido",
+            ReceiptIncidentType.other, "Otro"));
 
     private final CurrentUser currentUser;
     private final TenantRepository tenantRepository;
@@ -104,6 +122,18 @@ public class DashboardAdminService {
 
         List<Order> pendingOrders = orderRepository.findByTenantIdAndStatusIn(tenantId, PENDING_LOGISTICS_STATUSES);
         List<StockAlertsByBranchDto> stockAlertsByBranch = stockAlertsByBranch(tenantId, branches);
+        List<DashboardTypeCount> incidentCountsByType =
+                receiptIncidentRepository.countDashboardIncidentsByTypeCreatedBetween(
+                        tenantId, monthStart, nextMonthStart);
+        List<DashboardSupplierCount> incidentCountsBySupplier =
+                receiptIncidentRepository.countDashboardIncidentsBySupplierCreatedBetween(
+                        tenantId, monthStart, nextMonthStart);
+        List<ReceiptIncidentDashboardRow> latestIncidentRows =
+                receiptIncidentRepository.findDashboardRowsCreatedBetween(
+                        tenantId, monthStart, nextMonthStart, PageRequest.of(0, LATEST_INCIDENTS_LIMIT));
+        long totalMonthIncidents = incidentCountsByType.stream()
+                .mapToLong(DashboardTypeCount::getTotal)
+                .sum();
 
         return new DashboardSummaryResponse(
                 summarize(todaySales),
@@ -117,15 +147,12 @@ public class DashboardAdminService {
                 pendingOrders.size(),
                 pendingOrdersByStatus(pendingOrders),
                 pendingOrdersByBranch(pendingOrders, branches, collator),
-                // Solo el total del mes es real. byType/bySupplier y latestIncidents siguen vacíos: sus etiquetas
-                // (typeName, supplierName) no tienen contrato acordado con el frontend, y latestIncidents también
-                // espera incidencias de traslados, que todavía no existen en el backend.
+                // Solo incidencias de recepción: las de traslados todavía no existen en el backend.
                 new IncidentAnalyticsDto(
-                        receiptIncidentRepository.countByTenantIdAndCreatedAtGreaterThanEqualAndCreatedAtLessThan(
-                                tenantId, monthStart, nextMonthStart),
-                        List.of(),
-                        List.of()),
-                List.of(),
+                        totalMonthIncidents,
+                        incidentsByType(incidentCountsByType, collator),
+                        incidentsBySupplier(incidentCountsBySupplier, collator)),
+                latestIncidents(latestIncidentRows),
                 topProducts(monthSales, collator));
     }
 
@@ -234,6 +261,49 @@ public class DashboardAdminService {
                 .sorted(Comparator.comparingLong(PendingOrdersByBranchDto::count)
                         .reversed()
                         .thenComparing(PendingOrdersByBranchDto::branchName, collator))
+                .toList();
+    }
+
+    private static String incidentTypeLabel(ReceiptIncidentType type) {
+        return INCIDENT_TYPE_LABELS.get(type);
+    }
+
+    // Solo los tipos con incidencias; más frecuente primero, desempate alfabético.
+    private static List<IncidentTypeCountDto> incidentsByType(
+            List<DashboardTypeCount> countsByType, Collator collator) {
+        return countsByType.stream()
+                .map(entry -> new IncidentTypeCountDto(
+                        incidentTypeLabel(entry.getIncidentType()), entry.getTotal()))
+                .sorted(Comparator.comparingLong(IncidentTypeCountDto::count)
+                        .reversed()
+                        .thenComparing(IncidentTypeCountDto::typeName, collator))
+                .toList();
+    }
+
+    // Top 5 de proveedores por cantidad de incidencias, ya agrupados en BD por supplierId.
+    private static List<IncidentSupplierCountDto> incidentsBySupplier(
+            List<DashboardSupplierCount> countsBySupplier, Collator collator) {
+        return countsBySupplier.stream()
+                .map(entry -> new IncidentSupplierCountDto(entry.getSupplierName(), entry.getTotal()))
+                .sorted(Comparator.comparingLong(IncidentSupplierCountDto::count)
+                        .reversed()
+                        .thenComparing(IncidentSupplierCountDto::supplierName, collator))
+                .limit(TOP_INCIDENT_SUPPLIERS_LIMIT)
+                .toList();
+    }
+
+    private static List<IncidentDto> latestIncidents(List<ReceiptIncidentDashboardRow> latestIncidentRows) {
+        return latestIncidentRows.stream()
+                .map(incident -> new IncidentDto(
+                        incident.notes(),
+                        incidentTypeLabel(incident.incidentType()),
+                        incident.createdAt().toString(),
+                        incident.receiptNumber(),
+                        incident.branchName(),
+                        incident.purchaseOrderNumber(),
+                        null,
+                        incident.supplierName(),
+                        null))
                 .toList();
     }
 

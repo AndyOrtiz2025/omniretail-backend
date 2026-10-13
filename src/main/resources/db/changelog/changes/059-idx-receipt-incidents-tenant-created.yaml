@@ -1,0 +1,15 @@
+databaseChangeLog:
+  - changeSet:
+      id: 059-idx-receipt-incidents-tenant-created
+      author: omniretail
+      changes:
+        - createIndex:
+            tableName: receipt_incidents
+            indexName: idx_receipt_incidents_tenant_created
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: created_at
+              - column:
+                  name: id
