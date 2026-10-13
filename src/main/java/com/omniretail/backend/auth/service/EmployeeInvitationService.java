@@ -13,6 +13,7 @@ import com.omniretail.backend.auth.repository.MfaEnrollmentRepository;
 import com.omniretail.backend.shared.config.FrontendProperties;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.exception.FieldValidationException;
+import com.omniretail.backend.shared.notification.EmailLayout;
 import com.omniretail.backend.shared.notification.EmailMessage;
 import com.omniretail.backend.shared.notification.EmailPurpose;
 import com.omniretail.backend.shared.notification.EmailRequestedEvent;
@@ -186,6 +187,7 @@ public class EmployeeInvitationService implements EmployeeInvitationPort {
     }
 
     private static EmailMessage invitationEmail(UUID tenantId, User user, String link) {
+        long hours = INVITATION_TTL.toHours();
         String body = """
                 Hola %s:
 
@@ -195,8 +197,15 @@ public class EmployeeInvitationService implements EmployeeInvitationPort {
 
                 El enlace vence en %d horas y solo se puede usar una vez.
                 Si recibes una nueva invitación, el enlace anterior dejará de ser válido.
-                """.formatted(user.getName(), link, INVITATION_TTL.toHours());
-        return EmailMessage.text(tenantId, EmailPurpose.EMPLOYEE_INVITATION, user.getEmail(),
-                "Activa tu cuenta de empleado", body);
+                """.formatted(user.getName(), link, hours);
+        String html = EmailLayout.render(null, "Activa tu cuenta de empleado", List.of(
+                EmailLayout.paragraph("Hola ", user.getName(), ":"),
+                EmailLayout.paragraph(
+                        "Te invitamos a activar tu cuenta de empleado. Para elegir tu contraseña, usa este enlace:"),
+                EmailLayout.button("Activar mi cuenta", link),
+                EmailLayout.notice("El enlace vence en %d horas y solo se puede usar una vez. ".formatted(hours)
+                        + "Si recibes una nueva invitación, el enlace anterior dejará de ser válido.")));
+        return EmailMessage.html(tenantId, EmailPurpose.EMPLOYEE_INVITATION, user.getEmail(),
+                "Activa tu cuenta de empleado", body, html);
     }
 }

@@ -108,6 +108,8 @@ class PasswordRecoveryControllerTest {
         forgot(customer.getEmail(), tenant.getSlug()).andExpect(status().isAccepted());
         EmailMessage message = emailSender.awaitMessageTo(customer.getEmail());
         assertThat(message.body()).contains("http://localhost:3000/tienda/" + tenant.getSlug() + "/restablecer-contrasena/");
+        assertThat(message.html()).contains(tenant.getName(), customer.getName(), "Restablecer contraseña",
+                "href=\"http://localhost:3000/tienda/" + tenant.getSlug() + "/restablecer-contrasena/");
         assertThat(challengeRepository.findByUserId(customer.getId())).hasSize(1);
     }
 
@@ -120,6 +122,8 @@ class PasswordRecoveryControllerTest {
         EmailMessage message = emailSender.awaitMessageTo(employee.getEmail());
         assertThat(message.body()).contains("http://localhost:3000/restablecer-contrasena/");
         assertThat(message.body()).doesNotContain("/tienda/");
+        assertThat(message.html()).contains(employee.getName(), "href=\"http://localhost:3000/restablecer-contrasena/",
+                ">http://localhost:3000/restablecer-contrasena/", "vence en 15 minutos").doesNotContain("/tienda/");
         PasswordResetChallenge challenge = challengeRepository.findByUserId(employee.getId()).getFirst();
         assertThat(challenge.getExpiresAt()).isBetween(
                 challenge.getCreatedAt().plusSeconds(14 * 60), challenge.getCreatedAt().plusSeconds(16 * 60));

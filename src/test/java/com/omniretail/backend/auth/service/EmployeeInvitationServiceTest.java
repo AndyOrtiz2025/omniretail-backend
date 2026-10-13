@@ -136,6 +136,10 @@ class EmployeeInvitationServiceTest {
         assertThat(event.message().body()).contains("Ana Empleada",
                 frontendProperties.link("/activar-cuenta/" + result.invitationToken()), "48 horas")
                 .doesNotContain(randomPassword, account.getPasswordHash(), invitation.getTokenHash());
+        String link = frontendProperties.link("/activar-cuenta/" + result.invitationToken());
+        assertThat(event.message().html()).contains("Ana Empleada", "Activar mi cuenta", "href=\"" + link + "\"",
+                ">" + link + "</a>", "48 horas")
+                .doesNotContain(randomPassword, account.getPasswordHash(), invitation.getTokenHash());
     }
 
     @Test

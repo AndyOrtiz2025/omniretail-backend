@@ -113,6 +113,8 @@ class MfaEmailControllerTest {
         EmailMessage mail = emailSender.awaitMessageTo(user.getEmail());
         assertThat(mail.subject()).isEqualTo("Tu código de verificación");
         assertThat(mail.body()).contains("activar la verificación en dos pasos", "Vence en 5 minutos");
+        assertThat(mail.html()).contains(user.getName(), "activar la verificación en dos pasos",
+                "Vence en 5 minutos", "letter-spacing:8px;color:#143158;\">" + codeOf(mail) + "</div>");
         mockMvc.perform(get(MFA).header("Authorization", "Bearer " + token))
                 .andExpect(jsonPath("$.enabled").value(false))
                 .andExpect(jsonPath("$.method").value("email"));
@@ -199,6 +201,7 @@ class MfaEmailControllerTest {
         assertThat(mails).allSatisfy(mail -> {
             assertThat(mail.body()).doesNotContainIgnoringCase("http").doesNotContain("www.");
             assertThat(mail.body()).containsPattern("es: \\d{6}");
+            assertThat(mail.html()).doesNotContainIgnoringCase("http").doesNotContain("www.").doesNotContain("<a ");
         });
     }
 

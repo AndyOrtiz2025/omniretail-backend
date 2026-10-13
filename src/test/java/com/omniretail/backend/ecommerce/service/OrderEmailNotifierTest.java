@@ -31,6 +31,8 @@ class OrderEmailNotifierTest {
         assertThat(event.message().purpose().scope()).isEqualTo(EmailPurpose.Scope.TENANT);
         assertThat(event.message().to()).isEqualTo("cliente@example.com");
         assertThat(event.message().body()).contains("WEB-123").doesNotContain("tracking-secreto");
+        assertThat(event.message().html()).contains("Pedido confirmado", "<strong>WEB-123</strong>")
+                .doesNotContain("tracking-secreto");
     }
 
     @Test
@@ -40,6 +42,8 @@ class OrderEmailNotifierTest {
         EmailRequestedEvent event = captured();
         assertThat(event.message().purpose()).isEqualTo(EmailPurpose.DISPATCH_NOTIFICATION);
         assertThat(event.message().to()).isEqualTo("cliente@example.com");
+        assertThat(event.message().body()).contains("WEB-123", "va en camino");
+        assertThat(event.message().html()).contains("<strong>WEB-123</strong>", "va en camino");
     }
 
     @Test
@@ -54,6 +58,8 @@ class OrderEmailNotifierTest {
         assertThat(event.message().subject()).contains("WEB-123").contains("cancelado");
         assertThat(event.message().body()).contains("WEB-123").contains("cancelado")
                 .doesNotContain("confirmado").doesNotContain("tracking-secreto");
+        assertThat(event.message().html()).contains("Pedido cancelado", "<strong>WEB-123</strong>",
+                "comunícate con la tienda").doesNotContain("tracking-secreto");
     }
 
     @Test

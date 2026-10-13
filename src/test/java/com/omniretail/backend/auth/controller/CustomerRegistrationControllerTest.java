@@ -130,7 +130,12 @@ class CustomerRegistrationControllerTest {
         assertThat(verification.getExpiresAt()).isBetween(
                 verification.getCreatedAt().plusSeconds(29 * 60), verification.getCreatedAt().plusSeconds(31 * 60));
 
-        String token = tokenFrom(emailSender.awaitMessageTo(email));
+        EmailMessage mail = emailSender.awaitMessageTo(email);
+        String token = tokenFrom(mail);
+        String link = "http://localhost:3000/verificar-correo/" + token;
+        assertThat(mail.body()).contains("Hola Ana Pérez:", link, "vence en 30 minutos");
+        assertThat(mail.html()).contains("Ana Pérez", tenant.getName(), "href=\"" + link + "\"",
+                ">" + link + "</a>", "Verificar mi correo", "vence en 30 minutos");
         assertThat(verification.getTokenHash()).hasSize(64).isNotEqualTo(token);
         assertThat(response).doesNotContain(token).doesNotContain(verification.getTokenHash());
         assertThat(response).doesNotContain("token");

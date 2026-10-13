@@ -7,6 +7,7 @@ import com.omniretail.backend.auth.service.AuthAuditService;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.notification.EmailCredentialCrypto;
 import com.omniretail.backend.shared.notification.EmailDeliveryException;
+import com.omniretail.backend.shared.notification.EmailLayout;
 import com.omniretail.backend.shared.notification.EmailMessage;
 import com.omniretail.backend.shared.notification.EmailPurpose;
 import com.omniretail.backend.shared.notification.EmailSenderProvider;
@@ -17,6 +18,7 @@ import com.omniretail.backend.shared.notification.TenantEmailSenderConfigReposit
 import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
 import java.time.Instant;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
@@ -50,6 +52,11 @@ public class EmailSenderConfigService {
             (pedidos, despachos, órdenes de compra y recepciones) y la verificación de correo de los \
             clientes que se registran en tu tienda.
             """;
+    private static final String TEST_HTML = EmailLayout.render(null, "Prueba de configuración de correo", List.of(
+            EmailLayout.paragraph("Este es un correo de prueba de OmniRetail."),
+            EmailLayout.notice("Si lo recibiste, la cuenta configurada puede enviar los correos operativos de tu "
+                    + "negocio (pedidos, despachos, órdenes de compra y recepciones) y la verificación de correo de "
+                    + "los clientes que se registran en tu tienda.")));
     private static final Pattern EMAIL = Pattern.compile("^[^@\\s<>\"]+@[^@\\s<>\"]+\\.[^@\\s<>\"]+$");
     private static final Pattern APP_PASSWORD = Pattern.compile("^[A-Za-z0-9]{16}$");
     private static final int EMAIL_MAX = 254;
@@ -126,8 +133,8 @@ public class EmailSenderConfigService {
 
         Instant now = Instant.now();
         try {
-            tenantEmailSender.sendTest(EmailMessage.text(
-                    tenantId, EmailPurpose.SENDER_TEST, recipient, TEST_SUBJECT, TEST_BODY));
+            tenantEmailSender.sendTest(EmailMessage.html(
+                    tenantId, EmailPurpose.SENDER_TEST, recipient, TEST_SUBJECT, TEST_BODY, TEST_HTML));
         } catch (RuntimeException ex) {
             // Cualquier fallo (autenticacion, transporte, credencial ilegible) se reporta igual; nunca la excepcion.
             String reason = ex instanceof EmailDeliveryException delivery

@@ -38,6 +38,12 @@ public record EmailMessage(
         return new EmailMessage(tenantId, purpose, to, subject, body, null);
     }
 
+    /** Multipart: texto plano de respaldo + HTML. */
+    public static EmailMessage html(
+            UUID tenantId, EmailPurpose purpose, String to, String subject, String body, String html) {
+        return new EmailMessage(tenantId, purpose, to, subject, body, html);
+    }
+
     /** Texto plano + HTML + adjuntos por referencia. */
     public static EmailMessage withAttachments(
             UUID tenantId,

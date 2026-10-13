@@ -15,6 +15,7 @@ import com.omniretail.backend.auth.repository.EmailVerificationRepository;
 import com.omniretail.backend.shared.config.FrontendProperties;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.exception.FieldValidationException;
+import com.omniretail.backend.shared.notification.EmailLayout;
 import com.omniretail.backend.shared.notification.EmailMessage;
 import com.omniretail.backend.shared.notification.EmailPurpose;
 import com.omniretail.backend.shared.notification.EmailRequestedEvent;
@@ -22,6 +23,7 @@ import jakarta.validation.Validator;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
@@ -98,7 +100,7 @@ public class CustomerRegistrationService {
                 .expiresAt(now.plus(EMAIL_VERIFICATION_TTL))
                 .build());
 
-        eventPublisher.publishEvent(new EmailRequestedEvent(verificationEmail(user, token)));
+        eventPublisher.publishEvent(new EmailRequestedEvent(verificationEmail(user, tenant.getName(), token)));
         return new RegisterCustomerResponse(RegisterCustomerResponse.UserView.from(user));
     }
 
@@ -163,8 +165,9 @@ public class CustomerRegistrationService {
         }
     }
 
-    private EmailMessage verificationEmail(User user, String token) {
+    private EmailMessage verificationEmail(User user, String businessName, String token) {
         String link = frontendProperties.link("/verificar-correo/" + token);
+        long minutes = EMAIL_VERIFICATION_TTL.toMinutes();
         String body = """
                 Hola %s:
 
@@ -173,9 +176,16 @@ public class CustomerRegistrationService {
                 %s
 
                 El enlace vence en %d minutos. Si no creaste esta cuenta, ignora este mensaje.
-                """.formatted(user.getName(), link, EMAIL_VERIFICATION_TTL.toMinutes());
-        return EmailMessage.text(
-                user.getTenantId(), EmailPurpose.EMAIL_VERIFICATION, user.getEmail(), "Verifica tu correo", body);
+                """.formatted(user.getName(), link, minutes);
+        String html = EmailLayout.render(businessName, "Verifica tu correo", List.of(
+                EmailLayout.paragraph("Hola ", user.getName(), ":"),
+                EmailLayout.paragraph(
+                        "Gracias por registrarte. Para activar tu cuenta, verifica tu correo con este enlace:"),
+                EmailLayout.button("Verificar mi correo", link),
+                EmailLayout.notice("El enlace vence en %d minutos. Si no creaste esta cuenta, ignora este mensaje."
+                        .formatted(minutes))));
+        return EmailMessage.html(user.getTenantId(), EmailPurpose.EMAIL_VERIFICATION, user.getEmail(),
+                "Verifica tu correo", body, html);
     }
 
     private static BusinessException emailAlreadyRegistered() {

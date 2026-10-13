@@ -15,11 +15,13 @@ import com.omniretail.backend.auth.repository.PasswordResetChallengeRepository;
 import com.omniretail.backend.shared.config.FrontendProperties;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.exception.FieldValidationException;
+import com.omniretail.backend.shared.notification.EmailLayout;
 import com.omniretail.backend.shared.notification.EmailMessage;
 import com.omniretail.backend.shared.notification.EmailPurpose;
 import com.omniretail.backend.shared.notification.EmailRequestedEvent;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.Set;
@@ -153,10 +155,11 @@ public class PasswordRecoveryService {
                 : "/restablecer-contrasena/" + token;
         eventPublisher.publishEvent(new EmailRequestedEvent(
                 resetEmail(user.getTenantId(), candidate.account().getEmail(), user.getName(),
-                        frontendProperties.link(path))));
+                        customerTenant.map(Tenant::getName).orElse(null), frontendProperties.link(path))));
     }
 
-    private static EmailMessage resetEmail(UUID tenantId, String to, String name, String link) {
+    private static EmailMessage resetEmail(UUID tenantId, String to, String name, String businessName, String link) {
+        long minutes = PASSWORD_RESET_TTL.toMinutes();
         String body = """
                 Hola %s:
 
@@ -166,8 +169,15 @@ public class PasswordRecoveryService {
 
                 El enlace vence en %d minutos y solo se puede usar una vez. Si no pediste este cambio, ignora
                 este mensaje: tu contraseña actual sigue siendo válida.
-                """.formatted(name, link, PASSWORD_RESET_TTL.toMinutes());
-        return EmailMessage.text(tenantId, EmailPurpose.PASSWORD_RESET, to, "Restablece tu contraseña", body);
+                """.formatted(name, link, minutes);
+        String html = EmailLayout.render(businessName, "Restablece tu contraseña", List.of(
+                EmailLayout.paragraph("Hola ", name, ":"),
+                EmailLayout.paragraph(
+                        "Recibimos una solicitud para restablecer tu contraseña. Para elegir una nueva, usa este enlace:"),
+                EmailLayout.button("Restablecer contraseña", link),
+                EmailLayout.notice(("El enlace vence en %d minutos y solo se puede usar una vez. Si no pediste este "
+                        + "cambio, ignora este mensaje: tu contraseña actual sigue siendo válida.").formatted(minutes))));
+        return EmailMessage.html(tenantId, EmailPurpose.PASSWORD_RESET, to, "Restablece tu contraseña", body, html);
     }
 
     private static BusinessException invalidToken() {
