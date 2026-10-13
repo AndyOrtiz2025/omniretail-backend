@@ -46,6 +46,7 @@ public class PurchaseOrderController {
                     * `branchId`: Identificador de la sucursal de destino (opcional).
                     * `supplierId`: Identificador del proveedor (opcional).
                     * `status`: Filtro por estado (`draft`, `pending_approval`, `approved`, `sent`, `partially_received`, `received`, `cancelled`).
+                    * `search`: Búsqueda textual por número de orden, proveedor, producto, SKU de producto o SKU de proveedor (opcional).
                     * `page`: Número de página (comenzando en 1).
                     * `size`: Tamaño de página (por defecto 20, máx. 100).
                     
@@ -58,8 +59,9 @@ public class PurchaseOrderController {
             @RequestParam(required = false) UUID branchId,
             @RequestParam(required = false) UUID supplierId,
             @RequestParam(required = false) PurchaseOrderStatus status,
+            @RequestParam(required = false) String search,
             @PageableDefault(size = 20) Pageable pageable) {
-        return purchaseOrderService.list(branchId, supplierId, status, pageable);
+        return purchaseOrderService.list(branchId, supplierId, status, search, pageable);
     }
 
     @Operation(
