@@ -244,6 +244,109 @@ class DashboardAdminControllerTest {
     }
 
     @Test
+    void getDashboardSummaryHandlesLargerIncidentVolumeAndPreservesSupplierGrouping() throws Exception {
+        Tenant tenant = persistTenant();
+        Tenant otherTenant = persistTenant();
+        String token = tokenFor(tenant, DASHBOARD_READ);
+        Fixture fixture = createFixture(tenant.getId());
+        Fixture otherFixture = createFixture(otherTenant.getId());
+
+        // Proveedor 1 con dos órdenes de compra y distinto supplier_name_snapshot histórico (total = 6).
+        UUID mainSupplierId = UUID.randomUUID();
+        jdbcTemplate.update(
+                "INSERT INTO suppliers (id, tenant_id, name, status) VALUES (?, ?, 'Ferretería Central', 'active')",
+                mainSupplierId, tenant.getId());
+        ReceiptFixture receiptOldSnapshot =
+                insertGoodsReceiptForSupplier(tenant.getId(), fixture, mainSupplierId, "Nombre Histórico S.A.");
+        ReceiptFixture receiptCurrentSnapshot =
+                insertGoodsReceiptForSupplier(tenant.getId(), fixture, mainSupplierId, "Ferretería Central");
+
+        // 6 proveedores adicionales para superar el Top 5 (total = 7 proveedores, 25 incidencias en el mes).
+        ReceiptFixture supA = insertGoodsReceipt(tenant.getId(), fixture, "Aceros del Sur");
+        ReceiptFixture supB = insertGoodsReceipt(tenant.getId(), fixture, "Cementos Progreso");
+        ReceiptFixture supC = insertGoodsReceipt(tenant.getId(), fixture, "Pinturas Iris");
+        ReceiptFixture supD = insertGoodsReceipt(tenant.getId(), fixture, "Tornillos Express");
+        ReceiptFixture supE = insertGoodsReceipt(tenant.getId(), fixture, "Herramientas Atlas");
+        ReceiptFixture supF = insertGoodsReceipt(tenant.getId(), fixture, "Maderas del Norte");
+
+        int minutesAgo = 30;
+        // 6 incidencias para Ferretería Central (3 con snapshot antiguo + 3 con snapshot actual) -> damaged (6)
+        for (int i = 0; i < 3; i++) {
+            insertReceiptIncident(tenant.getId(), fixture, receiptOldSnapshot.id(), "damaged", "open",
+                    "Antigua-" + i, monthInstant(minutesAgo--));
+            insertReceiptIncident(tenant.getId(), fixture, receiptCurrentSnapshot.id(), "damaged", "resolved",
+                    "Actual-" + i, monthInstant(minutesAgo--));
+        }
+        // 5 para Aceros del Sur -> missing (5)
+        for (int i = 0; i < 5; i++) {
+            insertReceiptIncident(tenant.getId(), fixture, supA.id(), "missing", "open",
+                    "Aceros-" + i, monthInstant(minutesAgo--));
+        }
+        // 4 para Cementos Progreso -> wrong_item (4)
+        for (int i = 0; i < 4; i++) {
+            insertReceiptIncident(tenant.getId(), fixture, supB.id(), "wrong_item", "open",
+                    "Cementos-" + i, monthInstant(minutesAgo--));
+        }
+        // 4 para Pinturas Iris -> expired (4)
+        for (int i = 0; i < 4; i++) {
+            insertReceiptIncident(tenant.getId(), fixture, supC.id(), "expired", "resolved",
+                    "Pinturas-" + i, monthInstant(minutesAgo--));
+        }
+        // 3 para Tornillos Express -> other (3)
+        for (int i = 0; i < 3; i++) {
+            insertReceiptIncident(tenant.getId(), fixture, supD.id(), "other", "open",
+                    "Tornillos-" + i, monthInstant(minutesAgo--));
+        }
+        // 2 para Herramientas Atlas y 1 para Maderas del Norte (quedan fuera del Top 5 de proveedores) -> damaged (3)
+        // Estas 3 y las últimas 2 de Tornillos Express son las 5 más recientes (minutesAgo = 5..1).
+        insertReceiptIncident(tenant.getId(), fixture, supE.id(), "damaged", "open",
+                "Atlas-1", monthInstant(3));
+        insertReceiptIncident(tenant.getId(), fixture, supE.id(), "damaged", "open",
+                "Atlas-2", monthInstant(2));
+        insertReceiptIncident(tenant.getId(), fixture, supF.id(), "damaged", "open",
+                "Maderas-1", monthInstant(1));
+
+        // Ruido fuera del mes y en otro tenant (no deben contarse).
+        insertReceiptIncident(tenant.getId(), fixture, supA.id(), "damaged", "open",
+                "Mes anterior", noon(today().withDayOfMonth(1).minusDays(1)));
+        UUID otherReceipt = insertGoodsReceipt(otherTenant.getId(), otherFixture);
+        insertReceiptIncident(otherTenant.getId(), otherFixture, otherReceipt, "damaged", "open",
+                "Otro tenant", monthInstant(0));
+
+        mockMvc.perform(get(BASE_URL).header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.incidentAnalytics.totalCurrentMonth").value(25))
+                .andExpect(jsonPath("$.incidentAnalytics.byType.length()").value(5))
+                .andExpect(jsonPath("$.incidentAnalytics.byType[0].typeName").value("Dañado"))
+                .andExpect(jsonPath("$.incidentAnalytics.byType[0].count").value(9))
+                .andExpect(jsonPath("$.incidentAnalytics.byType[1].typeName").value("Faltante"))
+                .andExpect(jsonPath("$.incidentAnalytics.byType[1].count").value(5))
+                .andExpect(jsonPath("$.incidentAnalytics.byType[2].typeName").value("Producto incorrecto"))
+                .andExpect(jsonPath("$.incidentAnalytics.byType[2].count").value(4))
+                .andExpect(jsonPath("$.incidentAnalytics.byType[3].typeName").value("Vencido"))
+                .andExpect(jsonPath("$.incidentAnalytics.byType[3].count").value(4))
+                .andExpect(jsonPath("$.incidentAnalytics.byType[4].typeName").value("Otro"))
+                .andExpect(jsonPath("$.incidentAnalytics.byType[4].count").value(3))
+                .andExpect(jsonPath("$.incidentAnalytics.bySupplier.length()").value(5))
+                .andExpect(jsonPath("$.incidentAnalytics.bySupplier[0].supplierName").value("Ferretería Central"))
+                .andExpect(jsonPath("$.incidentAnalytics.bySupplier[0].count").value(6))
+                .andExpect(jsonPath("$.incidentAnalytics.bySupplier[1].supplierName").value("Aceros del Sur"))
+                .andExpect(jsonPath("$.incidentAnalytics.bySupplier[1].count").value(5))
+                .andExpect(jsonPath("$.incidentAnalytics.bySupplier[2].supplierName").value("Cementos Progreso"))
+                .andExpect(jsonPath("$.incidentAnalytics.bySupplier[2].count").value(4))
+                .andExpect(jsonPath("$.incidentAnalytics.bySupplier[3].supplierName").value("Pinturas Iris"))
+                .andExpect(jsonPath("$.incidentAnalytics.bySupplier[3].count").value(4))
+                .andExpect(jsonPath("$.incidentAnalytics.bySupplier[4].supplierName").value("Tornillos Express"))
+                .andExpect(jsonPath("$.incidentAnalytics.bySupplier[4].count").value(3))
+                .andExpect(jsonPath("$.latestIncidents.length()").value(5))
+                .andExpect(jsonPath("$.latestIncidents[0].description").value("Maderas-1"))
+                .andExpect(jsonPath("$.latestIncidents[1].description").value("Atlas-2"))
+                .andExpect(jsonPath("$.latestIncidents[2].description").value("Atlas-1"))
+                .andExpect(jsonPath("$.latestIncidents[3].description").value("Tornillos-2"))
+                .andExpect(jsonPath("$.latestIncidents[4].description").value("Tornillos-1"));
+    }
+
+    @Test
     void getDashboardSummaryAggregatesSalesTodayAndMonth() throws Exception {
         Tenant tenant = persistTenant();
         String token = tokenFor(tenant, DASHBOARD_READ);
@@ -526,21 +629,26 @@ class DashboardAdminControllerTest {
 
     private ReceiptFixture insertGoodsReceipt(UUID tenantId, Fixture fixture, String supplierName) {
         UUID supplier = UUID.randomUUID();
+        jdbcTemplate.update(
+                "INSERT INTO suppliers (id, tenant_id, name, status) VALUES (?, ?, ?, 'active')",
+                supplier, tenantId, supplierName);
+        return insertGoodsReceiptForSupplier(tenantId, fixture, supplier, supplierName);
+    }
+
+    private ReceiptFixture insertGoodsReceiptForSupplier(
+            UUID tenantId, Fixture fixture, UUID supplierId, String supplierNameSnapshot) {
         UUID order = UUID.randomUUID();
         UUID receipt = UUID.randomUUID();
         String suffix = UUID.randomUUID().toString().substring(0, 8);
         String orderNumber = "OC-" + suffix;
         String receiptNumber = "REC-" + suffix;
         jdbcTemplate.update(
-                "INSERT INTO suppliers (id, tenant_id, name, status) VALUES (?, ?, ?, 'active')",
-                supplier, tenantId, supplierName);
-        jdbcTemplate.update(
                 """
                 INSERT INTO purchase_orders (id, tenant_id, branch_id, number, supplier_id, supplier_name_snapshot,
                                              status, subtotal, total, created_by_user_id)
                 VALUES (?, ?, ?, ?, ?, ?, 'approved', 10, 10, ?)
                 """,
-                order, tenantId, fixture.branchA(), orderNumber, supplier, supplierName, fixture.userId());
+                order, tenantId, fixture.branchA(), orderNumber, supplierId, supplierNameSnapshot, fixture.userId());
         jdbcTemplate.update(
                 """
                 INSERT INTO goods_receipts (id, tenant_id, branch_id, purchase_order_id, number, status)

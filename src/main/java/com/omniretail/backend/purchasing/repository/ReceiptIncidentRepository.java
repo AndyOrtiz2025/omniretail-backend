@@ -3,6 +3,7 @@ package com.omniretail.backend.purchasing.repository;
 import com.omniretail.backend.purchasing.dto.ReceiptIncidentDashboardRow;
 import com.omniretail.backend.purchasing.entity.ReceiptIncident;
 import com.omniretail.backend.purchasing.entity.ReceiptIncidentStatus;
+import com.omniretail.backend.purchasing.entity.ReceiptIncidentType;
 import jakarta.persistence.LockModeType;
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -46,6 +47,20 @@ public interface ReceiptIncidentRepository extends JpaRepository<ReceiptIncident
     }
 
     boolean existsByTenantIdAndGoodsReceiptItemId(UUID tenantId, UUID goodsReceiptItemId);
+
+    /** Conteo de incidencias agrupado por tipo, para el dashboard de administración. */
+    interface DashboardTypeCount {
+        ReceiptIncidentType getIncidentType();
+
+        long getTotal();
+    }
+
+    /** Conteo de incidencias agrupado por proveedor, para el dashboard de administración. */
+    interface DashboardSupplierCount {
+        String getSupplierName();
+
+        long getTotal();
+    }
 
     @Query("""
             select coalesce(sum(incident.quantityAffected), 0) from ReceiptIncident incident
@@ -132,14 +147,56 @@ public interface ReceiptIncidentRepository extends JpaRepository<ReceiptIncident
                     Pageable pageable);
 
     /**
-     * Incidencias creadas en [monthStart, nextMonthStart), abiertas y resueltas, con recepción, orden, proveedor
-     * y sucursal resueltos en una sola query. Left joins para no perder incidencias si falta algún dato
-     * relacionado. Lo usa el dashboard de administración.
+     * Conteo de incidencias creadas en [monthStart, nextMonthStart) agrupado por tipo.
+     * El total mensual del dashboard se obtiene sumando los conteos de cada tipo.
+     */
+    @Query("""
+            select i.incidentType as incidentType, count(i) as total
+            from ReceiptIncident i
+            where i.tenantId = :tenantId
+              and i.createdAt >= :monthStart
+              and i.createdAt < :nextMonthStart
+            group by i.incidentType
+            """)
+    List<DashboardTypeCount> countDashboardIncidentsByTypeCreatedBetween(
+            @Param("tenantId") UUID tenantId,
+            @Param("monthStart") Instant monthStart,
+            @Param("nextMonthStart") Instant nextMonthStart);
+
+    /**
+     * Conteo de incidencias creadas en [monthStart, nextMonthStart) agrupado por proveedor (supplierId).
+     * Usa el nombre actual del proveedor y cae a supplierNameSnapshot de la orden de compra si no está
+     * disponible, sin alterar la agrupación por supplierId.
+     */
+    @Query("""
+            select coalesce(max(s.name), max(o.supplierNameSnapshot)) as supplierName,
+                   count(i) as total
+            from ReceiptIncident i
+            join GoodsReceipt r on r.id = i.goodsReceiptId and r.tenantId = :tenantId
+            join PurchaseOrder o on o.id = r.purchaseOrderId and o.tenantId = :tenantId
+            left join Supplier s on s.id = o.supplierId and s.tenantId = :tenantId
+            where i.tenantId = :tenantId
+              and i.createdAt >= :monthStart
+              and i.createdAt < :nextMonthStart
+              and o.supplierId is not null
+              and coalesce(s.name, o.supplierNameSnapshot) is not null
+            group by o.supplierId
+            order by count(i) desc
+            """)
+    List<DashboardSupplierCount> countDashboardIncidentsBySupplierCreatedBetween(
+            @Param("tenantId") UUID tenantId,
+            @Param("monthStart") Instant monthStart,
+            @Param("nextMonthStart") Instant nextMonthStart);
+
+    /**
+     * Últimas incidencias creadas en [monthStart, nextMonthStart), abiertas y resueltas, con recepción,
+     * orden, proveedor (con fallback a supplierNameSnapshot) y sucursal resueltos en una sola query
+     * ordenada y limitada mediante Pageable. Lo usa el dashboard de administración.
      */
     @Query("""
             select new com.omniretail.backend.purchasing.dto.ReceiptIncidentDashboardRow(
-                i.id, i.incidentType, i.notes, i.createdAt, i.branchId,
-                r.number, o.number, o.supplierId, s.name, b.name)
+                i.incidentType, i.notes, i.createdAt,
+                r.number, o.number, coalesce(s.name, o.supplierNameSnapshot), b.name)
             from ReceiptIncident i
             left join GoodsReceipt r on r.id = i.goodsReceiptId and r.tenantId = :tenantId
             left join PurchaseOrder o on o.id = r.purchaseOrderId and o.tenantId = :tenantId
@@ -153,7 +210,8 @@ public interface ReceiptIncidentRepository extends JpaRepository<ReceiptIncident
     List<ReceiptIncidentDashboardRow> findDashboardRowsCreatedBetween(
             @Param("tenantId") UUID tenantId,
             @Param("monthStart") Instant monthStart,
-            @Param("nextMonthStart") Instant nextMonthStart);
+            @Param("nextMonthStart") Instant nextMonthStart,
+            Pageable pageable);
 
     boolean existsByTenantIdAndGoodsReceiptIdAndStatus(
             UUID tenantId, UUID goodsReceiptId, ReceiptIncidentStatus status);
