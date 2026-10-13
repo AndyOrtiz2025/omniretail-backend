@@ -25,14 +25,15 @@ public interface InventoryReservationRepository extends JpaRepository<InventoryR
             UUID sourceId,
             InventoryReservationStatus status);
 
-    Optional<InventoryReservation> findByTenantIdAndSourceTypeAndSourceLineIdAndStatus(
+    Optional<InventoryReservation> findByTenantIdAndSourceTypeAndSourceLineIdAndProductIdAndStatus(
             UUID tenantId,
             InventoryReservationSourceType sourceType,
             UUID sourceLineId,
+            UUID productId,
             InventoryReservationStatus status);
 
-    boolean existsByTenantIdAndSourceTypeAndSourceLineId(
-            UUID tenantId, InventoryReservationSourceType sourceType, UUID sourceLineId);
+    boolean existsByTenantIdAndSourceTypeAndSourceLineIdAndProductId(
+            UUID tenantId, InventoryReservationSourceType sourceType, UUID sourceLineId, UUID productId);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     Optional<InventoryReservation> findByTenantIdAndId(UUID tenantId, UUID id);
