@@ -539,6 +539,29 @@ class ProductManagementServiceTest {
     }
 
     @Test
+    void kitsCannotUseAlternativeInventoryOrSaleUnits() {
+        allowCreateReferences();
+        UUID alternateUnit = UUID.randomUUID();
+        ProductCreateRequest draftKit = new ProductCreateRequest(
+                "KIT-ALT", null, "Kit", null, null,
+                ProductType.kit, CATEGORY_ID, BASE_UNIT_ID, null, alternateUnit, BigDecimal.TEN,
+                ProductStatus.archived, tracking(false, false, false, false),
+                new ProductChannelsDto(true, true, false));
+
+        assertThatThrownBy(() -> service.create(draftKit))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("unidad base");
+
+        product.setProductType(ProductType.kit);
+        ProductUpdateRequest updateKitRequest = request(
+                "KIT-ALT", null, ProductType.kit, CATEGORY_ID, BASE_UNIT_ID,
+                alternateUnit, null, tracking(false, false, false, false));
+        assertThatThrownBy(() -> service.update(PRODUCT_ID, updateKitRequest))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("unidad base");
+    }
+
+    @Test
     void createEnforcesBusinessCapabilitiesAndTraceabilityEntitlements() {
         allowCreateReferences();
         given(businessConfigService.getConfig()).willReturn(new BusinessConfigResponse(
