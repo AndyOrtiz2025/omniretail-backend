@@ -241,6 +241,9 @@ class EmailSenderConfigControllerTest {
         assertThat(sent.getValue().purpose()).isEqualTo(EmailPurpose.SENDER_TEST);
         assertThat(sent.getValue().to()).isEqualTo("dueno@example.com");
         assertThat(sent.getValue().subject()).isEqualTo("Prueba de configuración de correo - OmniRetail");
+        assertThat(sent.getValue().body()).contains("Este es un correo de prueba de OmniRetail.");
+        assertThat(sent.getValue().html()).contains("Prueba de configuración de correo",
+                "Este es un correo de prueba de OmniRetail.", "max-width:600px");
         assertThat(auditActions(tenant)).contains("email_sender.tested");
     }
 

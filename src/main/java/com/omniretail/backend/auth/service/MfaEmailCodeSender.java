@@ -2,12 +2,14 @@ package com.omniretail.backend.auth.service;
 
 import com.omniretail.backend.administration.entity.User;
 import com.omniretail.backend.auth.entity.MfaEnrollment;
+import com.omniretail.backend.shared.notification.EmailLayout;
 import com.omniretail.backend.shared.notification.EmailMessage;
 import com.omniretail.backend.shared.notification.EmailPurpose;
 import com.omniretail.backend.shared.notification.EmailRequestedEvent;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
@@ -78,8 +80,9 @@ public class MfaEmailCodeSender {
         return started == null || Duration.between(started, now).compareTo(SEND_WINDOW) >= 0;
     }
 
-    /** Texto simple, sin enlaces: solo el codigo. */
+    /** Texto plano y HTML sin enlaces: solo el codigo. */
     private static EmailMessage message(User user, String code, Purpose purpose) {
+        long minutes = CODE_TTL.toMinutes();
         String body = """
                 Hola %s:
 
@@ -88,8 +91,14 @@ public class MfaEmailCodeSender {
                 Vence en %d minutos. No lo compartas con nadie.
 
                 Si no fuiste tú, cambia tu contraseña.
-                """.formatted(user.getName(), purpose.action, code, CODE_TTL.toMinutes());
-        return EmailMessage.text(
-                user.getTenantId(), EmailPurpose.MFA_CODE, user.getEmail(), "Tu código de verificación", body);
+                """.formatted(user.getName(), purpose.action, code, minutes);
+        String html = EmailLayout.render(null, "Tu código de verificación", List.of(
+                EmailLayout.paragraph("Hola ", user.getName(), ":"),
+                EmailLayout.paragraph("Tu código para %s es:".formatted(purpose.action)),
+                EmailLayout.code(code),
+                EmailLayout.notice("Vence en %d minutos. No lo compartas con nadie.".formatted(minutes)),
+                EmailLayout.paragraph("Si no fuiste tú, cambia tu contraseña.")));
+        return EmailMessage.html(
+                user.getTenantId(), EmailPurpose.MFA_CODE, user.getEmail(), "Tu código de verificación", body, html);
     }
 }
