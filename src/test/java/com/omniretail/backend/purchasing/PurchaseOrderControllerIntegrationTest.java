@@ -339,6 +339,43 @@ class PurchaseOrderControllerIntegrationTest {
     }
 
     @Test
+    void searchFiltersBeforePaginationByOrderSupplierProductAndSkus() throws Exception {
+        Fixture fixture = fixture();
+        String token = token(fixture.actor());
+        UUID orderId = createOrder(
+                fixture,
+                token,
+                fixture.branch(),
+                fixture.supplier(),
+                "[" + item(fixture.product(), "2", "10") + "]");
+        jdbc.update(
+                "UPDATE purchase_orders SET number = 'OC-REFERENCIA', supplier_name_snapshot = 'Proveedor Acme' WHERE id = ?",
+                orderId);
+        jdbc.update("""
+                UPDATE purchase_order_items
+                SET product_name_snapshot = 'Martillo profesional',
+                    product_sku_snapshot = 'SKU-MARTILLO',
+                    supplier_sku_snapshot = 'ACME-77'
+                WHERE purchase_order_id = ?
+                """, orderId);
+        createOrder(fixture, token, fixture.branch(), fixture.supplier(), "[]");
+
+        for (String term : List.of("referencia", "acme", "martillo", "sku-martillo", "acme-77")) {
+            mvc.perform(get(BASE)
+                            .header("Authorization", token)
+                            .param("search", term)
+                            .param("size", "1"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.totalItems").value(1))
+                    .andExpect(jsonPath("$.items[0].id").value(orderId.toString()));
+        }
+
+        mvc.perform(get(BASE).header("Authorization", token).param("search", "%"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalItems").value(0));
+    }
+
+    @Test
     void cancelUsesStatusDependentPermissionsAndRejectsInvalidTransitions() throws Exception {
         Fixture fixture = fixture();
         String token = token(fixture.actor());

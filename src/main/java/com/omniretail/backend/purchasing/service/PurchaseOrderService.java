@@ -47,6 +47,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -94,6 +95,7 @@ public class PurchaseOrderService {
             UUID branchId,
             UUID supplierId,
             PurchaseOrderStatus status,
+            String search,
             Pageable requestedPageable) {
         AuthenticatedUser actor = currentUser.require();
         requireAnyPermission(actor, READ_PERMISSIONS);
@@ -108,15 +110,16 @@ public class PurchaseOrderService {
         }
 
         Pageable pageable = safePageable(requestedPageable);
+        String searchPattern = likePattern(search);
         Page<PurchaseOrder> page;
         if (access.allBranches()) {
             page = purchaseOrderRepository.findPage(
-                    tenantId, branchId, supplierId, status, pageable);
+                    tenantId, branchId, supplierId, status, searchPattern, pageable);
         } else if (access.branchIds().isEmpty()) {
             page = Page.empty(pageable);
         } else {
             page = purchaseOrderRepository.findPageForBranches(
-                    tenantId, access.branchIds(), branchId, supplierId, status, pageable);
+                    tenantId, access.branchIds(), branchId, supplierId, status, searchPattern, pageable);
         }
 
         Map<UUID, List<PurchaseOrderItem>> itemsByOrder = findItemsByOrder(tenantId, page.getContent());
@@ -763,6 +766,17 @@ public class PurchaseOrderService {
                 Math.max(requested.getPageNumber(), 0),
                 size,
                 Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id")));
+    }
+
+    private static String likePattern(String search) {
+        if (search == null || search.isBlank()) {
+            return null;
+        }
+        String escaped = search.trim().toLowerCase(Locale.ROOT)
+                .replace("!", "!!")
+                .replace("%", "!%")
+                .replace("_", "!_");
+        return "%" + escaped + "%";
     }
 
     private static String normalize(String value) {
