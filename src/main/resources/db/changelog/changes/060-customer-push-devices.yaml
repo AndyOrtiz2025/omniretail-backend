@@ -1,0 +1,64 @@
+databaseChangeLog:
+  - changeSet:
+      id: 060-customer-push-devices
+      author: jimrow123
+      changes:
+        - createTable:
+            tableName: customer_push_devices
+            columns:
+              - column:
+                  name: id
+                  type: uuid
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: uuid
+                  constraints:
+                    nullable: false
+              - column:
+                  name: customer_id
+                  type: uuid
+                  constraints:
+                    nullable: false
+              - column:
+                  name: push_token
+                  type: varchar(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: platform
+                  type: varchar(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: enabled
+                  type: boolean
+                  defaultValueBoolean: true
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: timestamp with time zone
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: timestamp with time zone
+                  constraints:
+                    nullable: false
+        - addUniqueConstraint:
+            tableName: customer_push_devices
+            columnNames: tenant_id, push_token
+            constraintName: uq_customer_push_devices_tenant_token
+        - createIndex:
+            tableName: customer_push_devices
+            indexName: idx_customer_push_devices_customer
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: customer_id
+              - column:
+                  name: enabled
