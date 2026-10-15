@@ -173,4 +173,98 @@ class ExpoPushServiceTest {
         verify(client).close();
     }
 
+
+    @Test
+    void sendsNotificationsForEveryOrderStatus() throws Exception {
+        for (OrderStatus status : OrderStatus.values()) {
+            HttpClient client = mock(HttpClient.class);
+
+            @SuppressWarnings("unchecked")
+            HttpResponse<String> response = mock(HttpResponse.class);
+
+            when(response.statusCode()).thenReturn(200);
+
+            when(client.send(
+                    any(HttpRequest.class),
+                    org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<String>>any()
+            )).thenReturn(response);
+
+            CustomerPushDevice device = mock(CustomerPushDevice.class);
+            when(device.getPushToken()).thenReturn("ExpoPushToken[android123]");
+
+            when(repository.findByTenantIdAndCustomerIdAndEnabledTrue(
+                    tenantId, customerId
+            )).thenReturn(List.of(device));
+
+            var testedService = new ExpoPushService(
+                    repository,
+                    JsonMapper.builder().build(),
+                    () -> client
+            );
+
+            testedService.send(new OrderStatusChangedEvent(
+                    tenantId, customerId, orderId, status
+            ));
+
+            verify(client).send(
+                    any(HttpRequest.class),
+                    org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<String>>any()
+            );
+        }
+    }
+
+    @Test
+    void handlesHttpCommunicationFailure() throws Exception {
+        HttpClient client = mock(HttpClient.class);
+
+        when(client.send(
+                any(HttpRequest.class),
+                org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<String>>any()
+        )).thenThrow(new java.io.IOException("Connection failed"));
+
+        CustomerPushDevice device = mock(CustomerPushDevice.class);
+        when(device.getPushToken()).thenReturn("ExpoPushToken[android123]");
+
+        when(repository.findByTenantIdAndCustomerIdAndEnabledTrue(
+                tenantId, customerId
+        )).thenReturn(List.of(device));
+
+        var testedService = new ExpoPushService(
+                repository,
+                JsonMapper.builder().build(),
+                () -> client
+        );
+
+        org.assertj.core.api.Assertions.assertThatCode(
+                () -> testedService.send(new OrderStatusChangedEvent(
+                        tenantId, customerId, orderId, OrderStatus.confirmed
+                ))
+        ).doesNotThrowAnyException();
+
+        verify(client).close();
+    }
+
+    @Test
+    void handlesHttpClientCreationFailure() {
+        CustomerPushDevice device = mock(CustomerPushDevice.class);
+
+        when(repository.findByTenantIdAndCustomerIdAndEnabledTrue(
+                tenantId, customerId
+        )).thenReturn(List.of(device));
+
+        var testedService = new ExpoPushService(
+                repository,
+                JsonMapper.builder().build(),
+                () -> {
+                    throw new IllegalStateException("Client unavailable");
+                }
+        );
+
+        org.assertj.core.api.Assertions.assertThatCode(
+                () -> testedService.send(new OrderStatusChangedEvent(
+                        tenantId, customerId, orderId, OrderStatus.confirmed
+                ))
+        ).doesNotThrowAnyException();
+    }
+
 }
