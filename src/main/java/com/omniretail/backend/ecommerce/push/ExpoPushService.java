@@ -8,14 +8,13 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.json.JsonMapper;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class ExpoPushService {
 
     private static final URI EXPO_ENDPOINT =
@@ -23,6 +22,27 @@ public class ExpoPushService {
 
     private final CustomerPushDeviceRepository devices;
     private final JsonMapper jsonMapper;
+    private final java.util.function.Supplier<HttpClient> clientFactory;
+
+    @Autowired
+    public ExpoPushService(
+            CustomerPushDeviceRepository devices,
+            JsonMapper jsonMapper
+    ) {
+        this(devices, jsonMapper, () -> HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(5))
+                .build());
+    }
+
+    ExpoPushService(
+            CustomerPushDeviceRepository devices,
+            JsonMapper jsonMapper,
+            java.util.function.Supplier<HttpClient> clientFactory
+    ) {
+        this.devices = devices;
+        this.jsonMapper = jsonMapper;
+        this.clientFactory = clientFactory;
+    }
 
     public void send(OrderStatusChangedEvent event) {
         if (event.customerId() == null) {
@@ -37,9 +57,7 @@ public class ExpoPushService {
             return;
         }
 
-        try (HttpClient client = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(5))
-                .build()) {
+        try (HttpClient client = clientFactory.get()) {
 
             for (CustomerPushDevice device : registered) {
                 sendToDevice(client, device, event);
@@ -92,6 +110,9 @@ public class ExpoPushService {
                         event.orderId());
             }
 
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            log.warn("Envio push interrumpido para pedido {}", event.orderId());
         } catch (Exception exception) {
             log.warn("Error enviando push del pedido {}: {}",
                     event.orderId(), exception.getMessage());
