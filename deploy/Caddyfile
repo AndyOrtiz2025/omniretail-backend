@@ -1,10 +1,13 @@
-# Reverse proxy de produccion. SITE_ADDRESS viene del docker-compose (":80" mientras solo haya IP).
-{$SITE_ADDRESS::80} {
+# Reverse proxy de produccion. El esquema HTTPS fijo rechaza valores heredados como :80 o http://dominio.
+https://{$SITE_ADDRESS} {
 	encode zstd gzip
 
 	# API REST del backend (la usa la app movil directamente; la web pasa por sus propios Route Handlers).
 	handle /api/v1/* {
-		reverse_proxy backend:8080
+		reverse_proxy backend:8080 {
+			# Caddy descarta los X-Forwarded-* suministrados por el cliente; fijamos la IP remota que usara el limiter.
+			header_up X-Forwarded-For {remote_host}
+	}
 	}
 
 	# Archivos de media servidos por el backend.

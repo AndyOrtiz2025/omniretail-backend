@@ -10,7 +10,9 @@ Internet ──► Caddy :80/:443 ──┬─ /api/v1/*, /media/* ──► bac
 
 ## 1. Preparar el VPS (una sola vez)
 
-Requisitos: Ubuntu 22.04/24.04, mínimo 2 GB de RAM (recomendado 4 GB: JVM + Next.js + PostgreSQL).
+Requisitos: Ubuntu 22.04/24.04, mínimo 2 GB de RAM (recomendado 4 GB: JVM + Next.js + PostgreSQL) y un
+dominio público cuyo registro DNS apunte a la IP del VPS. Caddy obtiene el certificado TLS y redirige HTTP a HTTPS;
+no se permite producción solo con IP ni HTTP plano.
 
 ```bash
 # Docker + Compose
@@ -57,6 +59,9 @@ Orden del primer despliegue: **backend primero** (copia `docker-compose.prod.yml
 nano .env    # copiar el contenido de env.prod.example y completarlo
 chmod 600 .env
 ```
+
+Define `SITE_ADDRESS`, `FRONTEND_BASE_URL` y `CORS_ALLOWED_ORIGINS` con el mismo dominio y esquema `https://`.
+Antes del primer arranque, confirma que el DNS ya resuelve al VPS y que los puertos 80 y 443 están abiertos.
 
 `docker-compose.prod.yml` y `Caddyfile` los copia el CD del backend en cada despliegue. Para el primer arranque manual, cópialos tú con `scp`.
 

@@ -1,5 +1,6 @@
 package com.omniretail.backend.shared.security;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.omniretail.backend.shared.config.CorsProperties;
 import java.util.List;
 import org.springframework.context.annotation.Bean;
@@ -12,6 +13,7 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.annotation.AnnotationTemplateExpressionDefaults;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
@@ -50,7 +52,8 @@ public class SecurityConfig {
 
     @Bean
     SecurityFilterChain securityFilterChain(
-            HttpSecurity http, TenantJwtAuthenticationConverter jwtAuthenticationConverter) throws Exception {
+            HttpSecurity http, TenantJwtAuthenticationConverter jwtAuthenticationConverter,
+            PublicRateLimitProperties publicRateLimitProperties) throws Exception {
         return http
                 .csrf(csrf -> csrf.disable()) // API stateless con Bearer token: sin cookies de sesion que proteger.
                 .cors(Customizer.withDefaults())
@@ -59,6 +62,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers(PUBLIC_PATHS).permitAll()
                         .anyRequest().authenticated())
+                .addFilterBefore(new PublicRateLimitFilter(publicRateLimitProperties, new ObjectMapper()),
+                        BearerTokenAuthenticationFilter.class)
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter)))
                 .build();
     }

@@ -124,6 +124,23 @@ class LoginLockoutEscalationTest {
     }
 
     @Test
+    void failedLoginWithTheSameEmailInDifferentTenantsCountsForEveryCandidate() throws Exception {
+        String email = "shared-" + UUID.randomUUID() + "@test.local";
+        User first = employee(email);
+        User second = employee(email);
+
+        for (int attempt = 0; attempt < 5; attempt++) {
+            login(email, WRONG).andExpect(status().isUnauthorized());
+            advance(Duration.ofSeconds(1));
+        }
+
+        assertLockedFor(first, Duration.ofMinutes(15));
+        assertLockedFor(second, Duration.ofMinutes(15));
+        assertThat(actions(first)).endsWith("account_locked");
+        assertThat(actions(second)).endsWith("account_locked");
+    }
+
+    @Test
     void lockedAccountAnswersTheSameWithRightOrWrongPasswordAndDoesNotCount() throws Exception {
         User user = employee();
         lock(user);
@@ -523,6 +540,14 @@ class LoginLockoutEscalationTest {
     private User employee() {
         Tenant tenant = tenant();
         String email = "lockout-" + UUID.randomUUID() + "@test.local";
+        return employee(tenant, email);
+    }
+
+    private User employee(String email) {
+        return employee(tenant(), email);
+    }
+
+    private User employee(Tenant tenant, String email) {
         User user = User.builder().name("Usuario test").email(email).type(UserType.employee).build();
         user.setTenantId(tenant.getId());
         user = userRepository.save(user);

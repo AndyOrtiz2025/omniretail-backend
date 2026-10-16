@@ -4,6 +4,10 @@ spring:
     contexts: test
 
 app:
+  security:
+    public-rate-limit:
+      # La suite comparte una IP simulada; los límites se validan de forma unitaria.
+      enabled: false
   jwt:
     secret: omniretail-test-secret-only-for-tests-32b
   mfa:
