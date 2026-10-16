@@ -110,25 +110,36 @@ jobs:
           git --redact --verbose /repo
 
   # ===========================================================================
-  # SCA con Trivy: resuelve las dependencias Maven (incluidas transitivas) y bloquea si alguna tiene una
+  # SCA con Trivy sobre los JAR reales de runtime (incluidas transitivas). Bloquea si alguno tiene una
   # vulnerabilidad alta o critica con version corregida disponible. No depende del Dependency graph del repo.
+  # Ojo: `trivy fs` sobre el pom solo ve las dependencias declaradas; por eso se copian los JAR y se usa rootfs.
   # ===========================================================================
   dependency-scan:
     name: Revision de dependencias (SCA)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Configurar Java 21 (Temurin)
+        uses: actions/setup-java@v6
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+
+      - name: Copiar dependencias de runtime
+        run: ./mvnw -B -q dependency:copy-dependencies -DincludeScope=runtime -DoutputDirectory=target/sca-deps
+
       - name: Escanear dependencias con Trivy
         run: >
           docker run --rm -v "$PWD:/repo" -w /repo
           aquasec/trivy:0.58.1
-          fs --scanners vuln --pkg-types library
+          rootfs --timeout 15m --scanners vuln --pkg-types library
           --severity HIGH,CRITICAL --ignore-unfixed
-          --exit-code 1 --no-progress /repo
+          --exit-code 1 --no-progress /repo/target/sca-deps
 
   # ===========================================================================
   # Step 3: revision del PR con IA (Gemini). Comenta en el PR; nunca bloquea.

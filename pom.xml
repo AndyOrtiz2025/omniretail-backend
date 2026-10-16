@@ -32,6 +32,11 @@
 		<openpdf.version>2.0.3</openpdf.version>
 		<jacoco.version>0.8.15</jacoco.version>
 		<sonar-maven-plugin.version>5.8.0.7211</sonar-maven-plugin.version>
+		<!-- Parches de seguridad sobre lo que trae Spring Boot 4.1.1 (detectados por el SCA de CI con Trivy).
+		     Quitar cuando un Spring Boot 4.1.x posterior incluya estas versiones o superiores. -->
+		<tomcat.version>11.0.25</tomcat.version>
+		<jackson-bom.version>3.1.7</jackson-bom.version>
+		<jackson-2-bom.version>2.21.7</jackson-2-bom.version>
 		<!-- SonarQube Cloud lee la cobertura generada por JaCoCo en la fase verify. -->
 		<sonar.coverage.jacoco.xmlReportPaths>${project.build.directory}/site/jacoco/jacoco.xml</sonar.coverage.jacoco.xmlReportPaths>
 	</properties>
