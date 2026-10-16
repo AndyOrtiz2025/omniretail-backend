@@ -2,6 +2,9 @@ package com.omniretail.backend.auth.controller;
 
 import com.omniretail.backend.auth.dto.ForgotPasswordRequest;
 import com.omniretail.backend.auth.dto.ForgotPasswordResponse;
+import com.omniretail.backend.auth.dto.RegisterCustomerResponse;
+import com.omniretail.backend.auth.dto.ResendEmailVerificationRequest;
+import com.omniretail.backend.auth.dto.ResendEmailVerificationResponse;
 import com.omniretail.backend.auth.dto.ResetPasswordRequest;
 import com.omniretail.backend.auth.dto.ResetPasswordResponse;
 import com.omniretail.backend.auth.dto.VerifyEmailRequest;
@@ -53,12 +56,51 @@ public class AccountRecoveryController {
                 content = @Content(mediaType = "application/json", schema = @Schema(implementation = VerifyEmailResponse.class))),
         @ApiResponse(
                 responseCode = "400",
-                description = "Token inexistente, ya usado o vencido (`INVALID_OR_EXPIRED_TOKEN`, sin distinguir el "
-                        + "motivo), o cuerpo inválido (`VALIDATION_ERROR`).",
+                description = "Token inexistente, ya usado, reemplazado por un enlace más nuevo o vencido "
+                        + "(`INVALID_OR_EXPIRED_TOKEN`, sin distinguir el motivo), o cuerpo inválido (`VALIDATION_ERROR`).",
                 content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
     })
     public VerifyEmailResponse verifyEmail(@Valid @RequestBody VerifyEmailRequest request) {
         return registrationService.verifyEmail(request.token());
+    }
+
+    @PostMapping("/email/resend")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    @SecurityRequirements
+    @Operation(
+            summary = "Resend email verification",
+            description = """
+                    **Público, solo clientes.** Envía un enlace de verificación nuevo (vence en 30 minutos) a la cuenta \
+                    de cliente pendiente de verificación con ese correo en la tienda del `tenantSlug`.
+
+                    - El enlace anterior deja de servir.
+                    - Máximo 3 enlaces por cuenta cada 30 minutos, contando el del registro; los demás se omiten.
+                    - Cuenta inexistente o ya verificada, empleado, tienda inexistente o inactiva: no se envía nada.
+
+                    Siempre responde lo mismo: no revela si la cuenta existe, si ya está verificada, si se alcanzó \
+                    el límite ni si hubo un error interno.""")
+    @ApiResponses({
+        @ApiResponse(
+                responseCode = "202",
+                description = "Solicitud aceptada. Mismo cuerpo en todos los casos.",
+                content = @Content(
+                        mediaType = "application/json",
+                        schema = @Schema(implementation = ResendEmailVerificationResponse.class))),
+        @ApiResponse(
+                responseCode = "400",
+                description = "Correo o tienda faltantes o inválidos (`VALIDATION_ERROR`, con `fields`), o cuerpo "
+                        + "ilegible (`REQUEST_ERROR`).",
+                content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
+    })
+    public ResendEmailVerificationResponse resendVerification(
+            @Valid @RequestBody ResendEmailVerificationRequest request) {
+        try {
+            registrationService.resendVerification(request.email(), request.tenantSlug());
+        } catch (RuntimeException ex) {
+            // Nunca se delata un error interno: se registra (sin el correo) y se responde igual que siempre.
+            log.error("Error al procesar un reenvio de verificacion de correo", ex);
+        }
+        return new ResendEmailVerificationResponse(RegisterCustomerResponse.ACCEPTED_MESSAGE);
     }
 
     @PostMapping("/password/forgot")

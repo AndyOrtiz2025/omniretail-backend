@@ -2,6 +2,7 @@ package com.omniretail.backend.auth.repository;
 
 import com.omniretail.backend.auth.entity.EmailVerification;
 import jakarta.persistence.LockModeType;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -17,4 +18,10 @@ public interface EmailVerificationRepository extends JpaRepository<EmailVerifica
     Optional<EmailVerification> findByTokenHashForUpdate(String tokenHash);
 
     List<EmailVerification> findByUserId(UUID userId);
+
+    /** Enlaces aun no usados ni reemplazados (vencidos o no): un enlace nuevo los reemplaza. */
+    List<EmailVerification> findByUserIdAndVerifiedAtIsNullAndSupersededAtIsNull(UUID userId);
+
+    /** Limite de enlaces por cuenta: cuenta tambien el del registro. */
+    long countByUserIdAndCreatedAtAfter(UUID userId, Instant createdAfter);
 }

@@ -28,6 +28,8 @@ public class AuthAuditService {
     public static final String MFA_FAILED = "mfa_failed";
     public static final String MFA_RECOVERY_CODE_USED = "mfa_recovery_code_used";
     public static final String EXTERNAL_IDENTITY_LINKED = "external_identity_linked";
+    /** Registro con el correo de una cuenta ya verificada: se envio el aviso "ya tienes una cuenta". */
+    public static final String REGISTRATION_EXISTING_ACCOUNT = "registration_existing_account";
 
     private final AuthAuditLogRepository auditLogRepository;
     private final Clock authClock;
