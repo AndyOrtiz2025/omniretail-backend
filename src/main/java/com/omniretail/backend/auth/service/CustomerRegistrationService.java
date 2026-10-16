@@ -16,6 +16,7 @@ import com.omniretail.backend.auth.entity.EmailVerification;
 import com.omniretail.backend.auth.repository.AuthAccountRepository;
 import com.omniretail.backend.auth.repository.AuthAuditLogRepository;
 import com.omniretail.backend.auth.repository.EmailVerificationRepository;
+import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.shared.config.FrontendProperties;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.exception.FieldValidationException;
@@ -47,8 +48,12 @@ import org.springframework.transaction.annotation.Transactional;
  * <p>Anti-enumeracion: el registro responde exactamente lo mismo exista o no el correo en la tienda. Con un
  * correo nuevo crea la cuenta pendiente y envia el enlace; con el de una cuenta de cliente ya verificada
  * envia al buzon el aviso "ya tienes una cuenta" (como mucho {@value #ACCOUNT_EXISTS_NOTICE_LIMIT} cada 30
- * minutos). En cualquier otro caso (empleado, cuenta deshabilitada, mismo correo con otras mayusculas) no
- * hace nada. La contrasena se hashea siempre, para que el tiempo de respuesta no delate el caso.
+ * minutos); con el de una cuenta pendiente cuyo enlace ya vencio, reemplaza ese registro pendiente. En
+ * cualquier otro caso (empleado, cuenta deshabilitada, pendiente con enlace vigente, mismo correo con otras
+ * mayusculas) no hace nada. La contrasena se hashea siempre, para que el tiempo de respuesta no delate el caso.
+ *
+ * <p>Una cuenta pendiente nunca queda "secuestrada": se puede pedir otro enlace ({@link #resendVerification}) y,
+ * vencido el enlace, volver a registrarse.
  */
 @Service
 @RequiredArgsConstructor
@@ -57,6 +62,9 @@ public class CustomerRegistrationService {
     static final Duration EMAIL_VERIFICATION_TTL = Duration.ofMinutes(30);
     static final int ACCOUNT_EXISTS_NOTICE_LIMIT = 3;
     static final Duration ACCOUNT_EXISTS_NOTICE_WINDOW = Duration.ofMinutes(30);
+    /** Mismo limite que la recuperacion de contrasena: 3 enlaces por cuenta cada 30 minutos. */
+    static final int VERIFICATION_RESEND_LIMIT = 3;
+    static final Duration VERIFICATION_RESEND_WINDOW = Duration.ofMinutes(30);
     static final String REGISTRATION_FAILED_MESSAGE = "No se pudo completar el registro.";
     static final String INVALID_TOKEN_MESSAGE = "Este enlace no es válido o ya expiró.";
 
@@ -72,6 +80,7 @@ public class CustomerRegistrationService {
     private final AuthAccountRepository authAccountRepository;
     private final EmailVerificationRepository emailVerificationRepository;
     private final AuthAuditLogRepository auditLogRepository;
+    private final CustomerRepository customerRepository;
     private final AuthAuditService auditService;
     private final CustomerAccountFactory customerAccountFactory;
     private final PasswordEncoder passwordEncoder;
@@ -100,7 +109,8 @@ public class CustomerRegistrationService {
 
     /**
      * Crea en una sola transaccion el cliente, su usuario, su cuenta (pendiente de verificacion) y la
-     * verificacion de correo, o envia el aviso "ya tienes una cuenta". Los correos salen despues del commit.
+     * verificacion de correo, envia el aviso "ya tienes una cuenta" o reemplaza un registro pendiente vencido.
+     * Los correos salen despues del commit.
      * Siempre devuelve la misma respuesta.
      *
      * @throws ConcurrentRegistrationException si otro registro con el mismo correo gano la carrera.
@@ -125,7 +135,7 @@ public class CustomerRegistrationService {
         // R-A03: correo unico dentro del tenant, sea cual sea el tipo de cuenta que ya lo usa.
         Optional<User> existing = userRepository.findByTenantIdAndEmail(tenantId, email);
         if (existing.isPresent()) {
-            handleExistingUser(existing.get(), tenant, now);
+            handleExistingUser(existing.get(), tenant, new Registration(name, phone, passwordHash), now);
             return accepted;
         }
         if (userRepository.existsByTenantIdAndEmailIgnoreCase(tenantId, email)) {
@@ -152,8 +162,7 @@ public class CustomerRegistrationService {
     public VerifyEmailResponse verifyEmail(String token) {
         Instant now = Instant.now();
         EmailVerification verification = emailVerificationRepository.findByTokenHashForUpdate(AuthTokens.hash(token))
-                .filter(found -> found.getVerifiedAt() == null)
-                .filter(found -> now.isBefore(found.getExpiresAt()))
+                .filter(found -> found.isUsable(now))
                 .orElseThrow(CustomerRegistrationService::invalidToken);
         User user = userRepository.findById(verification.getUserId()).orElseThrow(CustomerRegistrationService::invalidToken);
 
@@ -167,18 +176,89 @@ public class CustomerRegistrationService {
     }
 
     /**
-     * El correo ya existe en la tienda. Solo un cliente activo con la cuenta verificada (activa o bloqueada
-     * temporalmente) recibe el aviso; empleados y cuentas deshabilitadas o archivadas, nada.
+     * Envia un enlace de verificacion nuevo a una cuenta de cliente pendiente de la tienda e invalida los
+     * anteriores. Cuenta inexistente o ya verificada, empleado, tienda inactiva o limite alcanzado (3 enlaces
+     * cada 30 minutos por cuenta, contando el del registro): no hace nada. No devuelve nada: el llamador
+     * responde siempre lo mismo.
      */
-    private void handleExistingUser(User user, Tenant tenant, Instant now) {
+    @Transactional
+    public void resendVerification(String email, String tenantSlug) {
+        Instant now = Instant.now();
+        Optional<Tenant> tenant = tenantRepository.findBySlug(tenantSlug)
+                .filter(found -> found.getStatus() == TenantStatus.active);
+        if (tenant.isEmpty()) {
+            return;
+        }
+        Optional<User> user = userRepository.findByTenantIdAndEmail(tenant.get().getId(), email)
+                .filter(found -> found.getType() == UserType.customer && found.getStatus() == UserStatus.active);
+        if (user.isEmpty()) {
+            return;
+        }
+        // Bloquea la cuenta: dos reenvios simultaneos no pueden saltarse el limite.
+        Optional<AuthAccount> account = authAccountRepository.findByUserIdForUpdate(user.get().getId())
+                .filter(found -> found.getStatus() == AccountStatus.pending_verification);
+        if (account.isEmpty() || emailVerificationRepository.countByUserIdAndCreatedAtAfter(
+                user.get().getId(), now.minus(VERIFICATION_RESEND_WINDOW)) >= VERIFICATION_RESEND_LIMIT) {
+            return;
+        }
+        supersedeOpenVerifications(user.get().getId(), now);
+        issueVerification(user.get(), tenant.get(), now);
+    }
+
+    /** Datos (ya validados y normalizados) de un intento de registro. */
+    private record Registration(String name, String phone, String passwordHash) {
+    }
+
+    /**
+     * El correo ya existe en la tienda. Un cliente activo con la cuenta verificada (activa o bloqueada
+     * temporalmente) recibe el aviso; una cuenta pendiente con el enlace vencido se reemplaza; empleados y
+     * cuentas deshabilitadas o archivadas, nada.
+     */
+    private void handleExistingUser(User user, Tenant tenant, Registration registration, Instant now) {
         if (user.getType() != UserType.customer || user.getStatus() != UserStatus.active) {
             return;
         }
-        // Bloquea la cuenta: dos registros simultaneos no pueden saltarse el limite de avisos.
+        // Bloquea la cuenta: dos registros simultaneos no pueden saltarse el limite de avisos ni pisarse.
         Optional<AuthAccount> account = authAccountRepository.findByUserIdForUpdate(user.getId());
-        if (account.isPresent() && ACCOUNT_EXISTS_NOTICE_STATUSES.contains(account.get().getStatus())) {
+        if (account.isEmpty()) {
+            return;
+        }
+        if (account.get().getStatus() == AccountStatus.pending_verification) {
+            replaceExpiredPending(user, account.get(), tenant, registration, now);
+        } else if (ACCOUNT_EXISTS_NOTICE_STATUSES.contains(account.get().getStatus())) {
             sendAccountExistsNotice(user, account.get(), tenant, now);
         }
+    }
+
+    /**
+     * Registro pendiente cuyo enlace ya vencio: nadie probo ser dueno del correo, asi que el nuevo registro lo
+     * reemplaza (nombre, telefono, contrasena y enlace nuevo; el codigo de cliente se conserva). Con un enlace
+     * aun vigente no se toca nada: para eso esta el reenvio.
+     */
+    private void replaceExpiredPending(User user, AuthAccount account, Tenant tenant, Registration registration,
+            Instant now) {
+        List<EmailVerification> open =
+                emailVerificationRepository.findByUserIdAndVerifiedAtIsNullAndSupersededAtIsNull(user.getId());
+        if (open.stream().anyMatch(verification -> verification.isUsable(now))) {
+            return;
+        }
+        open.forEach(verification -> verification.setSupersededAt(now));
+        user.setName(registration.name());
+        user.setPhone(registration.phone());
+        if (user.getCustomerId() != null) {
+            customerRepository.findByTenantIdAndId(tenant.getId(), user.getCustomerId()).ifPresent(customer -> {
+                customer.setName(registration.name());
+                customer.setPhone(registration.phone());
+            });
+        }
+        account.setPasswordHash(registration.passwordHash());
+        issueVerification(user, tenant, now);
+    }
+
+    /** Un enlace nuevo invalida los anteriores que siguieran sin usar. */
+    private void supersedeOpenVerifications(UUID userId, Instant now) {
+        emailVerificationRepository.findByUserIdAndVerifiedAtIsNullAndSupersededAtIsNull(userId)
+                .forEach(verification -> verification.setSupersededAt(now));
     }
 
     private void sendAccountExistsNotice(User user, AuthAccount account, Tenant tenant, Instant now) {
