@@ -53,7 +53,7 @@ public class SecurityConfig {
     @Bean
     SecurityFilterChain securityFilterChain(
             HttpSecurity http, TenantJwtAuthenticationConverter jwtAuthenticationConverter,
-            PublicRateLimitProperties publicRateLimitProperties, ObjectMapper objectMapper) throws Exception {
+            PublicRateLimitProperties publicRateLimitProperties) throws Exception {
         return http
                 .csrf(csrf -> csrf.disable()) // API stateless con Bearer token: sin cookies de sesion que proteger.
                 .cors(Customizer.withDefaults())
@@ -62,7 +62,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers(PUBLIC_PATHS).permitAll()
                         .anyRequest().authenticated())
-                .addFilterBefore(new PublicRateLimitFilter(publicRateLimitProperties, objectMapper),
+                .addFilterBefore(new PublicRateLimitFilter(publicRateLimitProperties, new ObjectMapper()),
                         BearerTokenAuthenticationFilter.class)
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter)))
                 .build();
