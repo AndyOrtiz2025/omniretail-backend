@@ -163,72 +163,93 @@ final class ImageContentProcessor {
     }
 
     private static ImageInfo validateJpeg(byte[] bytes) {
+        validateJpegSignature(bytes);
+        JpegState state = new JpegState();
+        while (state.position < bytes.length) {
+            int marker = readJpegMarker(bytes, state);
+            if (marker == 0xd9) return finishJpeg(bytes, state);
+            validateJpegMarker(marker);
+            if (marker == 0x01) continue;
+
+            JpegSegment segment = readJpegSegment(bytes, state.position);
+            inspectJpegSegment(bytes, marker, segment, state);
+            state.position = segment.end();
+            if (marker == 0xda) {
+                state.scanSeen = true;
+                state.position = findNextJpegMarker(bytes, state.position);
+            }
+        }
+        throw invalid("El archivo JPEG no contiene EOI.");
+    }
+
+    private static void validateJpegSignature(byte[] bytes) {
         if (bytes.length < 4 || unsigned(bytes[0]) != 0xff || unsigned(bytes[1]) != 0xd8) {
             throw invalid("El archivo JPEG no es valido.");
         }
-        int position = 2;
-        int width = -1;
-        int height = -1;
-        int orientation = 1;
-        boolean scanSeen = false;
+    }
 
+    private static int readJpegMarker(byte[] bytes, JpegState state) {
+        if (unsigned(bytes[state.position]) != 0xff) throw invalid("La estructura JPEG no es valida.");
+        do {
+            state.position++;
+        } while (state.position < bytes.length && unsigned(bytes[state.position]) == 0xff);
+        if (state.position >= bytes.length) throw invalid("El archivo JPEG esta truncado.");
+        return unsigned(bytes[state.position++]);
+    }
+
+    private static ImageInfo finishJpeg(byte[] bytes, JpegState state) {
+        if (state.position != bytes.length || !state.scanSeen || state.width <= 0 || state.height <= 0) {
+            throw invalid("El final del archivo JPEG no es valido.");
+        }
+        return new ImageInfo(state.width, state.height, state.orientation);
+    }
+
+    private static void validateJpegMarker(int marker) {
+        if (marker == 0x00 || marker == 0xd8 || isRestartMarker(marker)) {
+            throw invalid("La estructura JPEG no es valida.");
+        }
+    }
+
+    private static JpegSegment readJpegSegment(byte[] bytes, int position) {
+        if (position + 2 > bytes.length) throw invalid("El archivo JPEG esta truncado.");
+        int segmentLength = be16(bytes, position);
+        if (segmentLength < 2 || position + segmentLength > bytes.length) {
+            throw invalid("El archivo JPEG esta truncado.");
+        }
+        return new JpegSegment(position + 2, segmentLength - 2, position + segmentLength);
+    }
+
+    private static void inspectJpegSegment(byte[] bytes, int marker, JpegSegment segment, JpegState state) {
+        if (isStartOfFrame(marker)) {
+            if (segment.dataLength() < 6) throw invalid("El encabezado JPEG no es valido.");
+            state.height = be16(bytes, segment.dataStart() + 1);
+            state.width = be16(bytes, segment.dataStart() + 3);
+        } else if (marker == 0xe1) {
+            state.orientation = readExifOrientation(bytes, segment.dataStart(), segment.dataLength());
+        }
+    }
+
+    private static int findNextJpegMarker(byte[] bytes, int position) {
         while (position < bytes.length) {
-            if (unsigned(bytes[position]) != 0xff) throw invalid("La estructura JPEG no es valida.");
-            int markerStart = position;
+            if (unsigned(bytes[position]) != 0xff) {
+                position++;
+                continue;
+            }
+            int markerStart = position++;
             while (position < bytes.length && unsigned(bytes[position]) == 0xff) position++;
             if (position >= bytes.length) throw invalid("El archivo JPEG esta truncado.");
-            int marker = unsigned(bytes[position++]);
-            if (marker == 0xd9) {
-                if (position != bytes.length || !scanSeen || width <= 0 || height <= 0) {
-                    throw invalid("El final del archivo JPEG no es valido.");
-                }
-                return new ImageInfo(width, height, orientation);
-            }
-            if (marker == 0x00 || marker == 0xd8 || (marker >= 0xd0 && marker <= 0xd7)) {
-                throw invalid("La estructura JPEG no es valida.");
-            }
-            if (marker == 0x01) continue;
-            if (position + 2 > bytes.length) throw invalid("El archivo JPEG esta truncado.");
-            int segmentLength = be16(bytes, position);
-            if (segmentLength < 2 || position + segmentLength > bytes.length) {
-                throw invalid("El archivo JPEG esta truncado.");
-            }
-            int dataStart = position + 2;
-            int dataLength = segmentLength - 2;
-
-            if (isStartOfFrame(marker)) {
-                if (dataLength < 6) throw invalid("El encabezado JPEG no es valido.");
-                height = be16(bytes, dataStart + 1);
-                width = be16(bytes, dataStart + 3);
-            } else if (marker == 0xe1) {
-                orientation = readExifOrientation(bytes, dataStart, dataLength);
-            }
-
-            position += segmentLength;
-            if (marker != 0xda) continue;
-            scanSeen = true;
-            boolean nextMarker = false;
-            while (position < bytes.length) {
-                if (unsigned(bytes[position]) != 0xff) {
-                    position++;
-                    continue;
-                }
-                markerStart = position;
+            int marker = unsigned(bytes[position]);
+            if (marker == 0x00 || isRestartMarker(marker)) {
                 position++;
-                while (position < bytes.length && unsigned(bytes[position]) == 0xff) position++;
-                if (position >= bytes.length) throw invalid("El archivo JPEG esta truncado.");
-                int scanMarker = unsigned(bytes[position]);
-                if (scanMarker == 0x00 || (scanMarker >= 0xd0 && scanMarker <= 0xd7)) {
-                    position++;
-                    continue;
-                }
-                position = markerStart;
-                nextMarker = true;
-                break;
+                continue;
             }
-            if (!nextMarker) throw invalid("El archivo JPEG no contiene EOI.");
+            return markerStart;
         }
         throw invalid("El archivo JPEG no contiene EOI.");
+    }
+
+    private static boolean isRestartMarker(int marker) {
+        return marker >= 0xd0 && marker <= 0xd7;
     }
 
     private static ImageInfo validatePng(byte[] bytes) {
@@ -312,8 +333,6 @@ final class ImageContentProcessor {
             long dataEndLong = (long) dataStart + length;
             long nextLong = dataEndLong + (length & 1);
             if (nextLong > bytes.length) throw invalid("El archivo WebP esta truncado.");
-            int dataEnd = (int) dataEndLong;
-
             switch (type) {
                 case "VP8X" -> {
                     if (position != 12 || extended || length != 10) throw invalid("El chunk VP8X no es valido.");
@@ -580,7 +599,11 @@ final class ImageContentProcessor {
 
     private static void deleteQuietly(Path path) {
         if (path == null) return;
-        try { Files.deleteIfExists(path); } catch (IOException ignored) { }
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException ignored) {
+            // Best effort: una falla de limpieza no debe reemplazar la excepcion de procesamiento original.
+        }
     }
 
     /** Gate aislable en tests; el bean de produccion conserva un unico permiso y diez segundos de espera. */
@@ -604,6 +627,16 @@ final class ImageContentProcessor {
     }
 
     private record ImageInfo(int width, int height, int orientation) {}
+
+    private record JpegSegment(int dataStart, int dataLength, int end) {}
+
+    private static final class JpegState {
+        private int position = 2;
+        private int width = -1;
+        private int height = -1;
+        private int orientation = 1;
+        private boolean scanSeen;
+    }
 
     private static final class LimitedOutputStream extends FilterOutputStream {
         private final long limit;

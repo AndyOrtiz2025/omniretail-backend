@@ -316,7 +316,7 @@ public class MediaStorageService {
         }
     }
 
-    private void ensureNoSymbolicLinks(Path directory) throws IOException {
+    private void ensureNoSymbolicLinks(Path directory) {
         if (directory == null || !directory.startsWith(root)) throw invalid("Ruta de media no valida.");
         Path current = root;
         for (Path segment : root.relativize(directory)) {
@@ -342,7 +342,11 @@ public class MediaStorageService {
 
     private static void deletePathQuietly(Path path) {
         if (path == null) return;
-        try { Files.deleteIfExists(path); } catch (IOException ignored) { }
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException ignored) {
+            // Best effort: una falla de limpieza no debe reemplazar la excepcion de almacenamiento original.
+        }
     }
 
     private static BusinessException tooLarge() {

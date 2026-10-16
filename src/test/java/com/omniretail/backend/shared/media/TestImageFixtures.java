@@ -5,8 +5,13 @@ import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.util.Base64;
+import java.util.Iterator;
 import java.util.zip.CRC32;
+import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.ImageOutputStream;
 
 /** Imagenes diminutas generadas localmente o codificadas como fixtures WebP publicas de 1 px. */
 public final class TestImageFixtures {
@@ -27,6 +32,41 @@ public final class TestImageFixtures {
 
     public static byte[] jpeg(int width, int height) {
         return image("jpeg", width, height, false);
+    }
+
+    public static byte[] noisyJpeg(int width, int height) {
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                image.setRGB(x, y, ((x * 31 + y * 17) << 16)
+                        | ((x * 13 + y * 47) << 8) | (x * 71 + y * 7));
+            }
+        }
+        return encode(image, "jpeg");
+    }
+
+    public static byte[] progressiveJpeg() {
+        BufferedImage image = new BufferedImage(8, 5, BufferedImage.TYPE_INT_RGB);
+        Graphics2D graphics = image.createGraphics();
+        graphics.setColor(new Color(20, 120, 220));
+        graphics.fillRect(0, 0, image.getWidth(), image.getHeight());
+        graphics.dispose();
+        Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName("jpeg");
+        if (!writers.hasNext()) throw new IllegalStateException("No ImageIO writer: jpeg");
+        ImageWriter writer = writers.next();
+        try (ByteArrayOutputStream output = new ByteArrayOutputStream();
+                ImageOutputStream imageOutput = ImageIO.createImageOutputStream(output)) {
+            writer.setOutput(imageOutput);
+            ImageWriteParam parameters = writer.getDefaultWriteParam();
+            parameters.setProgressiveMode(ImageWriteParam.MODE_DEFAULT);
+            writer.write(null, new IIOImage(image, null, null), parameters);
+            imageOutput.flush();
+            return output.toByteArray();
+        } catch (java.io.IOException exception) {
+            throw new IllegalStateException(exception);
+        } finally {
+            writer.dispose();
+        }
     }
 
     public static byte[] webpVp8() {
@@ -88,6 +128,24 @@ public final class TestImageFixtures {
         return result;
     }
 
+    public static byte[] jpegWithBigEndianOrientation(int orientation) {
+        byte[] jpeg = jpeg();
+        byte[] exif = new byte[] {
+            (byte) 0xff, (byte) 0xe1, 0x00, 0x22,
+            'E', 'x', 'i', 'f', 0, 0,
+            'M', 'M', 0x00, 0x2a, 0x00, 0x00, 0x00, 0x08,
+            0x00, 0x01,
+            0x01, 0x12, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01,
+            0x00, (byte) orientation, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00
+        };
+        byte[] result = new byte[jpeg.length + exif.length];
+        System.arraycopy(jpeg, 0, result, 0, 2);
+        System.arraycopy(exif, 0, result, 2, exif.length);
+        System.arraycopy(jpeg, 2, result, 2 + exif.length, jpeg.length - 2);
+        return result;
+    }
+
     public static byte[] append(byte[] value, byte... suffix) {
         byte[] result = new byte[value.length + suffix.length];
         System.arraycopy(value, 0, result, 0, value.length);
@@ -96,14 +154,17 @@ public final class TestImageFixtures {
     }
 
     private static byte[] image(String format, int width, int height, boolean alpha) {
-        try {
-            BufferedImage image = new BufferedImage(
-                    width, height, alpha ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB);
-            Graphics2D graphics = image.createGraphics();
-            graphics.setColor(alpha ? new Color(20, 120, 220, 128) : new Color(20, 120, 220));
-            graphics.fillRect(0, 0, width, height);
-            graphics.dispose();
-            ByteArrayOutputStream output = new ByteArrayOutputStream();
+        BufferedImage image = new BufferedImage(
+                width, height, alpha ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB);
+        Graphics2D graphics = image.createGraphics();
+        graphics.setColor(alpha ? new Color(20, 120, 220, 128) : new Color(20, 120, 220));
+        graphics.fillRect(0, 0, width, height);
+        graphics.dispose();
+        return encode(image, format);
+    }
+
+    private static byte[] encode(BufferedImage image, String format) {
+        try (ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             if (!ImageIO.write(image, format, output)) throw new IllegalStateException("No ImageIO writer: " + format);
             return output.toByteArray();
         } catch (java.io.IOException exception) {
