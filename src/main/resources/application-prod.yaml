@@ -18,6 +18,11 @@ springdoc:
   swagger-ui:
     enabled: false
 
+# Actuator en un puerto aparte: Caddy no lo enruta y no se publica, solo Prometheus lo alcanza por la red de Docker.
+management:
+  server:
+    port: 8081
+
 logging:
   level:
     com.omniretail: INFO
