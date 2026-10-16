@@ -110,24 +110,25 @@ jobs:
           git --redact --verbose /repo
 
   # ===========================================================================
-  # SCA: bloquea el PR si agrega o actualiza una dependencia con vulnerabilidad alta o critica.
-  # Requiere el Dependency graph activo en el repositorio (Settings > Code security).
+  # SCA con Trivy: resuelve las dependencias Maven (incluidas transitivas) y bloquea si alguna tiene una
+  # vulnerabilidad alta o critica con version corregida disponible. No depende del Dependency graph del repo.
   # ===========================================================================
-  dependency-review:
+  dependency-scan:
     name: Revision de dependencias (SCA)
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Revisar dependencias del PR
-        uses: actions/dependency-review-action@v4
-        with:
-          fail-on-severity: high
-          comment-summary-in-pr: never
+      - name: Escanear dependencias con Trivy
+        run: >
+          docker run --rm -v "$PWD:/repo" -w /repo
+          aquasec/trivy:0.58.1
+          fs --scanners vuln --pkg-types library
+          --severity HIGH,CRITICAL --ignore-unfixed
+          --exit-code 1 --no-progress /repo
 
   # ===========================================================================
   # Step 3: revision del PR con IA (Gemini). Comenta en el PR; nunca bloquea.
