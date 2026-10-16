@@ -16,6 +16,7 @@ import com.omniretail.backend.auth.repository.AuthAccountRepository;
 import com.omniretail.backend.shared.exception.BusinessException;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -87,12 +88,13 @@ public class AuthService {
                 .filter(candidate -> passwordEncoder.matches(request.password(), candidate.account().getPasswordHash()))
                 .toList();
         if (matches.isEmpty()) {
-            // Con varias candidatas no se sabe a cual apuntaba el intento: no se muta ninguna.
-            if (candidates.size() == 1) {
-                Candidate target = candidates.get(0);
-                loginAttemptService.recordFailure(target.account().getId(), target.user().getId(),
-                        target.user().getTenantId(), AuthAuditService.LOGIN_FAILED, null);
-            }
+            // Con varias candidatas no se sabe a cual apuntaba el intento: el fallo cuenta para todas. Si no,
+            // un correo con dos cuentas (p. ej. el mismo empleado en dos negocios) nunca se bloquearia.
+            // En orden de accountId: dos intentos simultaneos toman los locks (FOR UPDATE) en el mismo orden.
+            candidates.stream()
+                    .sorted(Comparator.comparing(candidate -> candidate.account().getId()))
+                    .forEach(target -> loginAttemptService.recordFailure(target.account().getId(),
+                            target.user().getId(), target.user().getTenantId(), AuthAuditService.LOGIN_FAILED, null));
             throw invalidCredentials();
         }
         if (matches.size() > 1) {
