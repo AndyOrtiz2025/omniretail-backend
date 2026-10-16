@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---------- Etapa 1: compilacion ----------
-FROM eclipse-temurin:21-jdk AS build
+FROM eclipse-temurin:24-jdk AS build
 WORKDIR /workspace
 
 # Primero solo el wrapper y el pom: esta capa (dependencias) se cachea mientras el pom no cambie.
@@ -15,7 +15,7 @@ RUN ./mvnw -B -DskipTests -Djacoco.skip=true package \
     && cp target/*.jar app.jar
 
 # ---------- Etapa 2: runtime ----------
-FROM eclipse-temurin:21-jre-alpine
+FROM eclipse-temurin:25-jre-alpine
 WORKDIR /app
 
 RUN addgroup -S app && adduser -S app -G app \
