@@ -90,7 +90,7 @@ jobs:
 
   # ===========================================================================
   # Escaneo de secretos sobre TODO el historial git (no solo el diff). Bloquea si encuentra alguno.
-  # Excepciones de valores dev en .gitleaks.toml. --redact evita imprimir el secreto en el log.
+  # Usa las reglas por defecto de gitleaks. --redact evita imprimir el secreto en el log.
   # ===========================================================================
   secret-scan:
     name: Escaneo de secretos (gitleaks)
@@ -107,7 +107,7 @@ jobs:
         run: >
           docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo" -w /repo
           ghcr.io/gitleaks/gitleaks:v8.21.2
-          git --config .gitleaks.toml --redact --verbose /repo
+          git --redact --verbose /repo
 
   # ===========================================================================
   # SCA: bloquea el PR si agrega o actualiza una dependencia con vulnerabilidad alta o critica.
