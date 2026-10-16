@@ -98,7 +98,8 @@ public class HeroBannerConfigService {
             mediaReferences.deleteAfterCommitIfUnreferenced(tenantId, current.imageUrl());
             return new HeroBannerConfigResponse(List.copyOf(slides));
         } catch (RuntimeException exception) {
-            mediaStorageService.deleteQuietly(newUrl);
+            mediaStorageService.deleteQuietly(
+                    newUrl, tenantId, MediaStorageService.SCOPE_ECOMMERCE, tenantId);
             throw exception;
         }
     }

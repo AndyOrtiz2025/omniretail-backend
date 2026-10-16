@@ -1,6 +1,7 @@
 package com.omniretail.backend.catalog.controller;
 
 import static org.hamcrest.Matchers.nullValue;
+import static org.hamcrest.Matchers.matchesPattern;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -8,6 +9,7 @@ import static org.mockito.BDDMockito.given;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -19,6 +21,7 @@ import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.auth.entity.Session;
 import com.omniretail.backend.auth.service.JwtService;
 import com.omniretail.backend.auth.service.SessionService;
+import com.omniretail.backend.shared.media.TestImageFixtures;
 import com.omniretail.backend.shared.security.PermissionResolver;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -30,7 +33,9 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
@@ -40,6 +45,7 @@ import org.springframework.transaction.annotation.Transactional;
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @Import(TestcontainersConfiguration.class)
+@TestPropertySource(properties = "app.media.storage-path=${java.io.tmpdir}/omniretail-catalog-media-test")
 @Transactional
 class CategoryControllerTest {
 
@@ -111,6 +117,35 @@ class CategoryControllerTest {
                         .content(updateBody(null, "Categoría", null, "active")))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+    }
+
+    @Test
+    void categoryUploadEndpointAcceptsARealPng() throws Exception {
+        UUID tenantId = insertTenant();
+        UUID categoryId = insertCategory(tenantId, null, "Imagen", "imagen", "active");
+
+        mockMvc.perform(multipart(CATEGORIES + "/" + categoryId + "/image")
+                        .file(png())
+                        .header("Authorization", token(tenantId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.imageUrl").value(matchesPattern(
+                        "^/media/" + tenantId + "/categories/" + categoryId
+                                + "/[0-9a-f-]{36}\\.png$")));
+    }
+
+    @Test
+    void productMediaUploadEndpointAcceptsARealPng() throws Exception {
+        UUID tenantId = insertTenant();
+        UUID categoryId = insertCategory(tenantId, null, "Producto", "producto", "active");
+        UUID productId = insertProduct(tenantId, categoryId);
+
+        mockMvc.perform(multipart("/api/v1/catalog/products/" + productId + "/media/upload")
+                        .file(png())
+                        .header("Authorization", token(tenantId)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.url").value(matchesPattern(
+                        "^/media/" + tenantId + "/products/" + productId
+                                + "/[0-9a-f-]{36}\\.png$")));
     }
 
     @Test
@@ -748,8 +783,9 @@ class CategoryControllerTest {
         return categoryId;
     }
 
-    private void insertProduct(UUID tenantId, UUID categoryId) {
+    private UUID insertProduct(UUID tenantId, UUID categoryId) {
         UUID unitId = UUID.randomUUID();
+        UUID productId = UUID.randomUUID();
         String suffix = UUID.randomUUID().toString();
         jdbcTemplate.update(
                 """
@@ -765,12 +801,13 @@ class CategoryControllerTest {
                 INSERT INTO products (id, tenant_id, sku, name, category_id, base_unit_id)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                UUID.randomUUID(),
+                productId,
                 tenantId,
                 "SKU-" + suffix,
                 "Producto " + suffix,
                 categoryId,
                 unitId);
+        return productId;
     }
 
     private String categoryStatus(UUID categoryId) {
@@ -795,6 +832,10 @@ class CategoryControllerTest {
                 .expiresAt(Instant.now().plus(1, ChronoUnit.HOURS))
                 .build();
         return "Bearer " + jwtService.generateToken(user, session);
+    }
+
+    private static MockMultipartFile png() {
+        return new MockMultipartFile("file", "photo.png", "image/png", TestImageFixtures.png());
     }
 
     private static String createBody(

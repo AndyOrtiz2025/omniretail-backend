@@ -10,6 +10,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.omniretail.backend.TestcontainersConfiguration;
@@ -30,6 +31,7 @@ import com.omniretail.backend.auth.entity.Session;
 import com.omniretail.backend.auth.repository.SessionRepository;
 import com.omniretail.backend.auth.service.JwtService;
 import com.omniretail.backend.shared.media.MediaStorageService;
+import com.omniretail.backend.shared.media.TestImageFixtures;
 import com.omniretail.backend.shared.security.SaasCapability;
 import com.omniretail.backend.shared.security.TenantEntitlementResolver;
 import com.omniretail.backend.shared.security.TenantEntitlements;
@@ -48,6 +50,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.http.HttpHeaders;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.ActiveProfiles;
@@ -409,7 +412,7 @@ class EcommerceConfigControllerTest {
                 .andExpect(jsonPath("$.slides[0].title").value("Slide 1"));
     }
 
-    private static final byte[] PNG = {(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1};
+    private static final byte[] PNG = TestImageFixtures.png();
 
     @Test
     void uploadEndpointsRequireTokenAndPermission() throws Exception {
@@ -488,6 +491,39 @@ class EcommerceConfigControllerTest {
                         .file(new MockMultipartFile("file", "logo.jpg", "image/jpeg", PNG))
                         .header("Authorization", bearer(token)))
                 .andExpect(status().isUnsupportedMediaType());
+    }
+
+    @Test
+    void oversizedUploadReturnsPayloadTooLarge() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+        savedEcommerceConfig(token);
+        byte[] oversized = new byte[5 * 1024 * 1024 + 1];
+        System.arraycopy(PNG, 0, oversized, 0, PNG.length);
+
+        mockMvc.perform(multipart(ECOMMERCE_URL + "/logo")
+                        .file(new MockMultipartFile("file", "logo.png", "image/png", oversized))
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isPayloadTooLarge())
+                .andExpect(jsonPath("$.code").value("MEDIA_TOO_LARGE"));
+    }
+
+    @Test
+    void publicMediaUsesActualContentTypeNosniffAndReturnsNotFoundForUnknownPaths() throws Exception {
+        UUID tenant = UUID.randomUUID();
+        String url = mediaStorageService.storeImage(
+                tenant, MediaStorageService.SCOPE_ECOMMERCE, tenant, png());
+        try {
+            mockMvc.perform(get(url))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string(HttpHeaders.CONTENT_TYPE, MediaType.IMAGE_PNG_VALUE))
+                    .andExpect(header().string("X-Content-Type-Options", "nosniff"));
+            mockMvc.perform(get("/media/does-not-exist.png"))
+                    .andExpect(status().isNotFound());
+        } finally {
+            mediaStorageService.deleteQuietly(
+                    url, tenant, MediaStorageService.SCOPE_ECOMMERCE, tenant);
+        }
     }
 
     @Test
