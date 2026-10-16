@@ -74,6 +74,18 @@ app:
     client-id: ${GOOGLE_CLIENT_ID:}
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
+  security:
+    public-rate-limit:
+      # Limites por IP y grupo de endpoint anonimo. Se aplica antes de llegar a los controllers.
+      enabled: ${PUBLIC_RATE_LIMIT_ENABLED:true}
+      window-seconds: ${PUBLIC_RATE_LIMIT_WINDOW_SECONDS:60}
+      max-tracked-clients: ${PUBLIC_RATE_LIMIT_MAX_TRACKED_CLIENTS:10000}
+      login-per-window: ${PUBLIC_RATE_LIMIT_LOGIN_PER_WINDOW:10}
+      mfa-per-window: ${PUBLIC_RATE_LIMIT_MFA_PER_WINDOW:10}
+      recovery-per-window: ${PUBLIC_RATE_LIMIT_RECOVERY_PER_WINDOW:5}
+      registration-per-window: ${PUBLIC_RATE_LIMIT_REGISTRATION_PER_WINDOW:5}
+      checkout-per-window: ${PUBLIC_RATE_LIMIT_CHECKOUT_PER_WINDOW:20}
+      tracking-per-window: ${PUBLIC_RATE_LIMIT_TRACKING_PER_WINDOW:30}
   mail:
     from: ${MAIL_FROM:no-reply@omniretail.local}
     credential:

@@ -9,7 +9,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-omniretail}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-omniretail_dev}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      # Desarrollo local: no publicar datos ni SMTP en la red local por defecto.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -22,8 +23,8 @@ services:
     image: axllent/mailpit:latest
     container_name: omniretail-mailpit
     ports:
-      - "${MAILPIT_SMTP_PORT:-1025}:1025"
-      - "${MAILPIT_UI_PORT:-8025}:8025"
+      - "127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"
     environment:
       MP_SMTP_AUTH_ACCEPT_ANY: 1
       MP_SMTP_AUTH_ALLOW_INSECURE: 1

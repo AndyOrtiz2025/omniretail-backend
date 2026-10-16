@@ -52,8 +52,8 @@ services:
       - "443:443"
       - "443:443/udp"
     environment:
-      # Solo IP publica -> ":80" (HTTP). Con dominio -> "tienda.midominio.com" y Caddy saca HTTPS solo.
-      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+      # Dominio obligatorio: Caddy emite TLS y redirige HTTP a HTTPS automaticamente.
+      SITE_ADDRESS: ${SITE_ADDRESS:?Define SITE_ADDRESS con un dominio HTTPS en .env}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
