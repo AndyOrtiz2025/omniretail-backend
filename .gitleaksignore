@@ -1,0 +1,9 @@
+# Falsos positivos revisados de gitleaks (job secret-scan de CI): valores ficticios en tests
+# ("abcdEFGH12345678", "una-clave-de-pruebas-de-..."). Se ignora la huella exacta (commit:archivo:regla:linea),
+# no el archivo: un secreto nuevo en estos tests vuelve a bloquear. Revisar cada linea antes de agregarla.
+7dd6b3fbd36076d9cd6ad984b05958cb79361d40:src/test/java/com/omniretail/backend/shared/notification/EmailCredentialCryptoTest.java:generic-api-key:11
+7dd6b3fbd36076d9cd6ad984b05958cb79361d40:src/test/java/com/omniretail/backend/shared/notification/EmailCredentialCryptoTest.java:generic-api-key:12
+7dd6b3fbd36076d9cd6ad984b05958cb79361d40:src/test/java/com/omniretail/backend/administration/controller/EmailSenderConfigControllerTest.java:generic-api-key:60
+7dd6b3fbd36076d9cd6ad984b05958cb79361d40:src/test/java/com/omniretail/backend/shared/notification/GmailSmtpEmailProviderTest.java:generic-api-key:21
+7dd6b3fbd36076d9cd6ad984b05958cb79361d40:src/test/java/com/omniretail/backend/shared/notification/EmailDeliveryServiceIntegrationTest.java:generic-api-key:40
+809be99bd6ed2f392dcc11beeff396a16d601cfe:src/test/java/com/omniretail/backend/auth/service/MfaCryptoTest.java:generic-api-key:13

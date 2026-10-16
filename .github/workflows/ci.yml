@@ -89,6 +89,59 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ===========================================================================
+  # Escaneo de secretos sobre TODO el historial git (no solo el diff). Bloquea si encuentra alguno.
+  # Usa las reglas por defecto de gitleaks. --redact evita imprimir el secreto en el log.
+  # ===========================================================================
+  secret-scan:
+    name: Escaneo de secretos (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Ejecutar gitleaks
+        run: >
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo" -w /repo
+          ghcr.io/gitleaks/gitleaks:v8.21.2@sha256:0e99e8821643ea5b235718642b93bb32486af9c8162c8b8731f7cbdc951a7f46
+          git --redact --verbose /repo
+
+  # ===========================================================================
+  # SCA con Trivy sobre los JAR reales de runtime (incluidas transitivas). Bloquea si alguno tiene una
+  # vulnerabilidad alta o critica con version corregida disponible. No depende del Dependency graph del repo.
+  # Ojo: `trivy fs` sobre el pom solo ve las dependencias declaradas; por eso se copian los JAR y se usa rootfs.
+  # ===========================================================================
+  dependency-scan:
+    name: Revision de dependencias (SCA)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configurar Java 21 (Temurin)
+        uses: actions/setup-java@v6
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+
+      - name: Copiar dependencias de runtime
+        run: ./mvnw -B -q dependency:copy-dependencies -DincludeScope=runtime -DoutputDirectory=target/sca-deps
+
+      - name: Escanear dependencias con Trivy
+        run: >
+          docker run --rm -v "$PWD:/repo" -w /repo
+          aquasec/trivy:0.58.1@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7
+          rootfs --timeout 15m --scanners vuln --pkg-types library
+          --severity HIGH,CRITICAL --ignore-unfixed
+          --exit-code 1 --no-progress /repo/target/sca-deps
+
+  # ===========================================================================
   # Step 3: revision del PR con IA (Gemini). Comenta en el PR; nunca bloquea.
   # ===========================================================================
   ai-review:
