@@ -106,7 +106,7 @@ jobs:
       - name: Ejecutar gitleaks
         run: >
           docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo" -w /repo
-          ghcr.io/gitleaks/gitleaks:v8.21.2
+          ghcr.io/gitleaks/gitleaks:v8.21.2@sha256:0e99e8821643ea5b235718642b93bb32486af9c8162c8b8731f7cbdc951a7f46
           git --redact --verbose /repo
 
   # ===========================================================================
@@ -136,7 +136,7 @@ jobs:
       - name: Escanear dependencias con Trivy
         run: >
           docker run --rm -v "$PWD:/repo" -w /repo
-          aquasec/trivy:0.58.1
+          aquasec/trivy:0.58.1@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7
           rootfs --timeout 15m --scanners vuln --pkg-types library
           --severity HIGH,CRITICAL --ignore-unfixed
           --exit-code 1 --no-progress /repo/target/sca-deps
