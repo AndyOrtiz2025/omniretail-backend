@@ -17,6 +17,8 @@ public enum EmailPurpose {
     PASSWORD_RESET(Scope.PLATFORM),
     EMPLOYEE_INVITATION(Scope.PLATFORM),
     MFA_CODE(Scope.PLATFORM),
+    /** Aviso "ya tienes una cuenta" cuando alguien intenta registrarse con un correo ya registrado. */
+    ACCOUNT_ALREADY_EXISTS(Scope.PLATFORM),
     // Seguridad sin acceso a la cuenta: el Gmail del negocio verificado, con la plataforma de respaldo.
     EMAIL_VERIFICATION(Scope.TENANT_PREFERRED),
     // Operativos: cuenta Gmail del tenant. Nunca caen al remitente de plataforma.

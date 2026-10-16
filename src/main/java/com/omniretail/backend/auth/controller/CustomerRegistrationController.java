@@ -30,23 +30,29 @@ public class CustomerRegistrationController {
     private final CustomerRegistrationService registrationService;
 
     @PostMapping("/register")
-    @ResponseStatus(HttpStatus.CREATED)
+    @ResponseStatus(HttpStatus.ACCEPTED)
     @SecurityRequirements
     @Operation(
             summary = "Register customer",
             description = """
-                    **Público.** Crea la cuenta de un cliente en la tienda del `slug`. La cuenta queda pendiente de verificación: \
-                    no puede iniciar sesión hasta abrir el enlace que se envía por correo (vence en 30 minutos).
+                    **Público.** Registra a un cliente en la tienda del `slug`. Responde **siempre lo mismo** (202), \
+                    exista o no el correo en la tienda: nunca revela si ya hay una cuenta.
 
+                    - Correo nuevo: crea la cuenta pendiente de verificación y envía el enlace (vence en 30 minutos). \
+                    No puede iniciar sesión hasta abrirlo.
+                    - Correo de un cliente con la cuenta ya verificada: no cambia nada y le envía el aviso "Ya tienes \
+                    una cuenta" (como máximo 3 cada 30 minutos).
+                    - Correo de un empleado o de una cuenta deshabilitada o archivada: no hace nada.
                     - `phone` es opcional; si viene, debe tener exactamente 8 dígitos.
                     - `password`: 8 a 24 caracteres, con mayúscula, minúscula, número y carácter especial; sin \
                     espacios, no solo números, distinta del correo y no común.
 
-                    La respuesta nunca incluye el token de verificación.""")
+                    La respuesta no incluye el id de la cuenta: `user` solo repite el nombre y el correo enviados \
+                    (normalizados). Nunca incluye el token de verificación.""")
     @ApiResponses({
         @ApiResponse(
-                responseCode = "201",
-                description = "Cliente registrado; se envía el correo de verificación.",
+                responseCode = "202",
+                description = "Solicitud aceptada. Mismo cuerpo exista o no el correo.",
                 content = @Content(
                         mediaType = "application/json", schema = @Schema(implementation = RegisterCustomerResponse.class))),
         @ApiResponse(
@@ -56,13 +62,14 @@ public class CustomerRegistrationController {
         @ApiResponse(
                 responseCode = "404",
                 description = "La tienda no existe o no está activa (`REGISTRATION_UNAVAILABLE`).",
-                content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
-        @ApiResponse(
-                responseCode = "409",
-                description = "Ya existe una cuenta con ese correo en la tienda (`EMAIL_ALREADY_REGISTERED`).",
                 content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
     })
     public RegisterCustomerResponse register(@PathVariable String slug, @RequestBody RegisterCustomerRequest request) {
-        return registrationService.register(slug, request);
+        try {
+            return registrationService.register(slug, request);
+        } catch (CustomerRegistrationService.ConcurrentRegistrationException ex) {
+            // Otro registro con el mismo correo gano la carrera: la transaccion ya se deshizo; misma respuesta.
+            return ex.response();
+        }
     }
 }
