@@ -10,7 +10,7 @@ Internet ──► Caddy :80/:443 ──┬─ /api/v1/*, /media/* ──► bac
 
 ## 1. Preparar el VPS (una sola vez)
 
-Requisitos: Ubuntu 22.04/24.04, mínimo 2 GB de RAM (recomendado 4 GB: JVM + Next.js + PostgreSQL) y un
+Requisitos: Ubuntu 22.04/24.04, 4 GB de RAM (JVM + Next.js + PostgreSQL + monitoreo; ver [Monitoreo](#monitoreo-prometheus--grafana)) y un
 dominio público cuyo registro DNS apunte a la IP del VPS. Caddy obtiene el certificado TLS y redirige HTTP a HTTPS;
 no se permite producción solo con IP ni HTTP plano.
 
@@ -95,5 +95,38 @@ docker compose -f docker-compose.prod.yml up -d backend
 # Backup manual de la base de datos
 docker compose -f docker-compose.prod.yml exec -T postgres pg_dump -U omniretail omniretail | gzip > backup-$(date +%F).sql.gz
 ```
+
+## Monitoreo (Prometheus + Grafana)
+
+El CD copia `deploy/monitoring/` al VPS y levanta junto al backend:
+
+| Servicio | Qué mide | Tope de RAM |
+|----------|----------|-------------|
+| `prometheus` | Guarda las métricas 15 días (máx. 2 GB en disco) | 512 MB |
+| `grafana` | Dashboards y alertas por correo | 256 MB |
+| `node-exporter` | CPU, RAM, disco y red del VPS | 64 MB |
+| `cadvisor` | Consumo por contenedor | 128 MB |
+| `postgres-exporter` | Conexiones, tamaño y actividad de PostgreSQL | 64 MB |
+
+Consumo real ~500–700 MB: con el stack de monitoreo, **4 GB de RAM pasa a ser el mínimo práctico**.
+El backend expone `/actuator/prometheus` en el puerto interno **8081** (perfil `prod`), que Caddy no enruta.
+
+Requiere en `.env`: `GRAFANA_ADMIN_PASSWORD` y `ALERT_EMAIL_TO` (el SMTP reutiliza `MAIL_*`).
+
+**Entrar a Grafana** (no está publicado a internet; solo escucha en `127.0.0.1` del VPS):
+
+```bash
+ssh -L 3001:127.0.0.1:3001 deploy@<IP-del-VPS>
+# luego abrir http://localhost:3001  (usuario admin / GRAFANA_ADMIN_PASSWORD)
+```
+
+- Dashboards: carpeta **OmniRetail** (JVM, Spring Boot, VPS, contenedores, PostgreSQL). Se versionan en
+  `deploy/monitoring/grafana/provisioning/dashboards/json`; los cambios hechos desde la UI no se guardan.
+- Alertas: `deploy/monitoring/grafana/provisioning/alerting/rules.yml` (backend caído, memoria JVM, 5xx, latencia p95,
+  pool Hikari, RAM/disco del VPS, conexiones de PostgreSQL).
+- Probar el correo: *Alerting → Contact points → email-equipo → Test*.
+
+En local: `docker compose --profile monitoring up -d` con el backend corriendo en el host; Grafana en
+http://localhost:3001 (admin/admin) y las alertas llegan a Mailpit.
 
 > **Pendiente recomendado:** automatizar backups diarios de PostgreSQL (cron + `pg_dump`) y sacarlos del VPS.

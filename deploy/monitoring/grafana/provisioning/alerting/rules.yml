@@ -1,0 +1,193 @@
+apiVersion: 1
+
+# Cada regla: consulta instantanea A a Prometheus + umbral C. Las consultas ya devuelven 1 serie (agregadas).
+groups:
+  - orgId: 1
+    name: omniretail
+    folder: OmniRetail
+    interval: 1m
+    rules:
+      - uid: backend-down
+        title: Backend caido
+        condition: C
+        for: 2m
+        noDataState: Alerting # Si Prometheus deja de ver al backend tambien es una caida.
+        execErrState: Error
+        labels: { severity: critical }
+        annotations:
+          summary: Prometheus no puede recolectar metricas del backend desde hace 2 minutos.
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: { from: 300, to: 0 }
+            model: { refId: A, instant: true, expr: 'max(up{job="backend"})' }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: lt, params: [1] } }]
+
+      - uid: jvm-memory-pressure
+        title: Memoria JVM alta
+        condition: C
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        labels: { severity: warning }
+        annotations:
+          summary: La old gen sigue por encima del 85% despues de cada GC (riesgo de OutOfMemoryError).
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: { from: 300, to: 0 }
+            model: { refId: A, instant: true, expr: 'max(jvm_gc_live_data_size_bytes / jvm_gc_max_data_size_bytes)' }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: gt, params: [0.85] } }]
+
+      - uid: http-5xx-rate
+        title: Errores 5xx elevados
+        condition: C
+        for: 5m
+        noDataState: OK # Sin trafico no hay errores.
+        execErrState: Error
+        labels: { severity: critical }
+        annotations:
+          summary: Mas del 5% de las peticiones HTTP terminan en 5xx.
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: { from: 600, to: 0 }
+            model:
+              refId: A
+              instant: true
+              expr: 'sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m])) / sum(rate(http_server_requests_seconds_count[5m]))'
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: gt, params: [0.05] } }]
+
+      - uid: http-latency-p95
+        title: Latencia p95 alta
+        condition: C
+        for: 10m
+        noDataState: OK
+        execErrState: Error
+        labels: { severity: warning }
+        annotations:
+          summary: El p95 de latencia HTTP supera 1 segundo desde hace 10 minutos.
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: { from: 600, to: 0 }
+            model:
+              refId: A
+              instant: true
+              expr: 'histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{uri!~"/actuator.*"}[5m])))'
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: gt, params: [1] } }]
+
+      - uid: hikari-pending
+        title: Pool de conexiones saturado
+        condition: C
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        labels: { severity: warning }
+        annotations:
+          summary: Hay peticiones esperando conexion del pool Hikari desde hace 5 minutos.
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: { from: 300, to: 0 }
+            model: { refId: A, instant: true, expr: 'max(hikaricp_connections_pending)' }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: gt, params: [0] } }]
+
+      - uid: vps-memory-low
+        title: RAM del VPS baja
+        condition: C
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        labels: { severity: critical }
+        annotations:
+          summary: Queda menos del 10% de RAM disponible en el VPS.
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: { from: 300, to: 0 }
+            model: { refId: A, instant: true, expr: 'min(node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)' }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: lt, params: [0.10] } }]
+
+      - uid: vps-disk-low
+        title: Disco del VPS casi lleno
+        condition: C
+        for: 10m
+        noDataState: NoData
+        execErrState: Error
+        labels: { severity: critical }
+        annotations:
+          summary: Queda menos del 15% de disco libre en la raiz del VPS.
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: { from: 600, to: 0 }
+            model:
+              refId: A
+              instant: true
+              expr: 'min(node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"})'
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: lt, params: [0.15] } }]
+
+      - uid: postgres-connections-high
+        title: Conexiones de PostgreSQL altas
+        condition: C
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        labels: { severity: warning }
+        annotations:
+          summary: PostgreSQL usa mas del 80% de max_connections.
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: { from: 300, to: 0 }
+            model: { refId: A, instant: true, expr: 'sum(pg_stat_activity_count) / max(pg_settings_max_connections)' }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: gt, params: [0.8] } }]

@@ -1,4 +1,4 @@
-# Stack de produccion de OmniRetail (backend + web + PostgreSQL + Caddy).
+# Stack de produccion de OmniRetail (backend + web + PostgreSQL + Caddy + monitoreo).
 # Vive en el VPS en /opt/omniretail junto a un `.env` (ver .env.prod.example). El CD del backend copia
 # este archivo y el Caddyfile en cada despliegue; los secretos del `.env` NUNCA salen del VPS.
 name: omniretail
@@ -62,8 +62,91 @@ services:
       - web
       - backend
 
+  # --- Monitoreo (Prometheus + Grafana). Nada se publica a internet: Grafana solo escucha en 127.0.0.1
+  # del VPS y se entra por tunel SSH (ver README). Config versionada en ./monitoring (la copia el CD).
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    mem_limit: 512m
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=2GB
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    restart: unless-stopped
+    mem_limit: 256m
+    ports:
+      - "127.0.0.1:3001:3000" # Solo loopback: ssh -L 3001:127.0.0.1:3001 deploy@<VPS>
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Define GRAFANA_ADMIN_PASSWORD en .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # Las alertas salen por el mismo SMTP que usa el backend.
+      GF_SMTP_ENABLED: "true"
+      GF_SMTP_HOST: ${MAIL_HOST}:${MAIL_PORT}
+      GF_SMTP_USER: ${MAIL_USERNAME}
+      GF_SMTP_PASSWORD: ${MAIL_PASSWORD}
+      GF_SMTP_FROM_ADDRESS: ${MAIL_USERNAME}
+      GF_SMTP_FROM_NAME: OmniRetail Monitoreo
+      GF_SMTP_STARTTLS_POLICY: MandatoryStartTLS
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:?Define ALERT_EMAIL_TO en .env}
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  node-exporter:
+    image: prom/node-exporter:v1.9.1
+    restart: unless-stopped
+    mem_limit: 64m
+    pid: host
+    command:
+      - --path.rootfs=/host
+    volumes:
+      - /:/host:ro,rslave
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.52.1
+    restart: unless-stopped
+    mem_limit: 128m
+    privileged: true # cAdvisor necesita leer cgroups del host para medir cada contenedor.
+    devices:
+      - /dev/kmsg
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=30s # Menos CPU que el default (1s); suficiente con scrape de 15s.
+      - --disable_metrics=percpu,sched,tcp,udp,disk,diskIO,hugetlb,referenced_memory,cpu_topology,resctrl
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.17.1
+    restart: unless-stopped
+    mem_limit: 64m
+    environment:
+      DATA_SOURCE_URI: postgres:5432/${POSTGRES_DB:-omniretail}?sslmode=disable
+      DATA_SOURCE_USER: ${POSTGRES_USER:-omniretail}
+      DATA_SOURCE_PASS: ${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   pgdata:
   media:
   caddy_data:
   caddy_config:
+  prometheus_data:
+  grafana_data:
