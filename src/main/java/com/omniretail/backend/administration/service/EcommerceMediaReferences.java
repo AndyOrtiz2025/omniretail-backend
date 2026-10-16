@@ -50,13 +50,15 @@ public class EcommerceMediaReferences {
      * despues de guardar el cambio: la comprobacion de referencias ve el estado ya modificado.
      */
     public void deleteAfterCommitIfUnreferenced(UUID tenantId, String previousUrl) {
-        if (!mediaStorageService.isManagedIn(previousUrl, tenantId, MediaStorageService.SCOPE_ECOMMERCE)) {
+        if (!mediaStorageService.isManagedByOwner(
+                previousUrl, tenantId, MediaStorageService.SCOPE_ECOMMERCE, tenantId)) {
             return;
         }
         if (isReferenced(tenantId, previousUrl)) {
             return;
         }
-        mediaStorageService.deleteAfterCommit(previousUrl);
+        mediaStorageService.deleteAfterCommit(
+                previousUrl, tenantId, MediaStorageService.SCOPE_ECOMMERCE, tenantId);
     }
 
     private boolean isReferenced(UUID tenantId, String url) {

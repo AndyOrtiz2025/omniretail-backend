@@ -120,17 +120,41 @@ class AuthControllerTest {
     }
 
     @Test
-    void wrongPasswordWithSeveralCandidatesDoesNotTouchAnyAccount() throws Exception {
+    void wrongPasswordWithSeveralCandidatesCountsTheFailureForEveryCandidate() throws Exception {
         String email = uniqueEmail();
         User first = account(tenant(), UserType.employee, email);
         User second = account(tenant(), UserType.employee, email);
 
         login(email, "Incorrecta1!", null, null)
                 .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.code").value("INVALID_CREDENTIALS"));
+                .andExpect(jsonPath("$.code").value("INVALID_CREDENTIALS"))
+                .andExpect(jsonPath("$.message").value(GENERIC_MESSAGE));
 
-        assertThat(authAccountRepository.findByUserId(first.getId()).orElseThrow().getFailedLoginAttempts()).isZero();
-        assertThat(authAccountRepository.findByUserId(second.getId()).orElseThrow().getFailedLoginAttempts()).isZero();
+        assertThat(authAccountRepository.findByUserId(first.getId()).orElseThrow().getFailedLoginAttempts()).isEqualTo(1);
+        assertThat(authAccountRepository.findByUserId(second.getId()).orElseThrow().getFailedLoginAttempts()).isEqualTo(1);
+    }
+
+    @Test
+    void fiveFailuresWithSeveralCandidatesLockEveryCandidate() throws Exception {
+        // Mismo empleado en dos negocios: tener dos cuentas no debe permitir intentos ilimitados.
+        String email = uniqueEmail();
+        User first = account(tenant(), UserType.employee, email);
+        User second = account(tenant(), UserType.employee, email);
+
+        for (int attempt = 0; attempt < 5; attempt++) {
+            login(email, "Incorrecta1!", null, null).andExpect(status().isUnauthorized());
+        }
+
+        for (User user : List.of(first, second)) {
+            AuthAccount account = authAccountRepository.findByUserId(user.getId()).orElseThrow();
+            assertThat(account.getStatus()).isEqualTo(AccountStatus.temporarily_locked);
+            assertThat(account.getLockedUntil()).isAfter(Instant.now());
+        }
+        // Con ambas bloqueadas, ni la contrasena correcta entra, y el mensaje sigue siendo el generico.
+        login(email, PASSWORD, null, null)
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("INVALID_CREDENTIALS"))
+                .andExpect(jsonPath("$.message").value(GENERIC_MESSAGE));
     }
 
     @Test

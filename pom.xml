@@ -32,6 +32,7 @@
 		<openpdf.version>2.0.3</openpdf.version>
 		<jacoco.version>0.8.15</jacoco.version>
 		<sonar-maven-plugin.version>5.8.0.7211</sonar-maven-plugin.version>
+		<twelvemonkeys.version>3.15.3</twelvemonkeys.version>
 		<!-- Parches de seguridad sobre lo que trae Spring Boot 4.1.1 (detectados por el SCA de CI con Trivy).
 		     Quitar cuando un Spring Boot 4.1.x posterior incluya estas versiones o superiores. -->
 		<tomcat.version>11.0.25</tomcat.version>
@@ -78,6 +79,18 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-webmvc</artifactId>
+		</dependency>
+		<!-- Decodificadores ImageIO puros Java. WebP es solo lectura: el original se conserva
+		     despues de validar estrictamente RIFF y decodificar todos sus pixeles. -->
+		<dependency>
+			<groupId>com.twelvemonkeys.imageio</groupId>
+			<artifactId>imageio-jpeg</artifactId>
+			<version>${twelvemonkeys.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>com.twelvemonkeys.imageio</groupId>
+			<artifactId>imageio-webp</artifactId>
+			<version>${twelvemonkeys.version}</version>
 		</dependency>
 
 		<dependency>

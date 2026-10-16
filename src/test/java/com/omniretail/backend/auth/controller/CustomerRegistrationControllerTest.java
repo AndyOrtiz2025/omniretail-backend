@@ -5,7 +5,6 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import com.jayway.jsonpath.JsonPath;
 import com.omniretail.backend.TestcontainersConfiguration;
 import com.omniretail.backend.administration.entity.Role;
 import com.omniretail.backend.administration.entity.Tenant;
@@ -25,6 +24,7 @@ import com.omniretail.backend.ecommerce.entity.CustomerStatus;
 import com.omniretail.backend.ecommerce.repository.CustomerRepository;
 import com.omniretail.backend.shared.notification.CapturingEmailSender;
 import com.omniretail.backend.shared.notification.EmailMessage;
+import com.omniretail.backend.shared.notification.EmailPurpose;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -56,7 +56,9 @@ class CustomerRegistrationControllerTest {
 
     private static final String LOGIN = "/api/v1/auth/login";
     private static final String VERIFY = "/api/v1/auth/email/verify";
+    private static final String ACCEPTED_MESSAGE = "Si el correo es válido, te enviamos un mensaje para continuar.";
     private static final String PASSWORD = "Segura123!";
+    private static final String OTHER_PASSWORD = "OtraClave456#";
     private static final Pattern VERIFY_LINK = Pattern.compile("http://localhost:3000/verificar-correo/([A-Za-z0-9_-]{43})");
 
     @Autowired
@@ -97,14 +99,16 @@ class CustomerRegistrationControllerTest {
         String email = uniqueEmail();
 
         String response = register(tenant.getSlug(), "  Ana Pérez ", "  " + email.toUpperCase() + " ", "55551234", PASSWORD)
-                .andExpect(status().isCreated())
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.message").value(ACCEPTED_MESSAGE))
                 .andExpect(jsonPath("$.user.name").value("Ana Pérez"))
                 .andExpect(jsonPath("$.user.email").value(email))
                 .andExpect(jsonPath("$.user.type").value("customer"))
+                .andExpect(jsonPath("$.user.id").doesNotExist())
                 .andReturn().getResponse().getContentAsString();
 
-        UUID userId = UUID.fromString(JsonPath.read(response, "$.user.id"));
-        User user = userRepository.findById(userId).orElseThrow();
+        User user = userRepository.findByTenantIdAndEmail(tenant.getId(), email).orElseThrow();
+        UUID userId = user.getId();
         assertThat(user.getTenantId()).isEqualTo(tenant.getId());
         assertThat(user.getType()).isEqualTo(UserType.customer);
         assertThat(user.getPhone()).isEqualTo("55551234");
@@ -144,26 +148,130 @@ class CustomerRegistrationControllerTest {
     @Test
     void customerCodesAdvancePerTenant() throws Exception {
         Tenant tenant = tenantWithCustomerRole();
-        register(tenant.getSlug(), "Uno", uniqueEmail(), null, PASSWORD).andExpect(status().isCreated());
-        String second = register(tenant.getSlug(), "Dos", uniqueEmail(), null, PASSWORD)
-                .andExpect(status().isCreated())
-                .andReturn().getResponse().getContentAsString();
+        register(tenant.getSlug(), "Uno", uniqueEmail(), null, PASSWORD).andExpect(status().isAccepted());
+        String second = uniqueEmail();
+        register(tenant.getSlug(), "Dos", second, null, PASSWORD).andExpect(status().isAccepted());
 
-        User user = userRepository.findById(UUID.fromString(JsonPath.read(second, "$.user.id"))).orElseThrow();
+        User user = userRepository.findByTenantIdAndEmail(tenant.getId(), second).orElseThrow();
         assertThat(customerRepository.findById(user.getCustomerId()).orElseThrow().getCode()).isEqualTo("CLI-002");
     }
 
     @Test
-    void duplicateEmailInSameTenantReturnsConflict() throws Exception {
+    void newAndExistingEmailGetTheSameResponse() throws Exception {
+        Tenant tenant = tenantWithCustomerRole();
+        String existing = verifiedCustomer(tenant, "Ana");
+        String fresh = uniqueEmail();
+
+        String forExisting = register(tenant.getSlug(), "Ana", existing.toUpperCase(), null, OTHER_PASSWORD)
+                .andExpect(status().isAccepted())
+                .andReturn().getResponse().getContentAsString();
+        String forFresh = register(tenant.getSlug(), "Ana", fresh, null, OTHER_PASSWORD)
+                .andExpect(status().isAccepted())
+                .andReturn().getResponse().getContentAsString();
+
+        // Solo cambia el correo que cada uno envio: ni codigo, ni mensaje, ni campos distintos.
+        assertThat(forExisting.replace(existing, "<correo>")).isEqualTo(forFresh.replace(fresh, "<correo>"));
+        assertThat(forExisting).doesNotContain("EMAIL_ALREADY_REGISTERED").doesNotContain("\"id\"");
+    }
+
+    @Test
+    void existingVerifiedCustomerGetsAccountExistsEmailAndNothingChanges() throws Exception {
+        Tenant tenant = tenantWithCustomerRole();
+        String email = verifiedCustomer(tenant, "Ana");
+        User before = userRepository.findByTenantIdAndEmail(tenant.getId(), email).orElseThrow();
+        String hashBefore = authAccountRepository.findByUserId(before.getId()).orElseThrow().getPasswordHash();
+
+        register(tenant.getSlug(), "Intruso", email, "55550000", OTHER_PASSWORD)
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.message").value(ACCEPTED_MESSAGE));
+
+        // 1 verificacion del alta + 1 aviso.
+        EmailMessage notice = emailSender.awaitMessagesTo(email, 2).getLast();
+        assertThat(notice.purpose()).isEqualTo(EmailPurpose.ACCOUNT_ALREADY_EXISTS);
+        assertThat(notice.subject()).isEqualTo("Ya tienes una cuenta");
+        String loginLink = "http://localhost:3000/tienda/" + tenant.getSlug() + "/iniciar-sesion";
+        assertThat(notice.body()).contains("Hola Ana:", "ya tienes una", loginLink, "¿Olvidaste tu contraseña?");
+        assertThat(notice.html()).contains("href=\"" + loginLink + "\"", "Iniciar sesión", tenant.getName());
+        assertThat(notice.body()).doesNotContain("verificar-correo").doesNotContain("restablecer-contrasena");
+
+        User after = userRepository.findById(before.getId()).orElseThrow();
+        assertThat(after.getName()).isEqualTo("Ana");
+        assertThat(after.getPhone()).isNull();
+        AuthAccount account = authAccountRepository.findByUserId(before.getId()).orElseThrow();
+        assertThat(account.getPasswordHash()).isEqualTo(hashBefore);
+        assertThat(account.getStatus()).isEqualTo(AccountStatus.active);
+        assertThat(emailVerificationRepository.findByUserId(before.getId())).hasSize(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM users WHERE tenant_id = ? AND lower(email) = ?", Integer.class,
+                tenant.getId(), email)).isEqualTo(1);
+    }
+
+    @Test
+    void accountExistsEmailIsLimitedToThreeEveryThirtyMinutes() throws Exception {
+        Tenant tenant = tenantWithCustomerRole();
+        String email = verifiedCustomer(tenant, "Ana");
+
+        for (int attempt = 0; attempt < 5; attempt++) {
+            register(tenant.getSlug(), "Ana", email, null, OTHER_PASSWORD).andExpect(status().isAccepted());
+        }
+
+        // 1 verificacion del alta + solo 3 avisos.
+        assertThat(emailSender.settledMessagesTo(email))
+                .filteredOn(message -> message.purpose() == EmailPurpose.ACCOUNT_ALREADY_EXISTS)
+                .hasSize(3);
+    }
+
+    @Test
+    void employeeOrDisabledAccountEmailGetsSameResponseAndNoEmail() throws Exception {
+        Tenant tenant = tenantWithCustomerRole();
+        String employeeEmail = uniqueEmail();
+        User employee = User.builder().name("Empleado").email(employeeEmail).type(UserType.employee).build();
+        employee.setTenantId(tenant.getId());
+        employee = userRepository.save(employee);
+        authAccountRepository.save(AuthAccount.builder()
+                .userId(employee.getId())
+                .email(employeeEmail)
+                .passwordHash(passwordEncoder.encode(PASSWORD))
+                .status(AccountStatus.active)
+                .build());
+
+        String disabledEmail = verifiedCustomer(tenant, "Beto");
+        User disabledUser = userRepository.findByTenantIdAndEmail(tenant.getId(), disabledEmail).orElseThrow();
+        AuthAccount disabled = authAccountRepository.findByUserId(disabledUser.getId()).orElseThrow();
+        disabled.setStatus(AccountStatus.disabled);
+        authAccountRepository.save(disabled);
+
+        register(tenant.getSlug(), "Ana", employeeEmail, null, OTHER_PASSWORD)
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.message").value(ACCEPTED_MESSAGE));
+        register(tenant.getSlug(), "Beto", disabledEmail, null, OTHER_PASSWORD)
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.message").value(ACCEPTED_MESSAGE));
+
+        assertThat(emailSender.settledMessagesTo(employeeEmail)).isEmpty();
+        // Solo la verificacion del alta, ningun aviso.
+        assertThat(emailSender.settledMessagesTo(disabledEmail)).hasSize(1);
+        assertThat(authAccountRepository.findByUserId(disabledUser.getId()).orElseThrow().getStatus())
+                .isEqualTo(AccountStatus.disabled);
+    }
+
+    @Test
+    void pendingAccountWithLiveLinkIsLeftUntouched() throws Exception {
         Tenant tenant = tenantWithCustomerRole();
         String email = uniqueEmail();
-        register(tenant.getSlug(), "Ana", email, null, PASSWORD).andExpect(status().isCreated());
+        register(tenant.getSlug(), "Ana", email, null, PASSWORD).andExpect(status().isAccepted());
+        emailSender.awaitMessageTo(email);
+        User user = userRepository.findByTenantIdAndEmail(tenant.getId(), email).orElseThrow();
+        String hashBefore = authAccountRepository.findByUserId(user.getId()).orElseThrow().getPasswordHash();
 
-        register(tenant.getSlug(), "Otra Ana", email.toUpperCase(), null, PASSWORD)
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.code").value("EMAIL_ALREADY_REGISTERED"))
-                .andExpect(jsonPath("$.message")
-                        .value("Ya existe una cuenta con este correo. Inicia sesión o recupera tu contraseña."));
+        register(tenant.getSlug(), "Intruso", email, null, OTHER_PASSWORD)
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.message").value(ACCEPTED_MESSAGE));
+
+        assertThat(emailSender.settledMessagesTo(email)).hasSize(1);
+        assertThat(userRepository.findById(user.getId()).orElseThrow().getName()).isEqualTo("Ana");
+        assertThat(authAccountRepository.findByUserId(user.getId()).orElseThrow().getPasswordHash()).isEqualTo(hashBefore);
+        assertThat(emailVerificationRepository.findByUserId(user.getId())).hasSize(1);
     }
 
     @Test
@@ -186,8 +294,8 @@ class CustomerRegistrationControllerTest {
                 statuses.add(result.get(30, TimeUnit.SECONDS));
             }
 
-            assertThat(statuses).containsOnly(201, 409);
-            assertThat(statuses).filteredOn(code -> code == 201).hasSize(1);
+            // Todos reciben la misma respuesta, gane o pierda la carrera.
+            assertThat(statuses).containsOnly(202);
         }
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT count(*) FROM users WHERE tenant_id = ? AND email = ?", Integer.class, tenant.getId(), email))
@@ -200,8 +308,8 @@ class CustomerRegistrationControllerTest {
     @Test
     void sameEmailInAnotherTenantIsAllowed() throws Exception {
         String email = uniqueEmail();
-        register(tenantWithCustomerRole().getSlug(), "Ana", email, null, PASSWORD).andExpect(status().isCreated());
-        register(tenantWithCustomerRole().getSlug(), "Ana", email, null, PASSWORD).andExpect(status().isCreated());
+        register(tenantWithCustomerRole().getSlug(), "Ana", email, null, PASSWORD).andExpect(status().isAccepted());
+        register(tenantWithCustomerRole().getSlug(), "Ana", email, null, PASSWORD).andExpect(status().isAccepted());
     }
 
     @Test
@@ -263,7 +371,7 @@ class CustomerRegistrationControllerTest {
     void loginBeforeVerificationFails() throws Exception {
         Tenant tenant = tenantWithCustomerRole();
         String email = uniqueEmail();
-        register(tenant.getSlug(), "Ana", email, null, PASSWORD).andExpect(status().isCreated());
+        register(tenant.getSlug(), "Ana", email, null, PASSWORD).andExpect(status().isAccepted());
 
         login(email, tenant.getSlug()).andExpect(status().isUnauthorized());
     }
@@ -274,7 +382,7 @@ class CustomerRegistrationControllerTest {
     void validTokenActivatesAccountAndLoginWorks() throws Exception {
         Tenant tenant = tenantWithCustomerRole();
         String email = uniqueEmail();
-        register(tenant.getSlug(), "Ana", email, null, PASSWORD).andExpect(status().isCreated());
+        register(tenant.getSlug(), "Ana", email, null, PASSWORD).andExpect(status().isAccepted());
         String token = tokenFrom(emailSender.awaitMessageTo(email));
 
         verify(token)
@@ -292,12 +400,12 @@ class CustomerRegistrationControllerTest {
     void usedExpiredOrUnknownTokenReturnsSameGenericError() throws Exception {
         Tenant tenant = tenantWithCustomerRole();
         String email = uniqueEmail();
-        register(tenant.getSlug(), "Ana", email, null, PASSWORD).andExpect(status().isCreated());
+        register(tenant.getSlug(), "Ana", email, null, PASSWORD).andExpect(status().isAccepted());
         String token = tokenFrom(emailSender.awaitMessageTo(email));
         verify(token).andExpect(status().isOk());
 
         String expiredEmail = uniqueEmail();
-        register(tenant.getSlug(), "Beto", expiredEmail, null, PASSWORD).andExpect(status().isCreated());
+        register(tenant.getSlug(), "Beto", expiredEmail, null, PASSWORD).andExpect(status().isAccepted());
         String expiredToken = tokenFrom(emailSender.awaitMessageTo(expiredEmail));
         User expiredUser = userRepository.findByTenantIdAndEmail(tenant.getId(), expiredEmail).orElseThrow();
         jdbcTemplate.update("UPDATE email_verifications SET expires_at = ? WHERE user_id = ?",
@@ -317,7 +425,7 @@ class CustomerRegistrationControllerTest {
     void verificationNeverReactivatesDisabledAccount() throws Exception {
         Tenant tenant = tenantWithCustomerRole();
         String email = uniqueEmail();
-        register(tenant.getSlug(), "Ana", email, null, PASSWORD).andExpect(status().isCreated());
+        register(tenant.getSlug(), "Ana", email, null, PASSWORD).andExpect(status().isAccepted());
         String token = tokenFrom(emailSender.awaitMessageTo(email));
         User user = userRepository.findByTenantIdAndEmail(tenant.getId(), email).orElseThrow();
         AuthAccount account = authAccountRepository.findByUserId(user.getId()).orElseThrow();
@@ -335,7 +443,7 @@ class CustomerRegistrationControllerTest {
     void noPlainTokenIsStoredInDatabase() throws Exception {
         Tenant tenant = tenantWithCustomerRole();
         String email = uniqueEmail();
-        register(tenant.getSlug(), "Ana", email, null, PASSWORD).andExpect(status().isCreated());
+        register(tenant.getSlug(), "Ana", email, null, PASSWORD).andExpect(status().isAccepted());
         String token = tokenFrom(emailSender.awaitMessageTo(email));
 
         Integer matches = jdbcTemplate.queryForObject(
@@ -366,6 +474,14 @@ class CustomerRegistrationControllerTest {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"email\": %s, \"password\": %s, \"tenantSlug\": %s}"
                         .formatted(json(email), json(PASSWORD), json(tenantSlug))));
+    }
+
+    /** Registra y verifica un cliente; devuelve su correo. */
+    private String verifiedCustomer(Tenant tenant, String name) throws Exception {
+        String email = uniqueEmail();
+        register(tenant.getSlug(), name, email, null, PASSWORD).andExpect(status().isAccepted());
+        verify(tokenFrom(emailSender.awaitMessageTo(email))).andExpect(status().isOk());
+        return email;
     }
 
     private static String tokenFrom(EmailMessage message) {

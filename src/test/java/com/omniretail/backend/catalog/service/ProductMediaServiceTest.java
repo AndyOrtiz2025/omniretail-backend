@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 
 import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.catalog.dto.ProductMediaCreateRequest;
+import com.omniretail.backend.catalog.dto.ProductMediaUpdateRequest;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductMedia;
 import com.omniretail.backend.catalog.entity.ProductMediaType;
@@ -46,6 +47,17 @@ class ProductMediaServiceTest {
         assertThat(service.createExternal(productId, new ProductMediaCreateRequest(ProductMediaType.video,
                 "https://video.example/watch/1", null, 1, false)).type()).isEqualTo(ProductMediaType.video);
     }
+    @Test void removesStoredImageWhenProductMediaPersistenceFails() {
+        MockMultipartFile file = new MockMultipartFile("file", new byte[] {1});
+        String url = "/media/" + tenant + "/products/" + productId + "/" + UUID.randomUUID() + ".webp";
+        IllegalStateException failure = new IllegalStateException("simulated persistence failure");
+        when(storage.storeImage(tenant, MediaStorageService.SCOPE_PRODUCTS, productId, file)).thenReturn(url);
+        when(media.saveAndFlush(any())).thenThrow(failure);
+
+        assertThatThrownBy(() -> service.upload(productId, file, "Alt", 0, true)).isSameAs(failure);
+
+        verify(storage).deleteQuietly(url, tenant, MediaStorageService.SCOPE_PRODUCTS, productId);
+    }
     @Test void enforcesSixItemLimitAndCleansManagedFileOnDelete() {
         when(media.countByTenantIdAndProductId(tenant, productId)).thenReturn(6L);
         assertThatThrownBy(() -> service.createExternal(productId, new ProductMediaCreateRequest(
@@ -57,7 +69,8 @@ class ProductMediaServiceTest {
                 .sortOrder(0).build();
         when(media.findByTenantIdAndProductIdAndId(tenant, productId, mediaId)).thenReturn(Optional.of(entity));
         service.delete(productId, mediaId);
-        verify(storage).deleteAfterCommit(entity.getUrl());
+        verify(storage).deleteAfterCommit(
+                entity.getUrl(), tenant, MediaStorageService.SCOPE_PRODUCTS, productId);
     }
     @Test void settingPrimaryClearsPreviousPrimaryWithinTransaction() {
         when(media.saveAndFlush(any())).thenAnswer(call -> call.getArgument(0));
@@ -77,5 +90,19 @@ class ProductMediaServiceTest {
                 new MockMultipartFile("file", new byte[] {1}), null, -1, false))
                 .isInstanceOfSatisfying(BusinessException.class,
                         ex -> assertThat(ex.getCode()).isEqualTo("PRODUCT_MEDIA_SORT_INVALID"));
+    }
+
+    @Test void rejectsChangingTheUrlOfManagedProductMedia() {
+        UUID mediaId = UUID.randomUUID();
+        ProductMedia entity = ProductMedia.builder().productId(productId).type(ProductMediaType.image)
+                .url("/media/" + tenant + "/products/" + productId + "/" + UUID.randomUUID() + ".png")
+                .sortOrder(0).build();
+        when(media.findByTenantIdAndProductIdAndId(tenant, productId, mediaId)).thenReturn(Optional.of(entity));
+        when(storage.isManaged(entity.getUrl())).thenReturn(true);
+
+        assertThatThrownBy(() -> service.update(productId, mediaId,
+                new ProductMediaUpdateRequest("https://cdn.example/replacement.png", null, null)))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.getCode()).isEqualTo("PRODUCT_MEDIA_LOCAL_URL_IMMUTABLE"));
     }
 }

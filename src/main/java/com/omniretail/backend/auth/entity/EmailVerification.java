@@ -52,4 +52,13 @@ public class EmailVerification {
 
     @Column(name = "verified_at")
     private Instant verifiedAt;
+
+    /** Un enlace nuevo (reenvio o re-registro de la cuenta pendiente) invalida este. */
+    @Column(name = "superseded_at")
+    private Instant supersededAt;
+
+    /** Sin usar, sin reemplazar y sin vencer. */
+    public boolean isUsable(Instant now) {
+        return verifiedAt == null && supersededAt == null && now.isBefore(expiresAt);
+    }
 }

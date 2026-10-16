@@ -1,0 +1,19 @@
+databaseChangeLog:
+  - changeSet:
+      id: 061-auth-email-verification-superseded
+      author: AndyOrtiz2025
+      changes:
+        # Un reenvio de la verificacion (o un re-registro de una cuenta pendiente) invalida el enlace anterior,
+        # igual que password_reset_challenges.superseded_at. Nulo: el token sigue siendo utilizable.
+        - addColumn:
+            tableName: email_verifications
+            columns:
+              - column:
+                  name: superseded_at
+                  type: TIMESTAMPTZ
+      rollback:
+        - dropColumn:
+            tableName: email_verifications
+            columns:
+              - column:
+                  name: superseded_at
