@@ -1,0 +1,12 @@
+# Configuracion del escaneo de secretos (job secret-scan de CI). Usa las reglas por defecto de gitleaks.
+# Solo se excluyen valores de desarrollo publicos y conocidos: nunca agregar aqui archivos de produccion.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Valores de ejemplo de desarrollo y pruebas"
+paths = [
+  '''^src/main/resources/application-dev\.yaml$''',
+  '''^docker-compose\.yml$''',
+  '''^src/test/''',
+]

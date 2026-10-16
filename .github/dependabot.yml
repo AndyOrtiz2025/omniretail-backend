@@ -1,4 +1,5 @@
-# Mantiene al dia las acciones de GitHub fijadas por SHA (abre un PR semanal hacia development).
+# Mantiene al dia acciones de GitHub, dependencias Maven e imagenes base del Dockerfile.
+# Cada ecosistema abre un PR semanal agrupado hacia development.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -9,3 +10,19 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
+
+  # Solo se agrupan minor/patch; los saltos de version mayor llegan en PR propio para revisarlos aparte.
+  - package-ecosystem: maven
+    directory: /
+    target-branch: development
+    schedule:
+      interval: weekly
+    groups:
+      maven-minor-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: docker
+    directory: /
+    target-branch: development
+    schedule:
+      interval: weekly
