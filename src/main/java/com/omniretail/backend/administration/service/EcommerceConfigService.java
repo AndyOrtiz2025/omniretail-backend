@@ -99,7 +99,8 @@ public class EcommerceConfigService {
             mediaReferences.deleteAfterCommitIfUnreferenced(tenantId, previous);
             return EcommerceConfigResponse.from(saved);
         } catch (RuntimeException exception) {
-            mediaStorageService.deleteQuietly(newUrl);
+            mediaStorageService.deleteQuietly(
+                    newUrl, tenantId, MediaStorageService.SCOPE_ECOMMERCE, tenantId);
             throw exception;
         }
     }

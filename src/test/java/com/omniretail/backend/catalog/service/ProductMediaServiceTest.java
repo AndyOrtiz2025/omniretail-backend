@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 
 import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.catalog.dto.ProductMediaCreateRequest;
+import com.omniretail.backend.catalog.dto.ProductMediaUpdateRequest;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductMedia;
 import com.omniretail.backend.catalog.entity.ProductMediaType;
@@ -57,7 +58,8 @@ class ProductMediaServiceTest {
                 .sortOrder(0).build();
         when(media.findByTenantIdAndProductIdAndId(tenant, productId, mediaId)).thenReturn(Optional.of(entity));
         service.delete(productId, mediaId);
-        verify(storage).deleteAfterCommit(entity.getUrl());
+        verify(storage).deleteAfterCommit(
+                entity.getUrl(), tenant, MediaStorageService.SCOPE_PRODUCTS, productId);
     }
     @Test void settingPrimaryClearsPreviousPrimaryWithinTransaction() {
         when(media.saveAndFlush(any())).thenAnswer(call -> call.getArgument(0));
@@ -77,5 +79,19 @@ class ProductMediaServiceTest {
                 new MockMultipartFile("file", new byte[] {1}), null, -1, false))
                 .isInstanceOfSatisfying(BusinessException.class,
                         ex -> assertThat(ex.getCode()).isEqualTo("PRODUCT_MEDIA_SORT_INVALID"));
+    }
+
+    @Test void rejectsChangingTheUrlOfManagedProductMedia() {
+        UUID mediaId = UUID.randomUUID();
+        ProductMedia entity = ProductMedia.builder().productId(productId).type(ProductMediaType.image)
+                .url("/media/" + tenant + "/products/" + productId + "/" + UUID.randomUUID() + ".png")
+                .sortOrder(0).build();
+        when(media.findByTenantIdAndProductIdAndId(tenant, productId, mediaId)).thenReturn(Optional.of(entity));
+        when(storage.isManaged(entity.getUrl())).thenReturn(true);
+
+        assertThatThrownBy(() -> service.update(productId, mediaId,
+                new ProductMediaUpdateRequest("https://cdn.example/replacement.png", null, null)))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.getCode()).isEqualTo("PRODUCT_MEDIA_LOCAL_URL_IMMUTABLE"));
     }
 }

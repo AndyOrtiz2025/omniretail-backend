@@ -13,6 +13,7 @@ import java.text.Normalizer;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -54,6 +55,10 @@ public class CategoryService {
     public CategoryResponse create(CategoryCreateRequest request) {
         UUID tenantId = currentUser.require().tenantId();
         requireActiveParent(tenantId, request.parentId());
+        if (mediaStorageService.isManaged(request.imageUrl())) {
+            throw BusinessException.badRequest(
+                    "Una imagen administrada debe cargarse despues de crear la categoria.");
+        }
 
         String name = request.name().trim();
         String slug = normalizeSlug(
@@ -77,8 +82,9 @@ public class CategoryService {
     @Transactional
     public CategoryResponse update(UUID id, CategoryUpdateRequest request) {
         UUID tenantId = currentUser.require().tenantId();
-        Category category = requireCategory(tenantId, id);
+        Category category = requireCategoryForUpdate(tenantId, id);
         validateHierarchy(tenantId, category.getId(), request.parentId());
+        requireSafeImageReference(tenantId, id, category.getImageUrl(), request.imageUrl());
 
         if (category.getStatus() != CategoryStatus.archived
                 && request.status() == CategoryStatus.archived) {
@@ -100,9 +106,15 @@ public class CategoryService {
         category.setName(request.name().trim());
         category.setSlug(slug);
         category.setDescription(request.description());
+        String previousImageUrl = category.getImageUrl();
         category.setImageUrl(request.imageUrl());
         category.setStatus(request.status());
-        return CategoryResponse.from(categoryRepository.saveAndFlush(category));
+        Category saved = categoryRepository.saveAndFlush(category);
+        if (!Objects.equals(previousImageUrl, request.imageUrl())) {
+            mediaStorageService.deleteAfterCommit(
+                    previousImageUrl, tenantId, MediaStorageService.SCOPE_CATEGORIES, id);
+        }
+        return CategoryResponse.from(saved);
     }
 
     @Transactional
@@ -121,15 +133,18 @@ public class CategoryService {
     public CategoryResponse uploadImage(UUID id, MultipartFile file) {
         UUID tenantId = currentUser.require().tenantId();
         Category category = requireCategoryForUpdate(tenantId, id);
-        String newUrl = mediaStorageService.storeImage(tenantId, "categories", id, file);
+        String newUrl = mediaStorageService.storeImage(
+                tenantId, MediaStorageService.SCOPE_CATEGORIES, id, file);
         String previous = category.getImageUrl();
         try {
             category.setImageUrl(newUrl);
             Category saved = categoryRepository.saveAndFlush(category);
-            mediaStorageService.deleteAfterCommit(previous);
+            mediaStorageService.deleteAfterCommit(
+                    previous, tenantId, MediaStorageService.SCOPE_CATEGORIES, id);
             return CategoryResponse.from(saved);
         } catch (RuntimeException exception) {
-            mediaStorageService.deleteQuietly(newUrl);
+            mediaStorageService.deleteQuietly(
+                    newUrl, tenantId, MediaStorageService.SCOPE_CATEGORIES, id);
             throw exception;
         }
     }
@@ -141,8 +156,21 @@ public class CategoryService {
         String previous = category.getImageUrl();
         category.setImageUrl(null);
         Category saved = categoryRepository.saveAndFlush(category);
-        mediaStorageService.deleteAfterCommit(previous);
+        mediaStorageService.deleteAfterCommit(
+                previous, tenantId, MediaStorageService.SCOPE_CATEGORIES, id);
         return CategoryResponse.from(saved);
+    }
+
+    private void requireSafeImageReference(
+            UUID tenantId, UUID categoryId, String currentUrl, String requestedUrl) {
+        if (!mediaStorageService.isManaged(requestedUrl) || Objects.equals(currentUrl, requestedUrl)) {
+            return;
+        }
+        if (!mediaStorageService.isManagedByOwner(
+                requestedUrl, tenantId, MediaStorageService.SCOPE_CATEGORIES, categoryId)) {
+            throw BusinessException.badRequest(
+                    "La imagen administrada no pertenece a la categoria activa.");
+        }
     }
 
     private Category requireCategory(UUID tenantId, UUID id) {

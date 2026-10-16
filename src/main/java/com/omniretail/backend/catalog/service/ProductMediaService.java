@@ -49,12 +49,13 @@ public class ProductMediaService {
         UUID tenantId = currentUser.require().tenantId();
         requireProductForUpdate(tenantId, productId); requireCapacity(tenantId, productId);
         requireSortOrder(sortOrder);
-        String url = storage.storeImage(tenantId, "products", productId, file);
+        String url = storage.storeImage(tenantId, MediaStorageService.SCOPE_PRODUCTS, productId, file);
         try {
             return saveNew(tenantId, productId, ProductMediaType.image, url, altText, sortOrder,
                     Boolean.TRUE.equals(primary));
         } catch (RuntimeException exception) {
-            storage.deleteQuietly(url); throw exception;
+            storage.deleteQuietly(url, tenantId, MediaStorageService.SCOPE_PRODUCTS, productId);
+            throw exception;
         }
     }
 
@@ -86,7 +87,7 @@ public class ProductMediaService {
         String url = media.getUrl();
         repository.delete(media); repository.flush();
         normalizeSortOrder(tenantId, productId, null);
-        storage.deleteAfterCommit(url);
+        storage.deleteAfterCommit(url, tenantId, MediaStorageService.SCOPE_PRODUCTS, productId);
     }
 
     @Transactional
