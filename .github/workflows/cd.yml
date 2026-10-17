@@ -105,5 +105,8 @@ jobs:
             trap 'docker logout ghcr.io > /dev/null 2>&1 || true' EXIT
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
             docker compose -f docker-compose.prod.yml pull backend
-            docker compose -f docker-compose.prod.yml up -d --no-deps postgres backend caddy prometheus grafana node-exporter cadvisor postgres-exporter
+            # Postgres primero: el usuario de monitoreo debe existir antes de levantar postgres-exporter.
+            docker compose -f docker-compose.prod.yml up -d --no-deps --wait postgres
+            sh monitoring/postgres/ensure-monitoring-role.sh
+            docker compose -f docker-compose.prod.yml up -d --no-deps backend caddy prometheus grafana node-exporter postgres-exporter
             docker image prune -f

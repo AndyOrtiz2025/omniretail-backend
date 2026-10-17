@@ -19,11 +19,6 @@ scrape_configs:
     static_configs:
       - targets: ["node-exporter:9100"]
 
-  # Consumo por contenedor.
-  - job_name: cadvisor
-    static_configs:
-      - targets: ["cadvisor:8080"]
-
   - job_name: postgres
     static_configs:
       - targets: ["postgres-exporter:9187"]

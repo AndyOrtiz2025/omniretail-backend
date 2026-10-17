@@ -85,6 +85,7 @@ services:
       - "127.0.0.1:3001:3000" # Solo loopback: ssh -L 3001:127.0.0.1:3001 deploy@<VPS>
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Define GRAFANA_ADMIN_PASSWORD en .env}
+      GF_SERVER_ROOT_URL: http://localhost:3001 # Los enlaces de los correos de alerta apuntan al tunel SSH.
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
@@ -113,32 +114,15 @@ services:
     volumes:
       - /:/host:ro,rslave
 
-  cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.52.1
-    restart: unless-stopped
-    mem_limit: 128m
-    privileged: true # cAdvisor necesita leer cgroups del host para medir cada contenedor.
-    devices:
-      - /dev/kmsg
-    command:
-      - --docker_only=true
-      - --housekeeping_interval=30s # Menos CPU que el default (1s); suficiente con scrape de 15s.
-      - --disable_metrics=percpu,sched,tcp,udp,disk,diskIO,hugetlb,referenced_memory,cpu_topology,resctrl
-    volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-      - /dev/disk/:/dev/disk:ro
-
   postgres-exporter:
     image: quay.io/prometheuscommunity/postgres-exporter:v0.17.1
     restart: unless-stopped
     mem_limit: 64m
     environment:
       DATA_SOURCE_URI: postgres:5432/${POSTGRES_DB:-omniretail}?sslmode=disable
-      DATA_SOURCE_USER: ${POSTGRES_USER:-omniretail}
-      DATA_SOURCE_PASS: ${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en .env}
+      # Usuario dedicado con rol pg_monitor (sin acceso a datos); lo crea monitoring/postgres/ensure-monitoring-role.sh.
+      DATA_SOURCE_USER: ${POSTGRES_EXPORTER_USER:-omniretail_monitor}
+      DATA_SOURCE_PASS: ${POSTGRES_EXPORTER_PASSWORD:?Define POSTGRES_EXPORTER_PASSWORD en .env}
     depends_on:
       postgres:
         condition: service_healthy
