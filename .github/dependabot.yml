@@ -20,9 +20,17 @@ updates:
     groups:
       maven-minor-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      # openpdf 3 cambia los paquetes com.lowagie y rompe PurchaseOrderPdfRenderer.
+      - dependency-name: "com.github.librepdf:openpdf"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: docker
     directory: /
     target-branch: development
     schedule:
       interval: weekly
+    ignore:
+      # El proyecto se queda en Java 21: sin saltos de version mayor de la imagen base.
+      - dependency-name: "eclipse-temurin"
+        update-types: ["version-update:semver-major"]
