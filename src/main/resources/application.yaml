@@ -126,4 +126,10 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus
+  metrics:
+    tags:
+      application: omniretail-backend # Etiqueta comun para filtrar en Grafana.
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true # Histogramas para calcular p95/p99 de latencia en Prometheus.

@@ -10,7 +10,7 @@ Internet ──► Caddy :80/:443 ──┬─ /api/v1/*, /media/* ──► bac
 
 ## 1. Preparar el VPS (una sola vez)
 
-Requisitos: Ubuntu 22.04/24.04, mínimo 2 GB de RAM (recomendado 4 GB: JVM + Next.js + PostgreSQL) y un
+Requisitos: Ubuntu 22.04/24.04, 4 GB de RAM (JVM + Next.js + PostgreSQL + monitoreo; ver [Monitoreo](#monitoreo-prometheus--grafana)) y un
 dominio público cuyo registro DNS apunte a la IP del VPS. Caddy obtiene el certificado TLS y redirige HTTP a HTTPS;
 no se permite producción solo con IP ni HTTP plano.
 
@@ -95,5 +95,48 @@ docker compose -f docker-compose.prod.yml up -d backend
 # Backup manual de la base de datos
 docker compose -f docker-compose.prod.yml exec -T postgres pg_dump -U omniretail omniretail | gzip > backup-$(date +%F).sql.gz
 ```
+
+## Monitoreo (Prometheus + Grafana)
+
+El CD copia `deploy/monitoring/` al VPS y levanta junto al backend:
+
+| Servicio | Qué mide | Tope de RAM |
+|----------|----------|-------------|
+| `prometheus` | Guarda las métricas 15 días (máx. 2 GB en disco) | 512 MB |
+| `grafana` | Dashboards y alertas por correo | 256 MB |
+| `node-exporter` | CPU, RAM, disco y red del VPS | 64 MB |
+| `postgres-exporter` | Conexiones, tamaño y actividad de PostgreSQL (usuario `pg_monitor`, sin acceso a datos) | 64 MB |
+
+Consumo medido en una réplica local del stack: **~180 MB** al arrancar (Grafana ~115, Prometheus ~50, exporters ~20);
+Prometheus crece con el historial hasta su tope. Los topes suman ~900 MB, así que el monitoreo nunca puede pasar de ahí.
+Con 2 GB de RAM el VPS queda justo (JVM + Next.js + PostgreSQL); **4 GB es lo recomendado**.
+
+El backend expone Actuator (`/actuator/health`, `/actuator/prometheus`) en el puerto interno **8081**
+(`MANAGEMENT_SERVER_PORT` en la imagen), que Caddy no enruta; el `HEALTHCHECK` del contenedor usa ese mismo puerto.
+
+Requiere en `.env`: `GRAFANA_ADMIN_PASSWORD`, `ALERT_EMAIL_TO` y `POSTGRES_EXPORTER_PASSWORD` (el SMTP reutiliza `MAIL_*`).
+En cada despliegue el CD ejecuta `monitoring/postgres/ensure-monitoring-role.sh`, que crea o actualiza el usuario
+`omniretail_monitor` con el rol `pg_monitor` (lee estadísticas, no datos) antes de levantar postgres-exporter.
+
+**¿Por qué no hay métricas por contenedor (cAdvisor)?** Con Docker 29 (lo que instala `get.docker.com`), cAdvisor solo
+puede identificar contenedores montando el socket de containerd, lo que equivale a control total del VPS; un proxy de solo
+lectura del socket de Docker no alcanza. Se priorizó el mínimo privilegio: node-exporter cubre el VPS completo y backend y
+PostgreSQL exponen sus propias métricas. Para ver el consumo puntual de cada contenedor: `docker stats --no-stream`.
+
+**Entrar a Grafana** (no está publicado a internet; solo escucha en `127.0.0.1` del VPS):
+
+```bash
+ssh -L 3001:127.0.0.1:3001 deploy@<IP-del-VPS>
+# luego abrir http://localhost:3001  (usuario admin / GRAFANA_ADMIN_PASSWORD)
+```
+
+- Dashboards: carpeta **OmniRetail** (JVM, Spring Boot, VPS, PostgreSQL). Se versionan en
+  `deploy/monitoring/grafana/provisioning/dashboards/json`; los cambios hechos desde la UI no se guardan.
+- Alertas: `deploy/monitoring/grafana/provisioning/alerting/rules.yml` (backend caído, memoria JVM, 5xx, latencia p95,
+  pool Hikari, RAM/disco del VPS, conexiones de PostgreSQL).
+- Probar el correo: *Alerting → Contact points → email-equipo → Test*.
+
+En local: `docker compose --profile monitoring up -d` con el backend corriendo en el host; Grafana en
+http://localhost:3001 (admin/admin) y las alertas llegan a Mailpit.
 
 > **Pendiente recomendado:** automatizar backups diarios de PostgreSQL (cron + `pg_dump`) y sacarlos del VPS.

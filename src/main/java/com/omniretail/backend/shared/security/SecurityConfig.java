@@ -34,6 +34,7 @@ public class SecurityConfig {
     private static final String[] PUBLIC_PATHS = {
         "/actuator/health",
         "/actuator/info",
+        "/actuator/prometheus", // Prometheus no envia JWT; en prod el actuator vive en un puerto interno (8081).
         "/api-docs/**",
         "/swagger-ui/**",
         "/swagger-ui.html",

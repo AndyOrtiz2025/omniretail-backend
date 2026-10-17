@@ -82,7 +82,7 @@ jobs:
           port: ${{ vars.VPS_PORT || 22 }}
           username: ${{ vars.VPS_USER || 'deploy' }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          source: deploy/docker-compose.prod.yml,deploy/Caddyfile
+          source: deploy/docker-compose.prod.yml,deploy/Caddyfile,deploy/monitoring
           target: ${{ vars.VPS_APP_DIR || '/opt/omniretail' }}
           strip_components: 1
 
@@ -105,5 +105,8 @@ jobs:
             trap 'docker logout ghcr.io > /dev/null 2>&1 || true' EXIT
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
             docker compose -f docker-compose.prod.yml pull backend
-            docker compose -f docker-compose.prod.yml up -d --no-deps postgres backend caddy
+            # Postgres primero: el usuario de monitoreo debe existir antes de levantar postgres-exporter.
+            docker compose -f docker-compose.prod.yml up -d --no-deps --wait postgres
+            sh monitoring/postgres/ensure-monitoring-role.sh
+            docker compose -f docker-compose.prod.yml up -d --no-deps backend caddy prometheus grafana node-exporter postgres-exporter
             docker image prune -f

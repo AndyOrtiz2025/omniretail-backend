@@ -29,5 +29,35 @@ services:
       MP_SMTP_AUTH_ACCEPT_ANY: 1
       MP_SMTP_AUTH_ALLOW_INSECURE: 1
 
+  # Monitoreo opcional: docker compose --profile monitoring up -d
+  # Scrapea al backend corriendo en el host (8080). Grafana en http://localhost:3001 (admin/admin);
+  # las alertas de prueba llegan a Mailpit.
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    container_name: omniretail-prometheus
+    profiles: ["monitoring"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # Linux; en Docker Desktop ya existe.
+    volumes:
+      - ./deploy/monitoring/prometheus/prometheus.dev.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    container_name: omniretail-grafana
+    profiles: ["monitoring"]
+    environment:
+      GF_SMTP_ENABLED: "true"
+      GF_SMTP_HOST: mailpit:1025
+      GF_SMTP_FROM_ADDRESS: monitoreo@omniretail.local
+      ALERT_EMAIL_TO: dev@omniretail.local
+    volumes:
+      - ./deploy/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      - prometheus
+
 volumes:
   pgdata:

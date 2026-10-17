@@ -25,14 +25,16 @@ COPY --from=build --chown=app:app /workspace/app.jar /app/app.jar
 
 USER app
 
+# Actuator (health, prometheus) vive en un puerto interno que Caddy no enruta. El HEALTHCHECK lee esta misma variable.
 ENV SPRING_PROFILES_ACTIVE=prod \
     SERVER_PORT=8080 \
+    MANAGEMENT_SERVER_PORT=8081 \
     MEDIA_STORAGE_PATH=/app/data/media \
     JAVA_OPTS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
-    CMD wget -qO- http://localhost:8080/actuator/health > /dev/null || exit 1
+    CMD wget -qO- "http://localhost:${MANAGEMENT_SERVER_PORT}/actuator/health" > /dev/null || exit 1
 
 ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar /app/app.jar"]
