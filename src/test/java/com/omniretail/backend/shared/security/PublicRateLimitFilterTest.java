@@ -43,6 +43,16 @@ class PublicRateLimitFilterTest {
     }
 
     @Test
+    void limitsEmailVerifyAsRecovery() throws Exception {
+        assertRecoveryLimitBlocks("/api/v1/auth/email/verify");
+    }
+
+    @Test
+    void limitsEmailResendAsRecovery() throws Exception {
+        assertRecoveryLimitBlocks("/api/v1/auth/email/resend");
+    }
+
+    @Test
     void leavesNonSensitivePublicRoutesUntouched() throws Exception {
         PublicRateLimitFilter filter = filter(1);
         AtomicInteger forwarded = new AtomicInteger();
@@ -52,6 +62,23 @@ class PublicRateLimitFilterTest {
 
         assertThat(response.getStatus()).isEqualTo(200);
         assertThat(forwarded.get()).isEqualTo(1);
+    }
+
+    /** Con el limite de recuperacion en 2 (ver {@link #filter}), la 3.a peticion POST responde 429. */
+    private static void assertRecoveryLimitBlocks(String path) throws Exception {
+        PublicRateLimitFilter filter = filter(10);
+        AtomicInteger forwarded = new AtomicInteger();
+
+        MockHttpServletResponse first = send(filter, path, "203.0.113.8", null, forwarded);
+        MockHttpServletResponse second = send(filter, path, "203.0.113.8", null, forwarded);
+        MockHttpServletResponse blocked = send(filter, path, "203.0.113.8", null, forwarded);
+
+        assertThat(first.getStatus()).isEqualTo(200);
+        assertThat(second.getStatus()).isEqualTo(200);
+        assertThat(blocked.getStatus()).isEqualTo(429);
+        assertThat(blocked.getHeader("Retry-After")).isNotBlank();
+        assertThat(blocked.getContentAsString()).contains("RATE_LIMITED");
+        assertThat(forwarded.get()).isEqualTo(2);
     }
 
     private static PublicRateLimitFilter filter(int loginPerWindow) {
