@@ -33,7 +33,7 @@ groups:
         title: Memoria JVM alta
         condition: C
         for: 5m
-        noDataState: NoData
+        noDataState: OK # Sin datos = backend caido, y eso ya lo avisa "Backend caido".
         execErrState: Error
         labels: { severity: warning }
         annotations:
@@ -105,7 +105,7 @@ groups:
         title: Pool de conexiones saturado
         condition: C
         for: 5m
-        noDataState: NoData
+        noDataState: OK # Igual que la memoria JVM: la caida la cubre "Backend caido".
         execErrState: Error
         labels: { severity: warning }
         annotations:
@@ -153,7 +153,7 @@ groups:
         execErrState: Error
         labels: { severity: critical }
         annotations:
-          summary: Queda menos del 15% de disco libre en la raiz del VPS.
+          summary: Algun disco del VPS tiene menos del 15% libre.
         data:
           - refId: A
             datasourceUid: prometheus
@@ -161,7 +161,8 @@ groups:
             model:
               refId: A
               instant: true
-              expr: 'min(node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"})'
+              # Todos los discos reales (excluye sistemas de archivos virtuales); no depende de que la raiz sea "/".
+              expr: 'min(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|nsfs|ramfs|fuse.*"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|nsfs|ramfs|fuse.*"})'
           - refId: C
             datasourceUid: __expr__
             model:
