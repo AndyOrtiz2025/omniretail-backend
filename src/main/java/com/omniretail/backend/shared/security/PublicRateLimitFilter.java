@@ -122,7 +122,9 @@ final class PublicRateLimitFilter extends OncePerRequestFilter {
         }
         if ("POST".equalsIgnoreCase(method) && ("/api/v1/auth/password/forgot".equals(path)
                 || "/api/v1/auth/password/reset".equals(path)
-                || "/api/v1/auth/activate-employee".equals(path))) {
+                || "/api/v1/auth/activate-employee".equals(path)
+                || "/api/v1/auth/email/verify".equals(path)
+                || "/api/v1/auth/email/resend".equals(path))) {
             return RouteGroup.recovery;
         }
         if ("POST".equalsIgnoreCase(method) && path.matches("/api/v1/public/[^/]+/auth/register")) {
