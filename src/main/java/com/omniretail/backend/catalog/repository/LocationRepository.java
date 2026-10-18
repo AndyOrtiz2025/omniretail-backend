@@ -3,6 +3,7 @@ package com.omniretail.backend.catalog.repository;
 import com.omniretail.backend.catalog.entity.Location;
 import com.omniretail.backend.catalog.entity.LocationStatus;
 import com.omniretail.backend.catalog.entity.LocationType;
+import jakarta.persistence.LockModeType;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -10,12 +11,23 @@ import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 public interface LocationRepository extends JpaRepository<Location, UUID> {
 
     Optional<Location> findByTenantIdAndId(UUID tenantId, UUID id);
+
+    @Lock(LockModeType.PESSIMISTIC_READ)
+    @Query("select location from Location location where location.tenantId = :tenantId and location.id = :id")
+    Optional<Location> findForShareByTenantIdAndId(
+            @Param("tenantId") UUID tenantId, @Param("id") UUID id);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select location from Location location where location.tenantId = :tenantId and location.id = :id")
+    Optional<Location> findForUpdateByTenantIdAndId(
+            @Param("tenantId") UUID tenantId, @Param("id") UUID id);
 
     List<Location> findByTenantIdAndIdIn(UUID tenantId, Collection<UUID> ids);
 

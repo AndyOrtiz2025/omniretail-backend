@@ -64,13 +64,13 @@ public class BusinessConfigService {
 
     public BusinessConfigResponse saveConfig(SaveBusinessConfigRequest request) {
         UUID tenantId = currentUser.require().tenantId();
-        Capabilities requested = Capabilities.from(request);
+        Capabilities requested = normalizeLocationPolicy(Capabilities.from(request));
         ensureCoherent(requested);
 
         BusinessCapabilitiesConfig current = configRepository.findByTenantId(tenantId).orElse(null);
         ensureEntitledForNewlyEnabled(tenantId, current, requested);
-        if (!requested.multipleLocations()) {
-            // Solo actua en la transicion habilitado -> deshabilitado: 409 si dejaria stock oculto.
+        if (!requested.inventory()) {
+            // Solo actua en la transicion inventario habilitado -> deshabilitado: 409 si dejaria stock oculto.
             operationalLocationService.assertCanDisableLocations(tenantId);
         }
 
@@ -98,8 +98,23 @@ public class BusinessConfigService {
         return BusinessConfigResponse.from(configRepository.save(config));
     }
 
-    // Mismas reglas y prioridad que validateBusinessConfigDto del frontend. No se corrige en silencio:
-    // la correccion automatica solo la hace el formulario antes de enviar.
+    /**
+     * Contrato de compatibilidad: el flag historico de multiples ubicaciones es un espejo del control de
+     * inventario. Clientes antiguos que envian inventario activo y ubicaciones inactivas se normalizan; la
+     * combinacion inversa sigue siendo invalida porque habilitaria una capacidad dependiente sin inventario.
+     */
+    private static Capabilities normalizeLocationPolicy(Capabilities requested) {
+        if (!requested.inventory() && requested.multipleLocations()) {
+            throw BusinessException.badRequest(INVENTORY_CAPABILITIES_REQUIRE_INVENTORY);
+        }
+        if (requested.inventory() && !requested.multipleLocations()) {
+            return requested.withMultipleLocations(true);
+        }
+        return requested;
+    }
+
+    // Mismas reglas y prioridad que validateBusinessConfigDto del frontend, despues de normalizar el alias
+    // historico supports_multiple_locations.
     private static void ensureCoherent(Capabilities requested) {
         boolean hasInventoryCapabilities =
                 requested.lots() || requested.expiration() || requested.serials() || requested.multipleLocations();
@@ -170,6 +185,20 @@ public class BusinessConfigService {
                     request.supportsKits(),
                     request.supportsServices(),
                     request.defaultProductTracking());
+        }
+
+        Capabilities withMultipleLocations(boolean value) {
+            return new Capabilities(
+                    inventory,
+                    lots,
+                    expiration,
+                    serials,
+                    value,
+                    unitsAndPackaging,
+                    productAttributes,
+                    kits,
+                    services,
+                    tracking);
         }
     }
 }

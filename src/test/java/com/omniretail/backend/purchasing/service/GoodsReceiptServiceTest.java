@@ -1949,8 +1949,9 @@ class GoodsReceiptServiceTest {
 
     private void disableLocations(Fixture fixture) {
         jdbc.update("""
-                INSERT INTO business_capabilities_configs (id, tenant_id, preset, supports_multiple_locations)
-                VALUES (?, ?, 'custom', false)
+                INSERT INTO business_capabilities_configs
+                    (id, tenant_id, preset, supports_inventory, supports_multiple_locations)
+                VALUES (?, ?, 'custom', false, false)
                 """, UUID.randomUUID(), fixture.tenant());
     }
 

@@ -28,7 +28,8 @@ public record BusinessConfigResponse(
                 entity.isSupportsLots(),
                 entity.isSupportsExpiration(),
                 entity.isSupportsSerials(),
-                entity.isSupportsMultipleLocations(),
+                // Alias de compatibilidad: la politica efectiva siempre sigue supportsInventory.
+                entity.isSupportsInventory(),
                 entity.isSupportsUnitsAndPackaging(),
                 entity.isSupportsProductAttributes(),
                 entity.isSupportsKits(),

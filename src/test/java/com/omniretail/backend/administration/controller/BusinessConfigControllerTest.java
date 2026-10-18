@@ -168,7 +168,51 @@ class BusinessConfigControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.preset").value("custom"));
+                .andExpect(jsonPath("$.preset").value("custom"))
+                .andExpect(jsonPath("$.supportsInventory").value(true))
+                .andExpect(jsonPath("$.supportsMultipleLocations").value(true));
+
+        BusinessCapabilitiesConfig persisted = configRepository.findByTenantId(tenant.getId()).orElseThrow();
+        org.assertj.core.api.Assertions.assertThat(persisted.isSupportsInventory()).isTrue();
+        org.assertj.core.api.Assertions.assertThat(persisted.isSupportsMultipleLocations()).isTrue();
+    }
+
+    @Test
+    void locationsCannotBeEnabledWithoutInventory() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+
+        String body =
+                """
+                {"preset":"custom","supportsInventory":false,"supportsLots":false,"supportsExpiration":false,"supportsSerials":false,"supportsMultipleLocations":true,"supportsUnitsAndPackaging":false,"supportsProductAttributes":false,"supportsKits":false,"supportsServices":false,"defaultProductTracking":{"stock":false,"lot":false,"expiration":false,"serial":false}}
+                """;
+
+        mockMvc.perform(put(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message")
+                        .value("Las capacidades de inventario no pueden permanecer activas sin control de inventario."));
+    }
+
+    @Test
+    void normalizationRunsBeforePresetResolution() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant);
+
+        String body =
+                """
+                {"preset":"hardware_store","supportsInventory":true,"supportsLots":false,"supportsExpiration":false,"supportsSerials":true,"supportsMultipleLocations":false,"supportsUnitsAndPackaging":true,"supportsProductAttributes":true,"supportsKits":true,"supportsServices":true,"defaultProductTracking":{"stock":true,"lot":false,"expiration":false,"serial":false}}
+                """;
+
+        mockMvc.perform(put(BASE_URL)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.preset").value("hardware_store"))
+                .andExpect(jsonPath("$.supportsMultipleLocations").value(true));
     }
 
     @Test
@@ -350,6 +394,7 @@ class BusinessConfigControllerTest {
         BusinessCapabilitiesConfig config = BusinessCapabilitiesConfig.builder()
                 .preset(BusinessPreset.custom)
                 .supportsInventory(true)
+                .supportsMultipleLocations(true)
                 .allowedPosPaymentMethods(List.of("cash", "card", "transfer"))
                 .trackStock(true)
                 .build();

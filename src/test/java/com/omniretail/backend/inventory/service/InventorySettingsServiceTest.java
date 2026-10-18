@@ -184,6 +184,53 @@ class InventorySettingsServiceTest {
     }
 
     @Test
+    void activeInventoryRequiresLocationForNewProductsButPreservesLegacyNullBalance() {
+        Fixture newProduct = fixture(true);
+        enableInventory(newProduct);
+
+        assertThatThrownBy(() -> service.upsert(
+                        newProduct.branch(),
+                        newProduct.product(),
+                        new UpdateInventorySettingsRequest(BigDecimal.ONE, null, null)))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo(InventoryOperationalLocationService.LOCATION_REQUIRED_CODE));
+        assertThat(settingsCount(newProduct)).isZero();
+
+        Fixture legacy = fixture(true);
+        enableInventory(legacy);
+        insertBalance(legacy, "4", "0");
+        assertThat(service.upsert(
+                                legacy.branch(),
+                                legacy.product(),
+                                new UpdateInventorySettingsRequest(BigDecimal.ONE, null, null))
+                        .defaultLocationId())
+                .isNull();
+    }
+
+    @Test
+    void activeInventoryDoesNotAllowClearingAnExistingAssignmentEvenWithoutStock() {
+        Fixture fixture = fixture(true);
+        enableInventory(fixture);
+        service.upsert(
+                fixture.branch(),
+                fixture.product(),
+                new UpdateInventorySettingsRequest(BigDecimal.ONE, null, fixture.location()));
+
+        assertThatThrownBy(() -> service.upsert(
+                        fixture.branch(),
+                        fixture.product(),
+                        new UpdateInventorySettingsRequest(BigDecimal.ONE, null, null)))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getCode())
+                                .isEqualTo(InventoryOperationalLocationService.LOCATION_REQUIRED_CODE));
+        assertThat(service.get(fixture.branch(), fixture.product()))
+                .get()
+                .extracting(ProductInventorySettingsResponse::defaultLocationId)
+                .isEqualTo(fixture.location());
+    }
+
+    @Test
     void branchAccessAndInventoryCapabilityAreRequired() {
         Fixture fixture = fixture(true);
         given(branchAccessResolver.resolve(any())).willReturn(new BranchAccess(false, Set.of()));
@@ -263,6 +310,14 @@ class InventorySettingsServiceTest {
                     (tenant_id, branch_id, product_id, quantity, reserved_quantity)
                 VALUES (?, ?, ?, ?::numeric, ?::numeric)
                 """, fixture.tenant(), fixture.branch(), fixture.product(), quantity, reserved);
+    }
+
+    private void enableInventory(Fixture fixture) {
+        jdbc.update("""
+                INSERT INTO business_capabilities_configs
+                    (tenant_id, preset, supports_inventory, supports_multiple_locations, track_stock)
+                VALUES (?, 'custom', true, true, true)
+                """, fixture.tenant());
     }
 
     private long settingsCount(Fixture fixture) {
