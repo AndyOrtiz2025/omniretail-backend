@@ -6,9 +6,8 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
 import java.time.Instant;
+import java.util.EnumMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.http.HttpStatus;
@@ -26,7 +25,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 final class PublicRateLimitFilter extends OncePerRequestFilter {
 
     private enum RouteGroup {
-        login, mfa, recovery, registration, checkout, tracking
+        login, mfa, recovery, registration, checkout, tracking, contact
     }
 
     private record Window(long startedAtMillis, int requests) {
@@ -37,11 +36,18 @@ final class PublicRateLimitFilter extends OncePerRequestFilter {
 
     private final PublicRateLimitProperties properties;
     private final ObjectMapper objectMapper;
-    private final Map<String, Window> windows = new ConcurrentHashMap<>();
+    /**
+     * Un mapa por grupo: el tope de clientes rastreados es por grupo, asi una avalancha contra un endpoint
+     * (p. ej. el formulario comercial) no agota el cupo de login o recuperacion.
+     */
+    private final Map<RouteGroup, Map<String, Window>> windows = new EnumMap<>(RouteGroup.class);
 
     PublicRateLimitFilter(PublicRateLimitProperties properties, ObjectMapper objectMapper) {
         this.properties = properties;
         this.objectMapper = objectMapper;
+        for (RouteGroup group : RouteGroup.values()) {
+            windows.put(group, new ConcurrentHashMap<>());
+        }
     }
 
     @Override
@@ -53,7 +59,7 @@ final class PublicRateLimitFilter extends OncePerRequestFilter {
             return;
         }
 
-        Decision decision = consume(clientAddress(request) + ':' + routeGroup.name(), limitFor(routeGroup));
+        Decision decision = consume(routeGroup, ClientAddressResolver.resolve(request), limitFor(routeGroup));
         if (decision.allowed()) {
             chain.doFilter(request, response);
             return;
@@ -71,12 +77,13 @@ final class PublicRateLimitFilter extends OncePerRequestFilter {
                 "timestamp", Instant.now().toString()));
     }
 
-    private Decision consume(String key, int limit) {
+    private Decision consume(RouteGroup group, String key, int limit) {
+        Map<String, Window> windows = this.windows.get(group);
         long now = System.currentTimeMillis();
         long windowMillis = properties.windowSeconds() * 1_000L;
         Window current = windows.get(key);
         if (current == null && windows.size() >= properties.maxTrackedClients()) {
-            removeExpired(now, windowMillis);
+            removeExpired(windows, now, windowMillis);
             if (windows.size() >= properties.maxTrackedClients()) {
                 return new Decision(false, 1);
             }
@@ -91,7 +98,7 @@ final class PublicRateLimitFilter extends OncePerRequestFilter {
         return new Decision(next.requests() <= limit, (remainingMillis + 999) / 1_000);
     }
 
-    private void removeExpired(long now, long windowMillis) {
+    private static void removeExpired(Map<String, Window> windows, long now, long windowMillis) {
         windows.entrySet().removeIf(entry -> now - entry.getValue().startedAtMillis() >= windowMillis);
     }
 
@@ -103,6 +110,7 @@ final class PublicRateLimitFilter extends OncePerRequestFilter {
             case registration -> properties.registrationPerWindow();
             case checkout -> properties.checkoutPerWindow();
             case tracking -> properties.trackingPerWindow();
+            case contact -> properties.contactPerWindow();
         };
     }
 
@@ -136,32 +144,9 @@ final class PublicRateLimitFilter extends OncePerRequestFilter {
         if ("GET".equalsIgnoreCase(method) && path.matches("/api/v1/public/[^/]+/tracking/[^/]+")) {
             return RouteGroup.tracking;
         }
+        if ("POST".equalsIgnoreCase(method) && "/api/v1/public/contact-requests".equals(path)) {
+            return RouteGroup.contact;
+        }
         return null;
-    }
-
-    private static String clientAddress(HttpServletRequest request) {
-        String forwarded = request.getHeader("X-Forwarded-For");
-        if (forwarded == null || forwarded.isBlank() || !isTrustedProxy(request.getRemoteAddr())) {
-            return request.getRemoteAddr();
-        }
-        int comma = forwarded.indexOf(',');
-        String first = forwarded.substring(0, comma >= 0 ? comma : forwarded.length()).trim();
-        if (!first.matches("[0-9a-fA-F:.]+")) {
-            return request.getRemoteAddr();
-        }
-        try {
-            return InetAddress.getByName(first).getHostAddress();
-        } catch (UnknownHostException ex) {
-            return request.getRemoteAddr();
-        }
-    }
-
-    private static boolean isTrustedProxy(String remoteAddress) {
-        try {
-            InetAddress address = InetAddress.getByName(remoteAddress);
-            return address.isLoopbackAddress() || address.isSiteLocalAddress() || address.isLinkLocalAddress();
-        } catch (UnknownHostException ex) {
-            return false;
-        }
     }
 }

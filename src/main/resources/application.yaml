@@ -89,6 +89,41 @@ app:
       registration-per-window: ${PUBLIC_RATE_LIMIT_REGISTRATION_PER_WINDOW:5}
       checkout-per-window: ${PUBLIC_RATE_LIMIT_CHECKOUT_PER_WINDOW:20}
       tracking-per-window: ${PUBLIC_RATE_LIMIT_TRACKING_PER_WINDOW:30}
+      contact-per-window: ${PUBLIC_RATE_LIMIT_CONTACT_PER_WINDOW:3}
+  commercial:
+    # Solicitudes comerciales de la landing MARJYM. SOLO el servicio comercial lo activa; las instalaciones de
+    # clientes lo dejan en false: sin controller, sin jobs y sin correos comerciales.
+    contact-requests:
+      enabled: ${COMMERCIAL_CONTACT_REQUESTS_ENABLED:false}
+      # Buzon del equipo que recibe el aviso interno (obligatorio al habilitar).
+      team-notification-to: ${COMMERCIAL_CONTACT_TEAM_TO:}
+      # Secreto del servidor para el hash de IP y correo (minimo 32 caracteres; obligatorio al habilitar).
+      ip-hash-secret: ${COMMERCIAL_CONTACT_HASH_SECRET:}
+      max-body-bytes: ${COMMERCIAL_CONTACT_MAX_BODY_BYTES:16384}
+      per-ip-per-day: ${COMMERCIAL_CONTACT_PER_IP_PER_DAY:10}
+      per-email-per-day: ${COMMERCIAL_CONTACT_PER_EMAIL_PER_DAY:3}
+      global-per-day: ${COMMERCIAL_CONTACT_GLOBAL_PER_DAY:200}
+      retention-days: ${COMMERCIAL_CONTACT_RETENTION_DAYS:365}
+      spam-retention-days: ${COMMERCIAL_CONTACT_SPAM_RETENTION_DAYS:30}
+      mail-max-attempts: ${COMMERCIAL_CONTACT_MAIL_MAX_ATTEMPTS:5}
+      mail-initial-delay: ${COMMERCIAL_CONTACT_MAIL_INITIAL_DELAY:PT2M}
+      mail-base-backoff: ${COMMERCIAL_CONTACT_MAIL_BASE_BACKOFF:PT5M}
+      mail-retry-interval: ${COMMERCIAL_CONTACT_MAIL_RETRY_INTERVAL:PT1M}
+      purge-cron: ${COMMERCIAL_CONTACT_PURGE_CRON:0 30 3 * * *}
+      captcha:
+        enabled: ${COMMERCIAL_CAPTCHA_ENABLED:false}
+        secret: ${COMMERCIAL_CAPTCHA_SECRET:}
+        verify-url: ${COMMERCIAL_CAPTCHA_VERIFY_URL:https://challenges.cloudflare.com/turnstile/v0/siteverify}
+        timeout: ${COMMERCIAL_CAPTCHA_TIMEOUT:PT5S}
+  provisioning:
+    # Aprovisionamiento interno de complementos de UN tenant. Apagado por defecto. Cada operation-id se aplica una
+    # sola vez (bitacora subscription_provisioning_operations): reiniciar con el mismo id no reescribe nada; para
+    # cambiar los complementos hay que usar un operation-id nuevo.
+    subscription:
+      enabled: ${PROVISIONING_SUBSCRIPTION_ENABLED:false}
+      operation-id: ${PROVISIONING_SUBSCRIPTION_OPERATION_ID:}
+      tenant-id: ${PROVISIONING_SUBSCRIPTION_TENANT_ID:}
+      addon-codes: ${PROVISIONING_SUBSCRIPTION_ADDONS:}
   mail:
     from: ${MAIL_FROM:no-reply@omniretail.local}
     credential:

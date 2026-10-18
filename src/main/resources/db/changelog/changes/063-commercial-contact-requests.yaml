@@ -1,0 +1,217 @@
+databaseChangeLog:
+  # Solicitudes comerciales de la landing MARJYM. Tabla propia, sin tenant_id: el interesado aun no es cliente.
+  # Existe (vacia) en todas las instalaciones; solo se usa si app.commercial.contact-requests.enabled=true.
+  - changeSet:
+      id: 063-commercial-contact-requests
+      author: omniretail
+      changes:
+        - createTable:
+            tableName: contact_requests
+            columns:
+              # Identificador publico (requestId de la respuesta): UUID aleatorio, no secuencial.
+              - column:
+                  name: id
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              # RECEIVED (flujo normal) o SPAM (honeypot: se guarda sin enviar correos).
+              - column:
+                  name: status
+                  type: VARCHAR(12)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: full_name
+                  type: VARCHAR(100)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: business_name
+                  type: VARCHAR(120)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: email
+                  type: VARCHAR(254)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: phone
+                  type: VARCHAR(20)
+              - column:
+                  name: industry
+                  type: VARCHAR(60)
+                  constraints:
+                    nullable: false
+              # Claves de capacidad separadas por coma (lista cerrada validada en el servicio).
+              - column:
+                  name: modules
+                  type: VARCHAR(400)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: message
+                  type: VARCHAR(1000)
+              - column:
+                  name: consent_version
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: consent_at
+                  type: TIMESTAMPTZ
+                  constraints:
+                    nullable: false
+              # Idempotencia (cabecera Idempotency-Key) y deduplicacion natural (correo + negocio, por dia UTC).
+              - column:
+                  name: idempotency_key
+                  type: UUID
+              - column:
+                  name: dedupe_key
+                  type: VARCHAR(64)
+              - column:
+                  name: dedupe_day
+                  type: DATE
+              # HMAC-SHA256 de la IP con un secreto del servidor: sirve para cuotas, no revela la IP.
+              - column:
+                  name: ip_hash
+                  type: VARCHAR(64)
+              # Estado de cada correo: PENDING, SENT, FAILED o NOT_REQUIRED (solicitudes SPAM).
+              - column:
+                  name: team_mail_status
+                  type: VARCHAR(12)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: team_mail_attempts
+                  type: INT
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: team_mail_next_attempt_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: team_mail_error_code
+                  type: VARCHAR(40)
+              - column:
+                  name: team_mail_sent_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: confirmation_mail_status
+                  type: VARCHAR(12)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: confirmation_mail_attempts
+                  type: INT
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: confirmation_mail_next_attempt_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: confirmation_mail_error_code
+                  type: VARCHAR(40)
+              - column:
+                  name: confirmation_mail_sent_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  constraints:
+                    nullable: false
+              # Pasada esta fecha los datos personales se anonimizan (ContactRequestPurgeJob).
+              - column:
+                  name: retention_until
+                  type: TIMESTAMPTZ
+                  constraints:
+                    nullable: false
+              - column:
+                  name: anonymized_at
+                  type: TIMESTAMPTZ
+        # La concurrencia de idempotencia y deduplicacion la resuelve PostgreSQL, no una consulta previa.
+        - addUniqueConstraint:
+            tableName: contact_requests
+            columnNames: idempotency_key
+            constraintName: uk_contact_requests_idempotency_key
+        - addUniqueConstraint:
+            tableName: contact_requests
+            columnNames: dedupe_key, dedupe_day
+            constraintName: uk_contact_requests_dedupe
+        - sql:
+            sql: "ALTER TABLE contact_requests ADD CONSTRAINT ck_contact_requests_status CHECK (status IN ('RECEIVED', 'SPAM'))"
+        - sql:
+            sql: "ALTER TABLE contact_requests ADD CONSTRAINT ck_contact_requests_team_mail_status CHECK (team_mail_status IN ('PENDING', 'SENT', 'FAILED', 'NOT_REQUIRED'))"
+        - sql:
+            sql: "ALTER TABLE contact_requests ADD CONSTRAINT ck_contact_requests_confirmation_mail_status CHECK (confirmation_mail_status IN ('PENDING', 'SENT', 'FAILED', 'NOT_REQUIRED'))"
+        - createIndex:
+            tableName: contact_requests
+            indexName: idx_contact_requests_ip_created
+            columns:
+              - column:
+                  name: ip_hash
+              - column:
+                  name: created_at
+        - createIndex:
+            tableName: contact_requests
+            indexName: idx_contact_requests_email_created
+            columns:
+              - column:
+                  name: email
+              - column:
+                  name: created_at
+        - createIndex:
+            tableName: contact_requests
+            indexName: idx_contact_requests_created
+            columns:
+              - column:
+                  name: created_at
+        - createIndex:
+            tableName: contact_requests
+            indexName: idx_contact_requests_retention
+            columns:
+              - column:
+                  name: retention_until
+      rollback:
+        - dropTable:
+            tableName: contact_requests
+
+  # Bitacora del aprovisionamiento interno de complementos: cada operation_id se aplica una sola vez, de modo
+  # que reiniciar el servidor con la misma configuracion no reescribe los complementos del tenant.
+  - changeSet:
+      id: 063-subscription-provisioning-operations
+      author: omniretail
+      changes:
+        - createTable:
+            tableName: subscription_provisioning_operations
+            columns:
+              - column:
+                  name: operation_id
+                  type: VARCHAR(64)
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_subscription_provisioning_operations_tenant
+              - column:
+                  name: addon_codes
+                  type: VARCHAR(200)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: applied_at
+                  type: TIMESTAMPTZ
+                  constraints:
+                    nullable: false
+      rollback:
+        - dropTable:
+            tableName: subscription_provisioning_operations

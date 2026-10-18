@@ -19,6 +19,7 @@ public final class EmailLayout {
     private static final String BORDER = "#d3dceb";
     private static final String PALE = "#f1f5fa";
     private static final String DEFAULT_EYEBROW = "OmniRetail";
+    private static final String DEFAULT_FOOTER = "Mensaje generado automaticamente por OmniRetail.";
 
     /** Fragmento del cuerpo del correo; se construye solo con las fabricas de esta clase. */
     public static final class Block {
@@ -38,6 +39,11 @@ public final class EmailLayout {
      * @param title   titulo del encabezado.
      */
     public static String render(String eyebrow, String title, List<Block> blocks) {
+        return render(eyebrow, title, blocks, DEFAULT_FOOTER);
+    }
+
+    /** Igual que {@link #render(String, String, List)}, con un pie de marca especifico para el remitente. */
+    public static String render(String eyebrow, String title, List<Block> blocks, String footer) {
         String header = hasText(eyebrow) ? eyebrow.trim() : DEFAULT_EYEBROW;
         StringBuilder body = new StringBuilder();
         for (Block block : blocks) {
@@ -59,7 +65,7 @@ public final class EmailLayout {
                 + "<tr><td style=\"padding:24px;color:" + INK + ";font-size:14px;line-height:1.5;\">"
                 + body + "</td></tr>"
                 + "<tr><td style=\"padding:14px 24px;border-top:1px solid " + BORDER + ";font-size:11px;color:"
-                + MUTED + ";\">Mensaje generado automaticamente por OmniRetail.</td></tr>"
+                + MUTED + ";\">" + escape(footer) + "</td></tr>"
                 + "</table></td></tr></table></body></html>";
     }
 
@@ -104,6 +110,50 @@ public final class EmailLayout {
     public static Block notice(String text) {
         return new Block("<p style=\"margin:0 0 14px 0;padding:12px;border-left:3px solid " + BLUE
                 + ";background:" + PALE + ";font-size:13px;\">" + escape(text) + "</p>");
+    }
+
+    /** Titulo de seccion compacto para separar grupos de informacion. */
+    public static Block sectionTitle(String text) {
+        return new Block("<h2 style=\"margin:22px 0 10px 0;font-size:15px;line-height:1.3;color:" + NAVY
+                + ";\">" + escape(text) + "</h2>");
+    }
+
+    /** Tabla de etiqueta y valor. Las filas sin valor se omiten para no inventar datos ausentes. */
+    public static Block details(List<String[]> rows) {
+        StringBuilder html = new StringBuilder("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" "
+                + "cellspacing=\"0\" style=\"margin:0 0 16px 0;border:1px solid " + BORDER
+                + ";border-radius:4px;border-collapse:separate;\">");
+        boolean included = false;
+        for (String[] row : rows) {
+            if (row == null || row.length < 2 || !hasText(row[1])) {
+                continue;
+            }
+            included = true;
+            html.append("<tr><td style=\"width:34%;padding:9px 12px;border-bottom:1px solid ")
+                    .append(BORDER)
+                    .append(";font-size:12px;font-weight:bold;color:")
+                    .append(MUTED)
+                    .append(";vertical-align:top;\">")
+                    .append(escape(row[0]))
+                    .append("</td><td style=\"padding:9px 12px;border-bottom:1px solid ")
+                    .append(BORDER)
+                    .append(";font-size:13px;color:")
+                    .append(INK)
+                    .append(";word-break:break-word;vertical-align:top;\">")
+                    .append(escape(row[1]))
+                    .append("</td></tr>");
+        }
+        if (!included) {
+            return new Block("");
+        }
+        return new Block(html.append("</table>").toString());
+    }
+
+    /** Texto libre preservando saltos de linea; siempre se escapa antes de insertarlo. */
+    public static Block textPanel(String text) {
+        return new Block("<div style=\"margin:0 0 16px 0;padding:12px;background:" + PALE + ";border:1px solid "
+                + BORDER + ";border-radius:4px;white-space:pre-wrap;word-break:break-word;font-size:13px;\">"
+                + escape(text) + "</div>");
     }
 
     /** Escapa texto para HTML (contenido y atributos). */

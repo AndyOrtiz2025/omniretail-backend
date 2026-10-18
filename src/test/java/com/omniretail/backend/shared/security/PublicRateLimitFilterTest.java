@@ -81,9 +81,50 @@ class PublicRateLimitFilterTest {
         assertThat(forwarded.get()).isEqualTo(2);
     }
 
+    @Test
+    void contactRequestsHaveTheirOwnGroupAndDoNotConsumeTheLoginBudget() throws Exception {
+        PublicRateLimitFilter filter = filter(2);
+        AtomicInteger forwarded = new AtomicInteger();
+        String contact = "/api/v1/public/contact-requests";
+
+        assertThat(send(filter, contact, "203.0.113.9", null, forwarded).getStatus()).isEqualTo(200);
+        assertThat(send(filter, contact, "203.0.113.9", null, forwarded).getStatus()).isEqualTo(200);
+        MockHttpServletResponse blocked = send(filter, contact, "203.0.113.9", null, forwarded);
+        assertThat(blocked.getStatus()).isEqualTo(429);
+        assertThat(blocked.getContentAsString()).contains("RATE_LIMITED");
+        // El login de la misma IP sigue disponible.
+        assertThat(send(filter, "/api/v1/auth/login", "203.0.113.9", null, forwarded).getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    void aFloodOfContactClientsDoesNotExhaustTheLoginCapacity() throws Exception {
+        PublicRateLimitFilter filter = new PublicRateLimitFilter(new PublicRateLimitProperties(
+                true, 60, 2, 5, 5, 5, 5, 5, 5, 5), new ObjectMapper());
+        AtomicInteger forwarded = new AtomicInteger();
+        String contact = "/api/v1/public/contact-requests";
+
+        send(filter, contact, "203.0.113.1", null, forwarded);
+        send(filter, contact, "203.0.113.2", null, forwarded);
+        assertThat(send(filter, contact, "203.0.113.3", null, forwarded).getStatus()).isEqualTo(429);
+        // Cupo de clientes agotado en "contact": un cliente nuevo aun puede iniciar sesion.
+        assertThat(send(filter, "/api/v1/auth/login", "203.0.113.4", null, forwarded).getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    void forwardedForIsIgnoredWhenTheConnectionDoesNotComeFromAnInternalProxy() throws Exception {
+        PublicRateLimitFilter filter = filter(2);
+        AtomicInteger forwarded = new AtomicInteger();
+        String contact = "/api/v1/public/contact-requests";
+
+        // Un cliente publico no puede cambiar de "IP" cambiando el encabezado.
+        send(filter, contact, "203.0.113.50", "198.51.100.1", forwarded);
+        send(filter, contact, "203.0.113.50", "198.51.100.2", forwarded);
+        assertThat(send(filter, contact, "203.0.113.50", "198.51.100.3", forwarded).getStatus()).isEqualTo(429);
+    }
+
     private static PublicRateLimitFilter filter(int loginPerWindow) {
         return new PublicRateLimitFilter(new PublicRateLimitProperties(
-                true, 60, 100, loginPerWindow, 2, 2, 2, 2, 2), new ObjectMapper());
+                true, 60, 100, loginPerWindow, 2, 2, 2, 2, 2, 2), new ObjectMapper());
     }
 
     private static MockHttpServletResponse send(PublicRateLimitFilter filter, String path, String remoteAddress,

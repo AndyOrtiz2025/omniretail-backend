@@ -3,7 +3,6 @@ package com.omniretail.backend.administration.service;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
-import com.omniretail.backend.administration.dto.UpdateSubscriptionAddonsRequest;
 import com.omniretail.backend.administration.entity.*;
 import com.omniretail.backend.administration.repository.*;
 import com.omniretail.backend.shared.exception.BusinessException;
@@ -47,13 +46,8 @@ class TenantSubscriptionServiceTest {
   ReflectionTestUtils.setField(plan, "id", planId);
  }
 
- void stubSnapshot() {
-  stubSnapshot(Optional.of(subscription));
- }
-
- void stubSnapshot(Optional<TenantSubscription> current) {
-  when(tenants.findByIdForUpdate(tenantId)).thenReturn(Optional.of(Tenant.builder().build()));
-  when(subscriptions.findCurrentByTenantIdForUpdate(eq(tenantId), anyCollection())).thenReturn(current);
+ /** Lo que necesita armar la respuesta (lectura y escritura). */
+ void stubResponse() {
   when(plans.findById(planId)).thenReturn(Optional.of(plan));
   when(limits.evaluateUsage(tenantId, plan)).thenReturn(new PlanLimitGuard.PlanUsage(
     new PlanLimitGuard.LimitUsage("maxEmployees", 4, null, null, false, false),
@@ -62,13 +56,27 @@ class TenantSubscriptionServiceTest {
   when(invoices.findByTenantIdAndSubscriptionIdOrderByCycleStartDesc(tenantId, subscription.getId())).thenReturn(List.of());
  }
 
- @Test void currentUsesTenantLockBeforeSubscriptionAndReturnsFrontendContract() {
-  stubSnapshot();
+ /** Consulta informativa: la suscripcion se lee sin bloqueo. */
+ void stubRead(Optional<TenantSubscription> current) {
+  when(subscriptions.findByTenantIdAndStatusIn(eq(tenantId), anyCollection())).thenReturn(current);
+  stubResponse();
+ }
+
+ /** Aprovisionamiento interno: tenant y suscripcion bloqueados. */
+ void stubLocked() {
+  when(tenants.findByIdForUpdate(tenantId)).thenReturn(Optional.of(Tenant.builder().build()));
+  when(subscriptions.findCurrentByTenantIdForUpdate(eq(tenantId), anyCollection())).thenReturn(Optional.of(subscription));
+  stubResponse();
+ }
+
+ @Test void currentIsReadOnlyAndReturnsFrontendContract() {
+  stubRead(Optional.of(subscription));
   var response = service.getCurrent();
-  var order = inOrder(tenants, subscriptions, invoices);
-  order.verify(tenants).findByIdForUpdate(tenantId);
-  order.verify(subscriptions).findCurrentByTenantIdForUpdate(eq(tenantId), anyCollection());
-  order.verify(invoices).findByTenantIdAndSubscriptionIdAndCycleStart(tenantId, subscription.getId(), Instant.parse("2025-02-28T00:00:00Z"));
+  verifyNoInteractions(tenants);
+  verify(subscriptions, never()).findCurrentByTenantIdForUpdate(any(), anyCollection());
+  verify(subscriptions, never()).save(any());
+  verify(invoices, never()).save(any());
+  verify(invoices, never()).findByTenantIdAndSubscriptionIdAndCycleStart(any(), any(), any());
   assertThat(response.tenantId()).isEqualTo(tenantId);
   assertThat(response.nextRenewalAt()).isEqualTo(Instant.parse("2025-03-31T00:00:00Z"));
   assertThat(response.usage().getFirst().limit()).isNull();
@@ -76,10 +84,37 @@ class TenantSubscriptionServiceTest {
   assertThat(response.capabilities()).anyMatch(value -> value.key().equals("pos") && value.included());
  }
 
- @Test void addonChangesPreserveOriginalCyclePriceAndGrantAccessImmediately() {
-  stubSnapshot();
+ @Test void currentNeverCreatesInvoicesEvenWithContractedAddonsAndRepeatedReads() {
+  subscription.setAddonCodes(List.of("advanced_reports", "ecommerce_delivery"));
   when(ecommerce.findByTenantId(tenantId)).thenReturn(Optional.empty());
-  var response = service.updateAddons(new UpdateSubscriptionAddonsRequest(List.of("ecommerce_delivery")));
+  stubRead(Optional.of(subscription));
+  var first = service.getCurrent();
+  var second = service.getCurrent();
+  verify(invoices, never()).save(any());
+  assertThat(first.addonCodes()).containsExactly("advanced_reports", "ecommerce_delivery");
+  assertThat(second.capabilities()).anyMatch(value -> value.key().equals("reports.advanced") && value.included());
+ }
+
+ @Test void cancelledHistoryCanStillBeReadWithoutReactivation() {
+  subscription.setStatus(TenantSubscriptionStatus.cancelled);
+  when(subscriptions.findFirstByTenantIdOrderByStartedAtDescCreatedAtDesc(tenantId)).thenReturn(Optional.of(subscription));
+  stubRead(Optional.empty());
+  assertThat(service.getCurrent().subscription().status()).isEqualTo(TenantSubscriptionStatus.cancelled);
+  verify(invoices, never()).save(any());
+ }
+
+ @Test void missingSubscriptionCannotReadOtherTenantData() {
+  when(subscriptions.findByTenantIdAndStatusIn(eq(tenantId), anyCollection())).thenReturn(Optional.empty());
+  when(subscriptions.findFirstByTenantIdOrderByStartedAtDescCreatedAtDesc(tenantId)).thenReturn(Optional.empty());
+  assertThatThrownBy(() -> service.getCurrent()).isInstanceOfSatisfying(BusinessException.class,
+    error -> assertThat(error.getCode()).isEqualTo("TENANT_SUBSCRIPTION_NOT_FOUND"));
+  verifyNoInteractions(plans, invoices, limits, tenants);
+ }
+
+ @Test void addonChangesPreserveOriginalCyclePriceAndGrantAccessImmediately() {
+  stubLocked();
+  when(ecommerce.findByTenantId(tenantId)).thenReturn(Optional.empty());
+  var response = service.configureAddons(tenantId, List.of("ecommerce_delivery"));
   ArgumentCaptor<SubscriptionInvoice> captor = ArgumentCaptor.forClass(SubscriptionInvoice.class);
   verify(invoices).save(captor.capture());
   assertThat(captor.getValue().getAddonCodes()).isEmpty();
@@ -91,52 +126,39 @@ class TenantSubscriptionServiceTest {
   order.verify(subscriptions).save(subscription);
  }
 
- @Test void repeatedReadsNeverRewritePersistedInvoice() {
-  stubSnapshot();
-  when(invoices.findByTenantIdAndSubscriptionIdAndCycleStart(any(), any(), any())).thenReturn(Optional.of(SubscriptionInvoice.builder().build()));
-  service.getCurrent();
-  verify(invoices, never()).save(any());
+ @Test void configuringTargetsOnlyTheGivenTenantAndLocksTenantBeforeSubscription() {
+  stubLocked();
+  service.configureAddons(tenantId, List.of("advanced_reports"));
+  var order = inOrder(tenants, subscriptions);
+  order.verify(tenants).findByIdForUpdate(tenantId);
+  order.verify(subscriptions).findCurrentByTenantIdForUpdate(eq(tenantId), anyCollection());
+  verify(subscriptions, never()).findAll();
+  verify(subscriptions, never()).saveAll(any());
  }
 
- @Test void nextCycleSnapshotUsesAddonPrices() {
-  stubSnapshot();
+ @Test void nextCycleSnapshotUsesContractedAddonPrices() {
   subscription.setAddonCodes(List.of("advanced_reports", "ecommerce_delivery"));
+  stubLocked();
   when(ecommerce.findByTenantId(tenantId)).thenReturn(Optional.empty());
-  service.getCurrent();
+  service.configureAddons(tenantId, List.of("advanced_reports", "ecommerce_delivery"));
   ArgumentCaptor<SubscriptionInvoice> captor = ArgumentCaptor.forClass(SubscriptionInvoice.class);
   verify(invoices).save(captor.capture());
   assertThat(captor.getValue().getTotalQuetzales()).isEqualByComparingTo("427.00");
   assertThat(captor.getValue().getAddonLinesJson()).contains("129.00", "99.00");
+  verify(subscriptions, never()).save(any());
  }
 
  @Test void suspendedSubscriptionRemainsSuspendedAndDoesNotProduceInvoice() {
-  stubSnapshot();
   subscription.setStatus(TenantSubscriptionStatus.suspended);
-  var response = service.updateAddons(new UpdateSubscriptionAddonsRequest(List.of("advanced_reports")));
+  stubLocked();
+  var response = service.configureAddons(tenantId, List.of("advanced_reports"));
   assertThat(response.subscription().status()).isEqualTo(TenantSubscriptionStatus.suspended);
   assertThat(response.capabilities()).anyMatch(value -> value.key().equals("reports.advanced") && value.included());
   verify(invoices, never()).save(any());
  }
 
- @Test void cancelledHistoryCanStillBeReadWithoutReactivation() {
-  stubSnapshot(Optional.empty());
-  subscription.setStatus(TenantSubscriptionStatus.cancelled);
-  when(subscriptions.findFirstByTenantIdOrderByStartedAtDescCreatedAtDesc(tenantId)).thenReturn(Optional.of(subscription));
-  assertThat(service.getCurrent().subscription().status()).isEqualTo(TenantSubscriptionStatus.cancelled);
-  verify(invoices, never()).save(any());
- }
-
- @Test void missingSubscriptionCannotReadOtherTenantData() {
-  when(tenants.findByIdForUpdate(tenantId)).thenReturn(Optional.of(Tenant.builder().build()));
-  when(subscriptions.findCurrentByTenantIdForUpdate(eq(tenantId), anyCollection())).thenReturn(Optional.empty());
-  when(subscriptions.findFirstByTenantIdOrderByStartedAtDescCreatedAtDesc(tenantId)).thenReturn(Optional.empty());
-  assertThatThrownBy(() -> service.getCurrent()).isInstanceOfSatisfying(BusinessException.class,
-    error -> assertThat(error.getCode()).isEqualTo("TENANT_SUBSCRIPTION_NOT_FOUND"));
-  verifyNoInteractions(plans, invoices, limits);
- }
-
  @Test void invalidAddonDoesNotLockOrPersist() {
-  assertThatThrownBy(() -> service.updateAddons(new UpdateSubscriptionAddonsRequest(List.of("unknown")))).isInstanceOf(BusinessException.class);
+  assertThatThrownBy(() -> service.configureAddons(tenantId, List.of("unknown"))).isInstanceOf(BusinessException.class);
   verifyNoInteractions(tenants, subscriptions, invoices);
  }
 
@@ -145,7 +167,7 @@ class TenantSubscriptionServiceTest {
   when(subscriptions.findCurrentByTenantIdForUpdate(eq(tenantId), anyCollection())).thenReturn(Optional.of(subscription));
   plan.setStatus(PlanStatus.archived);
   when(plans.findById(planId)).thenReturn(Optional.of(plan));
-  assertThatThrownBy(() -> service.updateAddons(new UpdateSubscriptionAddonsRequest(List.of("advanced_reports"))))
+  assertThatThrownBy(() -> service.configureAddons(tenantId, List.of("advanced_reports")))
     .isInstanceOfSatisfying(BusinessException.class, error -> assertThat(error.getCode()).isEqualTo("SAAS_PLAN_ARCHIVED"));
   verifyNoInteractions(invoices);
   verify(subscriptions, never()).save(any());
