@@ -31,7 +31,8 @@ public class EmployeeActivationController {
     @SecurityRequirements
     @Operation(summary = "Activate employee account",
             description = "**Público (con el enlace de invitación).** Consume una invitación vigente, establece la contraseña y revoca las sesiones anteriores. "
-                    + "La contraseña debe cumplir la política de empleados (12 a 24 caracteres).")
+                    + "La contraseña debe cumplir la política de empleados (12 a 64 caracteres y como máximo 72 bytes "
+                    + "en UTF-8).")
     @ApiResponses({
         @ApiResponse(responseCode = "200", description = "Cuenta activada correctamente.",
                 content = @Content(mediaType = "application/json",

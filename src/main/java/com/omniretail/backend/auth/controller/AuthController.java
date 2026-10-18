@@ -113,7 +113,8 @@ public class AuthController {
                     **Requiere sesión (cliente o empleado).** Cambia la contraseña de la cuenta de la sesión actual.
 
                     - Exige la contraseña actual; la nueva debe ser distinta y cumplir la política del tipo de cuenta
-                      (clientes: 8 a 24 caracteres; empleados: 12 a 24; con mayúscula, minúscula, número y carácter especial).
+                      (clientes: 8 a 64 caracteres; empleados: 12 a 64; como máximo 72 bytes en UTF-8; con mayúscula,
+                      minúscula, número y carácter especial).
                     - Con la verificación en dos pasos activa, `mfaCode` es obligatorio: código de la app, código
                       por correo (se pide en `POST /auth/mfa/code`) o código de recuperación.
                     - Al cambiarla se revocan todas las demás sesiones del usuario; la sesión actual sigue activa.""")

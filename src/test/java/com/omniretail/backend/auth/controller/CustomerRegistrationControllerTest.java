@@ -349,7 +349,7 @@ class CustomerRegistrationControllerTest {
                 .andExpect(jsonPath("$.fields.email").value("Ingrese un correo con formato válido."))
                 .andExpect(jsonPath("$.fields.phone").value("El teléfono solo puede contener números."))
                 .andExpect(jsonPath("$.fields.password").value(
-                        "La contraseña debe tener entre 8 y 24 caracteres e incluir una mayúscula, una minúscula, "
+                        "La contraseña debe tener entre 8 y 64 caracteres e incluir una mayúscula, una minúscula, "
                                 + "un número y un carácter especial."));
 
         register(tenant.getSlug(), "Ana", "", "5555123", "")
@@ -365,6 +365,38 @@ class CustomerRegistrationControllerTest {
         register(tenantWithCustomerRole().getSlug(), "Ana", email, null, email.toLowerCase())
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fields.password").value("La contraseña no puede ser igual al correo electrónico."));
+    }
+
+    @Test
+    void passwordOverSeventyTwoBytesIsAValidationErrorNotA500() throws Exception {
+        // 40 unidades UTF-16 (dentro del maximo de 64) pero 76 bytes: antes pasaba la politica y BCrypt lanzaba
+        // IllegalArgumentException en encode, que el manejador global respondia como 500.
+        String emojis = "Aa1!" + new String(Character.toChars(0x1F600)).repeat(18);
+        String email = uniqueEmail();
+
+        register(tenantWithCustomerRole().getSlug(), "Ana", email, null, emojis)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.fields.password").value("La contraseña es demasiado larga. Las tildes, la ñ y "
+                        + "los emojis ocupan más espacio: usa una más corta o con menos caracteres especiales."));
+        assertThat(emailSender.settledMessagesTo(email)).isEmpty();
+    }
+
+    @Test
+    void sixtyFourCharacterPasswordRegistersAndLogsIn() throws Exception {
+        Tenant tenant = tenantWithCustomerRole();
+        String email = uniqueEmail();
+        String longPassword = "Frase-Larga-Y-Segura-2026!" + "x".repeat(38);
+        assertThat(longPassword).hasSize(64);
+
+        register(tenant.getSlug(), "Ana", email, null, longPassword).andExpect(status().isAccepted());
+        verify(tokenFrom(emailSender.awaitMessageTo(email))).andExpect(status().isOk());
+
+        mockMvc.perform(post(LOGIN)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\": %s, \"password\": %s, \"tenantSlug\": %s}"
+                                .formatted(json(email), json(longPassword), json(tenant.getSlug()))))
+                .andExpect(status().isOk());
     }
 
     @Test

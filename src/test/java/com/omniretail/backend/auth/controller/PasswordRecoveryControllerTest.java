@@ -274,7 +274,7 @@ class PasswordRecoveryControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
                 .andExpect(jsonPath("$.fields.newPassword").value(
-                        "La contraseña debe tener entre 12 y 24 caracteres e incluir una mayúscula, una minúscula, "
+                        "La contraseña debe tener entre 12 y 64 caracteres e incluir una mayúscula, una minúscula, "
                                 + "un número y un carácter especial."));
         assertThat(challengeRepository.findByUserId(employee.getId()).getFirst().getUsedAt()).isNull();
 

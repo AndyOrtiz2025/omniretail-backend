@@ -44,7 +44,8 @@ public class CustomerRegistrationController {
                     una cuenta" (como máximo 3 cada 30 minutos).
                     - Correo de un empleado o de una cuenta deshabilitada o archivada: no hace nada.
                     - `phone` es opcional; si viene, debe tener exactamente 8 dígitos.
-                    - `password`: 8 a 24 caracteres, con mayúscula, minúscula, número y carácter especial; sin \
+                    - `password`: 8 a 64 caracteres y como máximo 72 bytes en UTF-8, con mayúscula, minúscula, \
+                    número y carácter especial; sin \
                     espacios, no solo números, distinta del correo y no común.
 
                     La respuesta no incluye el id de la cuenta: `user` solo repite el nombre y el correo enviados \

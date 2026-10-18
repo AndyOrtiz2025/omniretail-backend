@@ -145,7 +145,7 @@ public class AccountRecoveryController {
             summary = "Reset password",
             description = """
                     **Público.** Cambia la contraseña con el token del enlace de recuperación. La política depende del tipo de \
-                    cuenta (clientes: 8 a 24 caracteres; empleados: 12 a 24).
+                    cuenta (clientes: 8 a 64 caracteres; empleados: 12 a 64; en ambos casos como máximo 72 bytes en UTF-8).
 
                     Cierra todas las sesiones abiertas de la cuenta y desbloquea una cuenta bloqueada \
                     temporalmente. `tenantSlug` solo viene para clientes.""")

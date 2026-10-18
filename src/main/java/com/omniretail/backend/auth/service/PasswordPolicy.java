@@ -1,23 +1,33 @@
 package com.omniretail.backend.auth.service;
 
 import com.omniretail.backend.administration.entity.UserType;
+import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
- * Politica de contrasenas, identica a {@code src/config/auth-policy.ts} del frontend
- * (validatePasswordAgainstPolicy): mismas reglas, mismo orden y mismos mensajes. Toda contrasena
- * nueva se valida aqui; el login no la revalida, para no dejar fuera credenciales anteriores validas.
- * Clientes y empleados comparten las reglas; empleados exigen un minimo mayor.
+ * Politica de contrasenas, con las mismas reglas, orden y mensajes que {@code src/config/auth-policy.ts} del
+ * frontend (validatePasswordAgainstPolicy), salvo el maximo: aqui es de 64 caracteres y 72 bytes, y el
+ * frontend debe actualizarse a lo mismo. Toda contrasena nueva se valida aqui antes de hashearla; el login
+ * no la revalida, para no dejar fuera credenciales anteriores validas. Clientes y empleados comparten las
+ * reglas; empleados exigen un minimo mayor.
  */
 public enum PasswordPolicy {
 
     CUSTOMER(8),
     EMPLOYEE(12);
 
-    static final int MAX_LENGTH = 24;
+    /** Recomendacion de OWASP: permitir frases largas. Se cuenta como {@code String.length()}, igual que en JS. */
+    static final int MAX_LENGTH = 64;
+    /**
+     * BCrypt solo usa los primeros 72 bytes, y Spring Security rechaza una contrasena mas larga en
+     * {@code encode} (IllegalArgumentException, que sin esta regla terminaba en un 500).
+     */
+    static final int MAX_BYTES = 72;
+    static final String TOO_MANY_BYTES_MESSAGE = "La contraseña es demasiado larga. Las tildes, la ñ y los emojis "
+            + "ocupan más espacio: usa una más corta o con menos caracteres especiales.";
 
     /**
      * Mismos caracteres que {@code \s} y {@code String.prototype.trim()} en JavaScript. El {@code \s}
@@ -77,6 +87,10 @@ public enum PasswordPolicy {
         }
         if (password.length() < minLength || password.length() > MAX_LENGTH) {
             return Optional.of(requirementsMessage());
+        }
+        // 64 caracteres pueden ocupar mas de 72 bytes si hay tildes, ñ o emojis (2 a 4 bytes cada uno).
+        if (password.getBytes(StandardCharsets.UTF_8).length > MAX_BYTES) {
+            return Optional.of(TOO_MANY_BYTES_MESSAGE);
         }
         if (HAS_WHITESPACE.matcher(password).find()) {
             return Optional.of("La contraseña no puede contener espacios.");

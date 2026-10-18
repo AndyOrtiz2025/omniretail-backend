@@ -107,7 +107,7 @@ class PasswordChangeControllerTest {
         change(token, CUSTOMER_PASSWORD, "debil")
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fields.newPassword").value(
-                        "La contraseña debe tener entre 8 y 24 caracteres e incluir una mayúscula, una minúscula, un "
+                        "La contraseña debe tener entre 8 y 64 caracteres e incluir una mayúscula, una minúscula, un "
                                 + "número y un carácter especial."));
         change(token, CUSTOMER_PASSWORD, customer.user().getEmail())
                 .andExpect(status().isBadRequest())
@@ -117,6 +117,20 @@ class PasswordChangeControllerTest {
                 .andExpect(jsonPath("$.fields.newPassword").value("La contraseña es obligatoria."));
 
         assertPasswordIs(customer, CUSTOMER_PASSWORD);
+    }
+
+    @Test
+    void newPasswordOverSeventyTwoBytesIsAValidationErrorNotA500() throws Exception {
+        Account employee = employee(tenant());
+        String token = login(employee, EMPLOYEE_PASSWORD);
+        String accented = "Áa1!" + "é".repeat(40); // 44 caracteres, 86 bytes
+
+        change(token, EMPLOYEE_PASSWORD, accented)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fields.newPassword").value("La contraseña es demasiado larga. Las tildes, la ñ y "
+                        + "los emojis ocupan más espacio: usa una más corta o con menos caracteres especiales."));
+
+        assertPasswordIs(employee, EMPLOYEE_PASSWORD);
     }
 
     @Test
@@ -148,7 +162,7 @@ class PasswordChangeControllerTest {
         change(token, EMPLOYEE_PASSWORD, NEW_CUSTOMER_PASSWORD)
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fields.newPassword").value(
-                        "La contraseña debe tener entre 12 y 24 caracteres e incluir una mayúscula, una minúscula, un "
+                        "La contraseña debe tener entre 12 y 64 caracteres e incluir una mayúscula, una minúscula, un "
                                 + "número y un carácter especial."));
         assertPasswordIs(employee, EMPLOYEE_PASSWORD);
 
