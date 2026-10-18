@@ -61,6 +61,9 @@ server:
 app:
   api:
     base-path: /api/v1
+  auth:
+    # Minutos sin actividad tras los que el servidor cierra la sesion de un empleado (clientes no aplica).
+    employee-idle-timeout: ${EMPLOYEE_IDLE_TIMEOUT_MINUTES:60}m
   jwt:
     secret: ${JWT_SECRET:}
     issuer: omniretail-backend
