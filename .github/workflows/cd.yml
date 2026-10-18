@@ -1,12 +1,10 @@
 name: CD
 
-# Despliegue a produccion. Solo sale a produccion un commit de main que paso la CI completa: este workflow
-# arranca cuando termina el workflow CI de un push a main (workflow_run), nunca en paralelo a el.
-# Ojo: workflow_run usa la version de este archivo que esta en la rama por defecto del repo (development).
+# Despliegue a produccion. Cada push a main corre primero la CI completa (ci.yml como workflow reutilizable)
+# y solo si queda en verde se publica la imagen y se despliega. Siempre se construye el commit del push
+# (github.sha): nunca codigo que llegue de otro evento o de un fork.
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
+  push:
     branches: [main]
   workflow_dispatch: # Redesplegar main a mano (p. ej. despues de cambiar el .env del VPS).
 
@@ -18,36 +16,33 @@ permissions:
   contents: read
 
 jobs:
+  ci:
+    name: CI
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit # SONAR_TOKEN y GEMINI_API_KEY.
+    permissions:
+      contents: read
+      pull-requests: write # Lo declara el job de revision con IA de ci.yml; en un push no se ejecuta.
+
   image:
     name: Imagen Docker (GHCR)
-    # CI verde de un push a main, o ejecucion manual sobre main. Un CI fallido o de un PR no despliega nada.
-    if: >-
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push')
+    needs: ci
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
       packages: write
     outputs:
-      sha: ${{ steps.version.outputs.sha }}
       tag: ${{ steps.version.outputs.tag }}
 
     steps:
-      # En workflow_run, github.sha es la punta de la rama por defecto: el commit que paso la CI es head_sha.
       - name: Version a desplegar
         id: version
-        env:
-          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-        run: |
-          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-          echo "tag=sha-${SHA::7}" >> "$GITHUB_OUTPUT"
+        run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          ref: ${{ steps.version.outputs.sha }}
 
       - name: Configurar Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -68,8 +63,6 @@ jobs:
           tags: |
             type=raw,value=${{ steps.version.outputs.tag }}
             type=raw,value=latest
-          labels: |
-            org.opencontainers.image.revision=${{ steps.version.outputs.sha }}
 
       - name: Build y push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -106,8 +99,6 @@ jobs:
       - name: Checkout
         if: vars.VPS_HOST != ''
         uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.image.outputs.sha }}
 
       - name: Copiar archivos de despliegue al VPS
         if: vars.VPS_HOST != ''

@@ -6,19 +6,17 @@ Las imágenes se construyen en GitHub Actions (`cd.yml` de cada repo) y se publi
 ### Flujo del despliegue automático
 
 ```
-merge a main ──► CI (tests, Sonar, gitleaks, SCA) ──verde──► CD: imagen sha-xxxxxxx en GHCR ──► VPS
-                                └──rojo──► no se despliega nada
+push a main ──► CD ─► CI completa (tests, Sonar, gitleaks, SCA) ──verde──► imagen sha-xxxxxxx en GHCR ──► VPS
+                                                                └──rojo──► no se despliega nada
 ```
 
-- **Solo despliega lo que pasó la CI.** El CD arranca cuando termina el workflow CI de un push a `main` (`workflow_run`), nunca en paralelo a él.
+- **Solo despliega lo que pasó la CI.** El CD llama a `ci.yml` como workflow reutilizable (`workflow_call`) y solo si queda en verde construye y despliega. Siempre construye el commit del push, nunca código de otro evento o de un fork.
 - **Etiquetas inmutables.** Cada despliegue usa `sha-<commit>` y la deja escrita en el `.env` del VPS (`BACKEND_TAG` / `WEB_TAG`), así un reinicio o un `up -d` manual levantan siempre la misma versión.
 - **Healthcheck y rollback automático.** `scripts/deploy-service.sh` espera a que el contenedor quede sano; si no lo logra, vuelve a la imagen que estaba corriendo y el job falla en rojo.
 - **La configuración también se despliega.** El CD del backend copia `docker-compose.prod.yml`, `caddy/`, `monitoring/` y `scripts/`, recarga Caddy y Prometheus sin cortar el tráfico y reinicia Grafana.
 - **SSH verificado.** El CD exige la huella del servidor (`VPS_SSH_FINGERPRINT`); sin ella el despliegue falla en vez de conectarse a ciegas.
 - Redesplegar a mano: *Actions → CD → Run workflow* sobre `main`.
 
-> `workflow_run` usa la versión de `cd.yml` de la **rama por defecto** del repo (backend: `development`, web: `main`).
-> Un cambio al CD entra en vigor cuando se mergea a esa rama.
 
 ```
 Internet ──► Caddy :80/:443 ──┬─ /api/v1/*, /media/* ──► backend:8080 ──► postgres:5432
