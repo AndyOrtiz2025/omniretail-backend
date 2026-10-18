@@ -7,7 +7,10 @@
 #   FAKE_FAIL="evento ..."       el evento falla siempre.
 #   FAKE_FAIL_ONCE="evento ..."  falla solo la primera vez (p. ej. la fase final, y no su reintento al volver atras).
 #   FAKE_TERM_ON=evento          al llegar a ese evento manda SIGTERM al script que lo llamo (corte del SSH).
+#   FAKE_KILL_ON=evento          igual, pero SIGKILL: no corre ningun trap (caida del VPS, OOM killer).
 #   FAKE_UNHEALTHY="sha-x ..."   el servicio desplegado con esas etiquetas no queda sano.
+# Estado de los contenedores: FAKE_PS_ID=<id> hace que todos los servicios existan y esten corriendo;
+# FAKE_STOPPED="svc ..." los deja creados pero detenidos. Sin FAKE_PS_ID no existe ninguno (primer despliegue).
 set -u
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -43,6 +46,7 @@ EOF
 emit() {
     echo "$1" >> "$FAKE_LOG"
     if [ "${FAKE_TERM_ON:-}" = "$1" ]; then kill -TERM "$PPID"; fi
+    if [ "${FAKE_KILL_ON:-}" = "$1" ]; then kill -KILL "$PPID"; sleep 1; fi
     for f in ${FAKE_FAIL:-}; do [ "$f" = "$1" ] && exit 1; done
     for f in ${FAKE_FAIL_ONCE:-}; do
         if [ "$f" = "$1" ] && [ ! -e "$FAKE_STATE/once-$1" ]; then : > "$FAKE_STATE/once-$1"; exit 1; fi
@@ -61,7 +65,19 @@ case "$1" in
         sub=$1
         shift
         case "$sub" in
-            ps) [ -n "${FAKE_PS_ID:-}" ] && echo "$FAKE_PS_ID"; exit 0 ;;
+            ps)
+                all=false
+                for a in "$@"; do [ "$a" = -a ] && all=true; done
+                for svc in "$@"; do :; done # ultimo argumento: el servicio
+                [ -n "${FAKE_PS_ID:-}" ] || exit 0
+                for st in ${FAKE_STOPPED:-}; do
+                    if [ "$st" = "$svc" ]; then
+                        if [ "$all" = true ]; then echo "$FAKE_PS_ID"; fi
+                        exit 0
+                    fi
+                done
+                echo "$FAKE_PS_ID"
+                exit 0 ;;
             config) emit config ;;
             run)
                 case "$*" in
@@ -81,6 +97,8 @@ case "$1" in
                 if [ "$services" = "$FAKE_SERVICE" ]; then
                     tag=$(active_tag)
                     emit "up-$tag"
+                    # Con que definicion de compose quedo creado el contenedor (para probar la reconciliacion).
+                    cat docker-compose.prod.yml > "$FAKE_STATE/service-compose" 2>/dev/null || true
                     for bad in ${FAKE_UNHEALTHY:-}; do [ "$bad" = "$tag" ] && exit 1; done
                 elif [ "$services" = postgres ]; then
                     emit up-postgres
@@ -91,6 +109,7 @@ case "$1" in
             kill) emit sighup-prometheus ;;
             restart) emit restart-grafana ;;
             stop) emit "stop-$1" ;;
+            rm) for a in "$@"; do case "$a" in -*) ;; *) emit "rm-$a" ;; esac; done ;;
             logs) ;;
         esac
         exit 0 ;;
@@ -181,8 +200,16 @@ count() { grep -c "^$1\$" "$WORK/calls.log"; }
 file() { cat "$WORK/app/$1" 2>/dev/null || echo "<no existe>"; }
 dir_id() { stat -c %i "$WORK/app/$1"; } # Inodo: un bind mount de carpeta apunta a el.
 config_is() { echo "$(file docker-compose.prod.yml) $(file caddy/Caddyfile) $(file monitoring/prometheus/prometheus.yml)"; }
-recovery_dirs() { find "$WORK/app/.recovery" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' '; }
-recovery_dir() { find "$WORK/app/.recovery" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n 1; }
+recovery_dirs() { find "$WORK/app/.recovery" -mindepth 1 -maxdepth 1 -type d ! -name '*.tmp' 2>/dev/null | wc -l | tr -d ' '; }
+recovery_dir() { find "$WORK/app/.recovery" -mindepth 1 -maxdepth 1 -type d ! -name '*.tmp' 2>/dev/null | head -n 1; }
+service_compose() { cat "$WORK/state/service-compose" 2>/dev/null || echo "<ninguno>"; }
+config_left() { # archivos de configuracion que quedaron en el VPS (primer despliegue fallido: ninguno)
+    for item in docker-compose.prod.yml caddy monitoring scripts; do
+        if [ -e "$WORK/app/$item" ]; then printf '%s ' "$item"; fi
+    done
+    echo
+}
+rm_calls() { grep '^rm-' "$WORK/calls.log" | sort -u | tr '\n' ' '; }
 staging_left() { find "$WORK/app/.staging" -mindepth 1 2>/dev/null | wc -l | tr -d ' '; }
 
 check() { # check <descripcion> <obtenido> <esperado>
@@ -373,8 +400,8 @@ code=$(run_backend FAKE_PS_ID=c1 FAKE_FAIL=pull-sha-new)
 check "termina en 1" "$code" 1
 check "restaura la configuracion anterior" "$(config_is)" "$OLD_CONFIG"
 check ".env intacto" "$(env_tag BACKEND_TAG)" sha-old
-check "reconcilia postgres con la config anterior y no recarga ni limpia" "$(calls)" \
-    "flock|curl|$VALIDATE|up-postgres|ensure-role-new|pull-sha-new|up-postgres|"
+check "reconcilia postgres y el backend con la config anterior; no recarga ni limpia" "$(calls)" \
+    "flock|curl|$VALIDATE|up-postgres|ensure-role-new|pull-sha-new|up-postgres|tag-ghcr.io/acme/app:sha-old|up-sha-old|"
 teardown
 
 echo "backend no queda sano (deploy-service vuelve a la imagen anterior)"
@@ -417,15 +444,6 @@ for failing in up-edge reload-caddy sighup-prometheus restart-grafana; do
     teardown
 done
 
-echo "falla la fase final en el primer despliegue: se detiene el backend nuevo"
-setup_empty "SECRET=s3cr3t"
-setup_staging
-code=$(run_backend FAKE_FAIL_ONCE=reload-caddy)
-check "termina en 1" "$code" 1
-check "quita la etiqueta (no habia)" "$(env_tag BACKEND_TAG)" ""
-check "detiene el backend" "$(count stop-backend)" 1
-teardown
-
 echo "falla la fase final Y la imagen anterior del backend no queda sana"
 setup "BACKEND_TAG=sha-old"
 setup_staging
@@ -450,7 +468,7 @@ echo "== deploy-backend.sh: restauracion fallida e interrupciones =="
 echo "falla la restauracion de la configuracion (promote del respaldo)"
 setup "BACKEND_TAG=sha-old"
 setup_staging
-code=$(run_backend FAKE_PS_ID=c1 FAKE_FAIL_ONCE=reload-caddy FAKE_CP_FAIL_FROM=.staging/backup.)
+code=$(run_backend FAKE_PS_ID=c1 FAKE_FAIL_ONCE=reload-caddy FAKE_CP_FAIL_FROM=.recovery/)
 check "termina en 1" "$code" 1
 check "conserva el respaldo" "$(recovery_dirs)" 1
 rec=$(recovery_dir)
@@ -503,6 +521,100 @@ setup_staging
 code=$(run_backend FAKE_PS_ID=c1)
 check "el segundo intento termina en 1" "$code" 1
 check "y no toca nada" "$(calls)" "flock|"
+teardown
+
+# =====================================================================
+echo "== reconciliacion, primer despliegue y marca durable =="
+
+echo "escenario 1: deploy-service ya volvio a la imagen anterior; el backend se reconcilia con el compose anterior"
+setup "BACKEND_TAG=sha-old"
+setup_staging
+code=$(run_backend FAKE_PS_ID=c1 FAKE_UNHEALTHY=sha-new)
+check "termina en 1" "$code" 1
+check "configuracion anterior" "$(config_is)" "$OLD_CONFIG"
+check "etiqueta anterior" "$(env_tag BACKEND_TAG)" sha-old
+check "el contenedor del backend quedo creado con el compose ANTERIOR" "$(service_compose)" compose-old
+check "no deja marca (vuelta atras completa)" "$(recovery_dirs)" 0
+teardown
+
+echo "escenario 1b: falla la fase final; el backend tambien queda con el compose anterior"
+setup "BACKEND_TAG=sha-old"
+setup_staging
+code=$(run_backend FAKE_PS_ID=c1 FAKE_FAIL_ONCE=reload-caddy)
+check "termina en 1" "$code" 1
+check "el contenedor del backend quedo creado con el compose ANTERIOR" "$(service_compose)" compose-old
+teardown
+
+for failing in validate-caddy pull-sha-new up-sha-new reload-caddy restart-grafana; do
+    echo "escenario 2: primer despliegue fallido en '$failing': no queda nada nuevo"
+    setup_empty "SECRET=s3cr3t"
+    setup_staging
+    if [ "$failing" = up-sha-new ]; then
+        code=$(run_backend FAKE_UNHEALTHY=sha-new)
+    else
+        code=$(run_backend FAKE_FAIL_ONCE=$failing)
+    fi
+    check "termina en 1" "$code" 1
+    check "no quedan archivos de configuracion nuevos" "$(config_left)" ""
+    check "no queda etiqueta" "$(env_tag BACKEND_TAG)" ""
+    check "el .env sigue intacto" "$(grep -c '^SECRET=s3cr3t$' "$WORK/app/.env")" 1
+    # Cada servicio que este despliegue alcanzo a crear se elimina (sin borrar volumenes).
+    case "$failing" in
+        validate-caddy) expected="" ;;
+        pull-sha-new | up-sha-new) expected="rm-backend rm-postgres " ;;
+        *) expected="rm-backend rm-caddy rm-grafana rm-node-exporter rm-postgres rm-postgres-exporter rm-prometheus " ;;
+    esac
+    check "elimina los contenedores que creo" "$(rm_calls)" "$expected"
+    check "no deja marca" "$(recovery_dirs)" 0
+    teardown
+done
+
+echo "servicio que estaba DETENIDO antes del despliegue: la vuelta atras lo deja detenido"
+setup "BACKEND_TAG=sha-old"
+setup_staging
+code=$(run_backend FAKE_PS_ID=c1 FAKE_STOPPED=grafana FAKE_FAIL_ONCE=reload-caddy)
+check "termina en 1" "$code" 1
+check "vuelve a detener grafana al final" "$(tail -n 1 "$WORK/calls.log")" stop-grafana
+check "no lo elimina" "$(count rm-grafana)" 0
+teardown
+
+echo "escenario 3: SIGKILL a mitad (sin traps): la marca durable queda y bloquea"
+setup "BACKEND_TAG=sha-old"
+setup_staging
+code=$(run_backend FAKE_PS_ID=c1 FAKE_KILL_ON=up-postgres)
+check "muere por SIGKILL" "$code" 137
+check "deja una marca en .recovery" "$(recovery_dirs)" 1
+rec=$(recovery_dir)
+check "la marca contiene la configuracion anterior completa" \
+    "$(cat "$rec/config/docker-compose.prod.yml" 2>/dev/null) $(cat "$rec/config/caddy/Caddyfile" 2>/dev/null) $(cat "$rec/config/caddy/obsoleto.conf" 2>/dev/null)" \
+    "compose-old caddy-old solo-en-la-version-vieja"
+check "la marca explica como volver a la imagen previa" "$(grep -c 'docker tag sha256:previmage' "$rec/LEEME.txt" 2>/dev/null)" 1
+check "no queda respaldo suelto en .staging" "$(find "$WORK/app/.staging" -name 'backup.*' 2>/dev/null | wc -l | tr -d ' ')" 0
+: > "$WORK/calls.log"
+setup_staging
+code=$(run_backend FAKE_PS_ID=c1)
+check "el siguiente despliegue queda bloqueado" "$code" 1
+check "y no toca nada" "$(calls)" "flock|"
+: > "$WORK/calls.log"
+code=$(run_web FAKE_PS_ID=c1)
+check "el CD de web tambien queda bloqueado" "$code" 1
+teardown
+
+echo "escenario 3b: SIGKILL mientras se escribia el respaldo (nada promovido): no bloquea y se limpia"
+setup "BACKEND_TAG=sha-old"
+setup_staging
+mkdir -p "$WORK/app/.recovery/20261018T000000Z-$SHA.tmp/config"
+code=$(run_backend FAKE_PS_ID=c1)
+check "despliega" "$code" 0
+check "limpia el respaldo a medio escribir" "$(find "$WORK/app/.recovery" -name '*.tmp' | wc -l | tr -d ' ')" 0
+teardown
+
+echo "web: primer despliegue fallido no deja el contenedor nuevo"
+setup "SECRET=s3cr3t"
+code=$(run_web FAKE_UNHEALTHY=sha-new)
+check "termina en 1" "$code" 1
+check "elimina el contenedor nuevo" "$(count rm-web)" 1
+check "sin etiqueta" "$(env_tag WEB_TAG)" ""
 teardown
 
 echo "script ejecutado fuera de su staging"

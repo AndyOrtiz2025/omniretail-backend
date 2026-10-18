@@ -18,11 +18,13 @@ acquire_deploy_lock() {
     export DEPLOY_LOCK_HELD
 }
 
-# Con el lock tomado: si un despliegue anterior quedo a medias (vuelta atras fallida o interrumpido), su
-# respaldo esta en .recovery/ y el VPS necesita intervencion manual. Ningun despliegue (backend ni web)
-# avanza sobre ese estado hasta que alguien lo resuelva y borre la carpeta (ver su LEEME.txt).
+# Con el lock tomado: si un despliegue anterior quedo a medias (vuelta atras fallida, interrumpido o muerto
+# sin traps: SIGKILL, caida del VPS), su marca durable con el respaldo esta en .recovery/<id>/ y el VPS
+# necesita intervencion manual. Ningun despliegue (backend ni web) avanza sobre ese estado hasta que alguien
+# lo resuelva y borre la carpeta (ver su LEEME.txt). Las carpetas *.tmp son respaldos a medio escribir de un
+# despliegue que murio ANTES de promover nada: no bloquean y se limpian.
 require_no_pending_recovery() {
-    pending=$(find .recovery -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n 1)
+    pending=$(find .recovery -mindepth 1 -maxdepth 1 -type d ! -name '*.tmp' 2>/dev/null | head -n 1)
     if [ -n "$pending" ]; then
         echo "::error::Hay una recuperacion manual pendiente en $(pwd)/$pending (ver LEEME.txt). No se despliega hasta resolverla y borrar esa carpeta." >&2
         exit 1
@@ -63,24 +65,40 @@ write_env_tag() {
     chmod 600 "$tmp" && mv "$tmp" .env
 }
 
-# Imagen que corre ahora un servicio, como "<image_id> <repositorio>" (por ID y no por etiqueta: la
-# etiqueta pudo moverse). Vacio si el servicio no tiene contenedor.
-running_image() {
-    cid=$(compose ps -q "$1" 2>/dev/null || true)
+# Estado del contenedor de un servicio: running | stopped (creado pero detenido) | absent.
+container_state() {
+    if [ -n "$(compose ps -q "$1" 2>/dev/null || true)" ]; then
+        echo running
+    elif [ -n "$(compose ps -a -q "$1" 2>/dev/null || true)" ]; then
+        echo stopped
+    else
+        echo absent
+    fi
+}
+
+# Imagen del contenedor de un servicio (corriendo o detenido), como "<image_id> <repositorio>" (por ID y no
+# por etiqueta: la etiqueta pudo moverse). Vacio si el servicio no tiene contenedor.
+container_image() {
+    cid=$(compose ps -a -q "$1" 2>/dev/null || true)
     [ -n "$cid" ] || return 0
     id=$(docker inspect --format '{{.Image}}' "$cid") || return 1
     ref=$(docker inspect --format '{{.Config.Image}}' "$cid") || return 1
     echo "$id ${ref%:*}"
 }
 
-# restore_image <servicio> <VAR> <etiqueta_previa> <image_id> <repositorio>: vuelve a la imagen previa.
-# La reetiqueta (con su etiqueta previa, o `rollback` si no habia) para que compose la use sin descargar
-# nada, fija esa etiqueta en .env y espera el healthcheck. Distinto de 0 si algo falla.
+# restore_image <servicio> <VAR> <etiqueta_previa> <image_id> <repositorio> [stopped]: vuelve a la imagen previa
+# con la configuracion vigente. La reetiqueta (con su etiqueta previa, o `rollback` si no habia) para que
+# compose la use sin descargar nada y fija esa etiqueta en .env. Si el servicio corria, lo levanta y espera
+# el healthcheck; si estaba detenido ("stopped"), solo recrea el contenedor y lo deja detenido.
+# Distinto de 0 si algo falla.
 restore_image() {
     rollback_tag=${3:-rollback}
-    docker tag "$4" "$5:$rollback_tag" &&
-        write_env_tag "$2" "$rollback_tag" &&
+    docker tag "$4" "$5:$rollback_tag" && write_env_tag "$2" "$rollback_tag" || return 1
+    if [ "${6:-}" = stopped ]; then
+        compose up --no-start --no-deps "$1" && compose stop "$1"
+    else
         compose up -d --no-deps --wait --wait-timeout "$WAIT_TIMEOUT" "$1"
+    fi
 }
 
 # Deja el arbol $2 identico a $1 SIN reemplazar directorios: los bind mounts de carpeta (caddy/,

@@ -16,8 +16,9 @@
 # - Al terminar con exito limpia imagenes huerfanas, salvo DEPLOY_PRUNE=0 (deploy-backend.sh lo hace
 #   recien cuando termina el despliegue completo).
 #
-# Codigos de salida: 0 desplegado (u obsoleto omitido) | 1 fallo, el servicio quedo en la version anterior
-# (o no habia anterior) | 2 uso invalido | 3 fallo y la version anterior TAMPOCO quedo sana.
+# Codigos de salida: 0 desplegado (u obsoleto omitido) | 1 fallo, el servicio quedo como estaba antes (version
+# anterior, detenido si lo estaba, o sin contenedor si no existia) | 2 uso invalido | 3 fallo y la version
+# anterior TAMPOCO quedo sana.
 set -eu
 
 SERVICE=${1:?Uso: deploy-service.sh <backend|web> <etiqueta>}
@@ -36,9 +37,14 @@ cd "$SCRIPT_DIR/.."
 # shellcheck source=deploy/scripts/lib/deploy-common.sh
 . "$SCRIPT_DIR/lib/deploy-common.sh"
 
-# Lock unico del VPS (lo comparten los CD de backend y web). Si lo llama deploy-backend.sh, ya lo tiene.
+# Si lo llama deploy-backend.sh (DEPLOY_LOCK_HELD=1), ya tiene el lock y ya reviso las recuperaciones
+# pendientes: la marca de .recovery/ que ve es la de SU propio despliegue en curso, no un bloqueo.
+CALLED_FROM_BACKEND_DEPLOY=${DEPLOY_LOCK_HELD:-}
+# Lock unico del VPS (lo comparten los CD de backend y web).
 acquire_deploy_lock
-require_no_pending_recovery
+if [ "$CALLED_FROM_BACKEND_DEPLOY" != 1 ]; then
+    require_no_pending_recovery
+fi
 
 if [ -n "${DEPLOY_SHA:-}" ] && ! deploy_is_current; then
     exit 0
@@ -57,8 +63,9 @@ restore_on_failure() {
 }
 trap restore_on_failure EXIT
 
-# Imagen que corre ahora ("<id> <repo>"). Vacio en el primer despliegue.
-PREV=$(running_image "$SERVICE")
+# Estado previo del contenedor (running | stopped | absent) y su imagen ("<id> <repo>", vacio si no existia).
+PREV_STATE=$(container_state "$SERVICE")
+PREV=$(container_image "$SERVICE")
 PREV_IMAGE_ID=${PREV%% *}
 PREV_REPO=${PREV#* }
 
@@ -84,16 +91,18 @@ fi
 echo "::error::$SERVICE no quedo sano con $TAG en ${WAIT_TIMEOUT}s. Ultimos logs:" >&2
 compose logs --no-color --tail 80 "$SERVICE" >&2 || true
 
-# 3. Rollback. Sin version anterior corriendo no hay a donde volver: solo se restaura la etiqueta previa.
-if [ -z "$PREV_IMAGE_ID" ]; then
+# 3. Rollback al estado previo. Primer despliegue (no existia el contenedor): se elimina el contenedor nuevo
+# y se restaura la etiqueta previa, sin dejar nada residual.
+if [ "$PREV_STATE" = absent ] || [ -z "$PREV_IMAGE_ID" ]; then
     write_env_tag "$TAG_VAR" "$PREV_TAG"
     TAG_WRITTEN=false
-    echo "::error::No habia una version anterior corriendo; $TAG_VAR restaurada a '${PREV_TAG:-<sin definir>}'." >&2
+    compose rm -sf "$SERVICE" || true
+    echo "::error::No habia una version anterior; se elimino el contenedor nuevo y $TAG_VAR quedo en '${PREV_TAG:-<sin definir>}'." >&2
     exit 1
 fi
 
 echo "Volviendo a la imagen anterior ($PREV_IMAGE_ID)..." >&2
-if restore_image "$SERVICE" "$TAG_VAR" "$PREV_TAG" "$PREV_IMAGE_ID" "$PREV_REPO"; then
+if restore_image "$SERVICE" "$TAG_VAR" "$PREV_TAG" "$PREV_IMAGE_ID" "$PREV_REPO" "$PREV_STATE"; then
     TAG_WRITTEN=false
     echo "::error::Despliegue fallido: $SERVICE quedo en la version anterior ($TAG_VAR=$(env_tag "$TAG_VAR"))." >&2
     exit 1
