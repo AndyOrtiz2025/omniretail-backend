@@ -685,6 +685,48 @@ class InventoryStockMixedProductsTest {
     }
 
     @Test
+    void kitAvailabilityUsesOnlyTheOperationalComponentBalance() {
+        Fixture f = fixture();
+        jdbc.update("""
+                INSERT INTO business_capabilities_configs
+                    (tenant_id, preset, supports_inventory, supports_multiple_locations, track_stock)
+                VALUES (?, 'custom', true, true, true)
+                """, f.tenant());
+        UUID componentProduct = physical(f, "Componente ubicado", null, null, null);
+        UUID assigned = UUID.randomUUID();
+        UUID other = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO locations (id, tenant_id, branch_id, code, name, type, status)
+                VALUES (?, ?, ?, ?, 'Operativa', 'warehouse', 'active'),
+                       (?, ?, ?, ?, 'No operativa', 'warehouse', 'active')
+                """,
+                assigned, f.tenant(), f.branch(), "L-" + assigned.toString().substring(0, 8),
+                other, f.tenant(), f.branch(), "L-" + other.toString().substring(0, 8));
+        jdbc.update("""
+                INSERT INTO product_inventory_settings
+                    (tenant_id, branch_id, product_id, default_location_id)
+                VALUES (?, ?, ?, ?)
+                """, f.tenant(), f.branch(), componentProduct, assigned);
+        jdbc.update("""
+                INSERT INTO inventory_balances
+                    (tenant_id, branch_id, product_id, location_id, quantity, reserved_quantity)
+                VALUES (?, ?, ?, ?, 6, 0), (?, ?, ?, ?, 100, 0)
+                """,
+                f.tenant(), f.branch(), componentProduct, assigned,
+                f.tenant(), f.branch(), componentProduct, other);
+        UUID kit = kit(f, "Kit ubicado", List.of(component(componentProduct, "2")));
+
+        InventoryKitAvailabilityResponse response = service.kitAvailability(kit, f.branch());
+
+        assertThat(response.availableKits()).isEqualTo(3);
+        assertThat(response.components()).singleElement().satisfies(item ->
+                assertThat(item.availableQuantity()).isEqualByComparingTo("6.000"));
+        assertThat(byId(list(f, null, null, null, PageRequest.of(0, 50)).items(), kit)
+                        .availableQuantity())
+                .isEqualByComparingTo("3.000");
+    }
+
+    @Test
     void tiedComponentsAreAllLimiting() {
         Fixture f = fixture();
         UUID a = physical(f, "A", "10", "0", null); // 10 / 2 = 5

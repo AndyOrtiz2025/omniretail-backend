@@ -81,6 +81,11 @@ class InventoryStockQueryServiceTest {
     @Test
     void searchAndCategoryFiltersRunBeforePaginationAndAffectSummary() {
         Fixture fixture = fixture();
+        jdbc.update("""
+                INSERT INTO business_capabilities_configs
+                    (tenant_id, preset, supports_inventory, supports_multiple_locations, track_stock)
+                VALUES (?, 'custom', false, false, false)
+                """, fixture.tenant());
         UUID location = addLocation(fixture, "Bodega Norte");
         UUID expected = addProduct(
                 fixture, fixture.category(), "Taladro industrial", "8", "1", "10", location);
@@ -92,6 +97,7 @@ class InventoryStockQueryServiceTest {
         assertThat(byLocation.items()).extracting(item -> item.productId()).containsExactly(expected);
         assertThat(byLocation.items().getFirst().categoryName()).isEqualTo("Categoria stock");
         assertThat(byLocation.items().getFirst().defaultLocationName()).isEqualTo("Bodega Norte");
+        assertThat(byLocation.items().getFirst().quantity()).isEqualByComparingTo("8.000");
         assertThat(byLocation.totalItems()).isEqualTo(1);
         assertThat(byLocation.summary().activeProducts()).isEqualTo(1);
 
@@ -184,6 +190,63 @@ class InventoryStockQueryServiceTest {
                         exception -> assertThat(exception.getCode()).isEqualTo("BRANCH_ACCESS_DENIED"));
     }
 
+    @Test
+    void commercialStockUsesOnlyTheActiveOperationalLocation() {
+        Fixture fixture = fixture();
+        jdbc.update("""
+                INSERT INTO business_capabilities_configs
+                    (tenant_id, preset, supports_inventory, supports_multiple_locations, track_stock)
+                VALUES (?, 'custom', true, true, true)
+                """, fixture.tenant());
+        UUID assigned = addLocation(fixture, "Operativa");
+        UUID other = addLocation(fixture, "No operativa");
+        UUID product = addProduct(
+                fixture, fixture.category(), "Producto ubicado", null, null, "10", assigned);
+        addLocatedBalance(fixture, product, assigned, "6", "1");
+        addLocatedBalance(fixture, product, other, "100", "0");
+
+        var response = service.list(
+                fixture.branch(), "producto ubicado", null, null, PageRequest.of(0, 20));
+
+        assertThat(response.items()).singleElement().satisfies(item -> {
+            assertThat(item.quantity()).isEqualByComparingTo("6.000");
+            assertThat(item.reservedQuantity()).isEqualByComparingTo("1.000");
+            assertThat(item.availableQuantity()).isEqualByComparingTo("5.000");
+            assertThat(item.status()).isEqualTo(InventoryAlertStatus.critical);
+        });
+
+        UUID otherBranch = UUID.randomUUID();
+        UUID otherAssigned = UUID.randomUUID();
+        UUID otherStray = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO branches (id, tenant_id, code, name, type, status)
+                VALUES (?, ?, ?, 'Secundaria', 'store', 'active')
+                """, otherBranch, fixture.tenant(), "B-" + otherBranch.toString().substring(0, 8));
+        jdbc.update("""
+                INSERT INTO locations (id, tenant_id, branch_id, code, name, type, status)
+                VALUES (?, ?, ?, ?, 'Operativa secundaria', 'warehouse', 'active'),
+                       (?, ?, ?, ?, 'No operativa secundaria', 'warehouse', 'active')
+                """,
+                otherAssigned, fixture.tenant(), otherBranch, "L-" + otherAssigned.toString().substring(0, 8),
+                otherStray, fixture.tenant(), otherBranch, "L-" + otherStray.toString().substring(0, 8));
+        jdbc.update("""
+                INSERT INTO product_inventory_settings
+                    (tenant_id, branch_id, product_id, default_location_id)
+                VALUES (?, ?, ?, ?)
+                """, fixture.tenant(), otherBranch, product, otherAssigned);
+        jdbc.update("""
+                INSERT INTO inventory_balances
+                    (tenant_id, branch_id, product_id, location_id, quantity, reserved_quantity)
+                VALUES (?, ?, ?, ?, 4, 0), (?, ?, ?, ?, 50, 0)
+                """,
+                fixture.tenant(), otherBranch, product, otherAssigned,
+                fixture.tenant(), otherBranch, product, otherStray);
+
+        assertThat(service.listBranches(product, fixture.branch()))
+                .singleElement()
+                .satisfies(branch -> assertThat(branch.availableQuantity()).isEqualByComparingTo("4.000"));
+    }
+
     private Fixture fixture() {
         UUID tenant = UUID.randomUUID();
         UUID branch = UUID.randomUUID();
@@ -270,6 +333,15 @@ class InventoryStockQueryServiceTest {
         jdbc.update(
                 "UPDATE products SET tracking_lot = true, tracking_expiration = true WHERE id = ?",
                 productId);
+    }
+
+    private void addLocatedBalance(
+            Fixture fixture, UUID productId, UUID locationId, String quantity, String reserved) {
+        jdbc.update("""
+                INSERT INTO inventory_balances
+                    (tenant_id, branch_id, product_id, location_id, quantity, reserved_quantity)
+                VALUES (?, ?, ?, ?, ?::numeric, ?::numeric)
+                """, fixture.tenant(), fixture.branch(), productId, locationId, quantity, reserved);
     }
 
     private void addLotBalance(

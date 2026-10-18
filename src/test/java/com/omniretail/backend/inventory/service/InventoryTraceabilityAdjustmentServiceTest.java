@@ -177,6 +177,24 @@ class InventoryTraceabilityAdjustmentServiceTest {
     }
 
     @Test
+    void negativeAdjustmentRejectsAnActiveLocationDifferentFromTheOperationalAssignment() {
+        Fixture fixture = createFixture(false, false, false);
+        authenticate(fixture);
+        enableInventoryAt(fixture, fixture.locationId());
+        insertBalance(fixture, fixture.locationId(), "5.000", "0.000");
+        insertBalance(fixture, fixture.secondLocationId(), "7.000", "0.000");
+
+        assertCode(InventoryOperationalLocationService.LOCATION_MISMATCH_CODE,
+                () -> adjustmentService.adjust(request(
+                        fixture, fixture.secondLocationId(), InventoryAdjustmentType.out, "1.000",
+                        null, null, null, null)));
+
+        assertThat(balance(fixture, fixture.locationId())).isEqualByComparingTo("5.000");
+        assertThat(balance(fixture, fixture.secondLocationId())).isEqualByComparingTo("7.000");
+        assertThat(count("inventory_movements", fixture.tenantId(), fixture.productId())).isZero();
+    }
+
+    @Test
     void disabledTrackingPayloadAndLocationFromAnotherBranchAreRejected() {
         Fixture fixture = createFixture(false, false, false);
         authenticate(fixture);
@@ -553,6 +571,19 @@ class InventoryTraceabilityAdjustmentServiceTest {
         jdbcTemplate.update(
                 "INSERT INTO locations (id, tenant_id, branch_id, code, name, type, status) VALUES (?, ?, ?, ?, ?, 'warehouse', 'active')",
                 locationId, tenantId, branchId, code, "Ubicacion " + code);
+    }
+
+    private void enableInventoryAt(Fixture fixture, UUID locationId) {
+        jdbcTemplate.update("""
+                INSERT INTO business_capabilities_configs
+                    (tenant_id, preset, supports_inventory, supports_multiple_locations, track_stock)
+                VALUES (?, 'custom', true, true, true)
+                """, fixture.tenantId());
+        jdbcTemplate.update("""
+                INSERT INTO product_inventory_settings
+                    (tenant_id, branch_id, product_id, default_location_id)
+                VALUES (?, ?, ?, ?)
+                """, fixture.tenantId(), fixture.branchId(), fixture.productId(), locationId);
     }
 
     private InventoryAdjustmentRequest request(

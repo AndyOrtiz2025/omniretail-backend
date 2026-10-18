@@ -280,6 +280,9 @@ public class InventoryTraceabilityMutationService {
         if (command.locationId() == null) {
             throw invalidTracking("La ubicacion de salida del inventario trazable es requerida.");
         }
+        // Debe ocurrir antes de cualquier bloqueo de balance, lote o serie.
+        operationalLocations.resolveForOrdinaryOutbound(
+                command.tenantId(), command.branchId(), product.getId(), command.locationId());
         requireLocation(command.tenantId(), command.branchId(), command.locationId());
         List<NormalizedSelection> selections = normalizeOperationalSelections(
                 command.baseQuantity(), product, command.selections());
