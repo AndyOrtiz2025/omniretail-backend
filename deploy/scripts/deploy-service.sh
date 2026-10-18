@@ -64,6 +64,8 @@ write_tag() {
 
 PREV_TAG=$(current_tag)
 TAG_WRITTEN=false
+# Se invoca desde `trap ... EXIT`; shellcheck no lo detecta.
+# shellcheck disable=SC2317,SC2329
 restore_on_failure() {
     status=$?
     if [ "$TAG_WRITTEN" = true ]; then
