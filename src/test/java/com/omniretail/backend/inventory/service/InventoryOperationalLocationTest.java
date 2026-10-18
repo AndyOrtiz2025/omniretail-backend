@@ -4,7 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.doAnswer;
 
 import com.omniretail.backend.TestcontainersConfiguration;
 import com.omniretail.backend.administration.dto.ProductTrackingDto;
@@ -15,8 +17,10 @@ import com.omniretail.backend.administration.service.BranchAccessResolver;
 import com.omniretail.backend.administration.service.BusinessConfigService;
 import com.omniretail.backend.administration.service.BranchAccessResolver.BranchAccess;
 import com.omniretail.backend.catalog.dto.LocationUpdateRequest;
+import com.omniretail.backend.catalog.entity.Location;
 import com.omniretail.backend.catalog.entity.LocationStatus;
 import com.omniretail.backend.catalog.entity.Product;
+import com.omniretail.backend.catalog.repository.LocationRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.service.LocationService;
 import com.omniretail.backend.ecommerce.entity.InventoryReservation;
@@ -25,6 +29,7 @@ import com.omniretail.backend.ecommerce.repository.InventoryReservationRepositor
 import com.omniretail.backend.inventory.dto.AddStockCommand;
 import com.omniretail.backend.inventory.dto.DeductStockCommand;
 import com.omniretail.backend.inventory.dto.InventoryInboundCommand;
+import com.omniretail.backend.inventory.dto.InventoryOutboundCommand;
 import com.omniretail.backend.inventory.dto.ReserveInventoryCommand;
 import com.omniretail.backend.inventory.dto.UpdateInventorySettingsRequest;
 import com.omniretail.backend.inventory.entity.InventoryMovement;
@@ -61,6 +66,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -72,13 +78,14 @@ class InventoryOperationalLocationTest {
 
     @Autowired private InventoryStockService stockService;
     @Autowired private InventoryReservationLifecycleService lifecycleService;
-    @Autowired private InventoryOperationalLocationService operationalLocations;
+    @MockitoSpyBean private InventoryOperationalLocationService operationalLocations;
     @Autowired private InventoryTraceabilityMutationService traceabilityMutation;
     @Autowired private InventorySettingsService settingsService;
     @Autowired private LocationService locationService;
     @Autowired private BusinessConfigService businessConfigService;
     @Autowired private InventoryReservationRepository reservations;
     @Autowired private ProductRepository productRepository;
+    @Autowired private LocationRepository locationRepository;
     @Autowired private PlatformTransactionManager transactionManager;
     @Autowired private JdbcTemplate jdbcTemplate;
     @MockitoBean private CurrentUser currentUser;
@@ -111,6 +118,18 @@ class InventoryOperationalLocationTest {
 
         assertBalance(balanceId, "10.000", "2.000");
         assertThat(reservation.getAllocations()).contains("\"locationId\":null");
+    }
+
+    @Test
+    void reserveRejectsANewTrackedProductWithoutAssignmentOrLegacyBalance() {
+        Fixture fixture = createFixture(true);
+
+        assertThatThrownBy(() -> lifecycleService.reserve(reserveCommand(fixture, "1.000")))
+                .isInstanceOf(BusinessException.class)
+                .extracting(exception -> ((BusinessException) exception).getCode())
+                .isEqualTo(InventoryOperationalLocationService.LOCATION_NOT_ASSIGNED_CODE);
+
+        assertThat(countBalances(fixture)).isZero();
     }
 
     @Test
@@ -347,6 +366,46 @@ class InventoryOperationalLocationTest {
                 .extracting(exception -> ((BusinessException) exception).getCode())
                 .isEqualTo(InventoryOperationalLocationService.LOCATION_MISMATCH_CODE);
         assertThat(countBalances(fixture)).isOne();
+    }
+
+    @Test
+    void ordinaryTraceableConsumptionRejectsAnotherActiveLocationWithoutPartialWrites() {
+        Fixture fixture = createFixture(true);
+        UUID assigned = createLocation(fixture, fixture.branchId(), "active");
+        UUID other = createLocation(fixture, fixture.branchId(), "active");
+        assign(fixture, assigned);
+        jdbcTemplate.update(
+                "UPDATE products SET tracking_lot = true WHERE tenant_id = ? AND id = ?",
+                fixture.tenantId(), fixture.productId());
+        UUID assignedBalance = createBalance(fixture, assigned, "5.000", "0.000");
+        UUID otherBalance = createBalance(fixture, other, "7.000", "0.000");
+        Product product = productRepository
+                .findByTenantIdAndId(fixture.tenantId(), fixture.productId())
+                .orElseThrow();
+
+        assertThatThrownBy(() -> traceabilityMutation.consume(new InventoryOutboundCommand(
+                        fixture.tenantId(),
+                        fixture.branchId(),
+                        product,
+                        other,
+                        BigDecimal.ONE,
+                        List.of(),
+                        "Venta POS trazable",
+                        "POS_SALE",
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        null)))
+                .isInstanceOf(BusinessException.class)
+                .extracting(exception -> ((BusinessException) exception).getCode())
+                .isEqualTo(InventoryOperationalLocationService.LOCATION_MISMATCH_CODE);
+
+        assertBalance(assignedBalance, "5.000", "0.000");
+        assertBalance(otherBalance, "7.000", "0.000");
+        assertThat(jdbcTemplate.queryForObject(
+                        "SELECT count(*) FROM inventory_movements WHERE tenant_id = ?",
+                        Long.class,
+                        fixture.tenantId()))
+                .isZero();
     }
 
     @Test
@@ -1126,19 +1185,20 @@ class InventoryOperationalLocationTest {
     }
 
     @Test
-    void settingsUpdateWithoutLocationKeepsTheFullReplaceMeaningOnAnEmptyAssignment() {
+    void settingsUpdateWithoutLocationCannotClearAnEmptyOperationalAssignment() {
         Fixture fixture = createFixture(true);
         UUID shelf = createLocation(fixture, fixture.branchId(), "active");
         assign(fixture, shelf);
         loginAs(fixture);
 
-        settingsService.upsert(
-                fixture.branchId(),
-                fixture.productId(),
-                new UpdateInventorySettingsRequest(new BigDecimal("3"), null, null));
+        assertFails(
+                () -> settingsService.upsert(
+                        fixture.branchId(),
+                        fixture.productId(),
+                        new UpdateInventorySettingsRequest(new BigDecimal("3"), null, null)),
+                InventoryOperationalLocationService.LOCATION_REQUIRED_CODE);
 
-        // El contrato no distingue "omitido" de null: sigue limpiando la ubicacion, como antes.
-        assertThat(assignedLocation(fixture)).isNull();
+        assertThat(assignedLocation(fixture)).isEqualTo(shelf);
     }
 
     @Test
@@ -1154,7 +1214,7 @@ class InventoryOperationalLocationTest {
                         fixture.branchId(),
                         fixture.productId(),
                         new UpdateInventorySettingsRequest(new BigDecimal("3"), null, null)),
-                InventoryOperationalLocationService.LOCATION_CHANGE_BLOCKED_CODE);
+                InventoryOperationalLocationService.LOCATION_REQUIRED_CODE);
 
         assertThat(assignedLocation(fixture)).isEqualTo(shelf);
     }
@@ -1191,6 +1251,153 @@ class InventoryOperationalLocationTest {
         assertThat(jdbcTemplate.queryForObject(
                         "SELECT status FROM locations WHERE id = ?", String.class, shelf))
                 .isEqualTo("inactive");
+    }
+
+    @Test
+    void assigningALocationAndDeactivatingItCannotCommitAnInactiveAssignment() throws Exception {
+        Fixture fixture = createFixture(true);
+        UUID shelf = createLocation(fixture, fixture.branchId(), "active");
+        loginAs(fixture);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch assignmentWritten = new CountDownLatch(1);
+        CountDownLatch releaseAssignment = new CountDownLatch(1);
+        TransactionTemplate template = new TransactionTemplate(transactionManager);
+
+        try {
+            Future<?> assignment = executor.submit(() -> template.executeWithoutResult(status -> {
+                settingsService.upsert(
+                        fixture.branchId(),
+                        fixture.productId(),
+                        new UpdateInventorySettingsRequest(BigDecimal.ZERO, null, shelf));
+                assignmentWritten.countDown();
+                awaitLatch(releaseAssignment);
+            }));
+            assertThat(assignmentWritten.await(10, TimeUnit.SECONDS)).isTrue();
+
+            Future<String> deactivation = executor.submit(() -> {
+                try {
+                    template.executeWithoutResult(status -> locationService.update(
+                            shelf, new LocationUpdateRequest("Estante", LocationStatus.inactive)));
+                    return null;
+                } catch (BusinessException exception) {
+                    return exception.getCode();
+                }
+            });
+
+            awaitBlockedSessions(1);
+            assertThat(deactivation.isDone()).isFalse();
+            releaseAssignment.countDown();
+
+            assignment.get(20, TimeUnit.SECONDS);
+            assertThat(deactivation.get(20, TimeUnit.SECONDS)).isEqualTo("LOCATION_ASSIGNED_TO_PRODUCTS");
+            assertThat(assignedLocation(fixture)).isEqualTo(shelf);
+            assertThat(jdbcTemplate.queryForObject(
+                            "SELECT status FROM locations WHERE id = ?", String.class, shelf))
+                    .isEqualTo("active");
+        } finally {
+            releaseAssignment.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void deactivatingALocationAfterInitialValidationCannotCommitAnInactiveAssignment() throws Exception {
+        Fixture fixture = createFixture(true);
+        UUID shelf = createLocation(fixture, fixture.branchId(), "active");
+        loginAs(fixture);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        CountDownLatch initialValidationCompleted = new CountDownLatch(1);
+        CountDownLatch releaseAssignment = new CountDownLatch(1);
+
+        doAnswer(invocation -> {
+                    initialValidationCompleted.countDown();
+                    awaitLatch(releaseAssignment);
+                    return invocation.callRealMethod();
+                })
+                .when(operationalLocations)
+                .assertAssignmentChangeAllowed(
+                        eq(fixture.tenantId()), eq(fixture.branchId()), eq(fixture.productId()), eq(shelf));
+
+        try {
+            Future<String> assignment = executor.submit(() -> {
+                try {
+                    settingsService.upsert(
+                            fixture.branchId(),
+                            fixture.productId(),
+                            new UpdateInventorySettingsRequest(BigDecimal.ZERO, null, shelf));
+                    return null;
+                } catch (BusinessException exception) {
+                    return exception.getCode();
+                }
+            });
+            assertThat(initialValidationCompleted.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(jdbcTemplate.queryForObject(
+                            "SELECT status FROM locations WHERE id = ?", String.class, shelf))
+                    .isEqualTo("active");
+
+            locationService.update(shelf, new LocationUpdateRequest("Estante", LocationStatus.inactive));
+            assertThat(jdbcTemplate.queryForObject(
+                            "SELECT status FROM locations WHERE id = ?", String.class, shelf))
+                    .isEqualTo("inactive");
+            releaseAssignment.countDown();
+
+            assertThat(assignment.get(20, TimeUnit.SECONDS))
+                    .isEqualTo(InventoryOperationalLocationService.ASSIGNED_LOCATION_INACTIVE_CODE);
+            assertThat(jdbcTemplate.queryForObject(
+                            "SELECT COUNT(*) FROM product_inventory_settings "
+                                    + "WHERE tenant_id = ? AND branch_id = ? AND product_id = ?",
+                            Integer.class, fixture.tenantId(), fixture.branchId(), fixture.productId()))
+                    .isZero();
+            assertThat(countBalances(fixture)).isZero();
+            assertThat(jdbcTemplate.queryForObject(
+                            "SELECT COUNT(*) FROM inventory_movements "
+                                    + "WHERE tenant_id = ? AND branch_id = ? AND product_id = ?",
+                            Integer.class, fixture.tenantId(), fixture.branchId(), fixture.productId()))
+                    .isZero();
+        } finally {
+            releaseAssignment.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void pessimisticReadDoesNotRefreshAnAlreadyManagedLocation() throws Exception {
+        Fixture fixture = createFixture(true);
+        UUID shelf = createLocation(fixture, fixture.branchId(), "active");
+        loginAs(fixture);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        CountDownLatch initialEntityLoaded = new CountDownLatch(1);
+        CountDownLatch releaseLockedRead = new CountDownLatch(1);
+        TransactionTemplate template = new TransactionTemplate(transactionManager);
+
+        try {
+            Future<List<LocationStatus>> observedStatuses = executor.submit(() -> template.execute(status -> {
+                LocationStatus beforeLock = locationRepository
+                        .findByTenantIdAndId(fixture.tenantId(), shelf)
+                        .orElseThrow()
+                        .getStatus();
+                initialEntityLoaded.countDown();
+                awaitLatch(releaseLockedRead);
+                LocationStatus afterLock = locationRepository
+                        .findForShareByTenantIdAndId(fixture.tenantId(), shelf)
+                        .orElseThrow()
+                        .getStatus();
+                return List.of(beforeLock, afterLock);
+            }));
+            assertThat(initialEntityLoaded.await(10, TimeUnit.SECONDS)).isTrue();
+
+            locationService.update(shelf, new LocationUpdateRequest("Estante", LocationStatus.inactive));
+            releaseLockedRead.countDown();
+
+            assertThat(observedStatuses.get(20, TimeUnit.SECONDS))
+                    .containsExactly(LocationStatus.active, LocationStatus.active);
+            assertThat(jdbcTemplate.queryForObject(
+                            "SELECT status FROM locations WHERE id = ?", String.class, shelf))
+                    .isEqualTo("inactive");
+        } finally {
+            releaseLockedRead.countDown();
+            executor.shutdownNow();
+        }
     }
 
     @Test
@@ -1700,7 +1907,7 @@ class InventoryOperationalLocationTest {
                 fixture.tenantId(), otherBranch, List.of());
     }
 
-    // ------------------------- configuracion: apagar supportsMultipleLocations (BusinessConfigService)
+    // ------------------------- configuracion: apagar supportsInventory y su alias (BusinessConfigService)
 
     @Test
     void disablingLocationsIsRejectedWhileAnAssignedLocationHoldsStock() {
@@ -1870,20 +2077,20 @@ class InventoryOperationalLocationTest {
 
     // --------------------------------------------------------------------- helpers
 
-    private SaveBusinessConfigRequest configRequest(boolean multipleLocations) {
+    private SaveBusinessConfigRequest configRequest(boolean inventory) {
         return new SaveBusinessConfigRequest(
                 BusinessPreset.custom,
-                true,
+                inventory,
                 false,
                 false,
                 false,
-                multipleLocations,
+                inventory,
                 true,
                 false,
                 false,
                 false,
                 List.of("cash"),
-                new ProductTrackingDto(true, false, false, false));
+                new ProductTrackingDto(inventory, false, false, false));
     }
 
     private boolean locationsFlag(Fixture fixture) {
@@ -2172,8 +2379,9 @@ class InventoryOperationalLocationTest {
                 tenantId, "Tenant " + suffix, "tenant-" + suffix);
         jdbcTemplate.update(
                 "INSERT INTO business_capabilities_configs "
-                        + "(id, tenant_id, preset, supports_multiple_locations) VALUES (?, ?, 'custom', ?)",
-                UUID.randomUUID(), tenantId, locationsEnabled);
+                        + "(id, tenant_id, preset, supports_inventory, supports_multiple_locations) "
+                        + "VALUES (?, ?, 'custom', ?, ?)",
+                UUID.randomUUID(), tenantId, locationsEnabled, locationsEnabled);
         jdbcTemplate.update(
                 "INSERT INTO branches (id, tenant_id, code, name, type, status) "
                         + "VALUES (?, ?, ?, ?, 'main', 'active')",

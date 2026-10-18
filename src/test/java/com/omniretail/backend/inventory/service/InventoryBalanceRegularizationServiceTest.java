@@ -902,8 +902,9 @@ class InventoryBalanceRegularizationServiceTest {
                 tenantId, "Tenant " + suffix, "tenant-" + suffix);
         jdbc.update(
                 "INSERT INTO business_capabilities_configs "
-                        + "(id, tenant_id, preset, supports_multiple_locations) VALUES (?, ?, 'custom', ?)",
-                UUID.randomUUID(), tenantId, locationsEnabled);
+                        + "(id, tenant_id, preset, supports_inventory, supports_multiple_locations) "
+                        + "VALUES (?, ?, 'custom', ?, ?)",
+                UUID.randomUUID(), tenantId, locationsEnabled, locationsEnabled);
         jdbc.update(
                 "INSERT INTO branches (id, tenant_id, code, name, type, status) "
                         + "VALUES (?, ?, ?, ?, 'main', 'active')",

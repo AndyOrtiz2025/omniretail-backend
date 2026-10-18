@@ -130,10 +130,25 @@ public interface InventoryBalanceRepository extends JpaRepository<InventoryBalan
                                CAST(0 AS numeric)
                            ) AS "availableQuantity"
                     FROM branches branch
+                    LEFT JOIN business_capabilities_configs config
+                      ON config.tenant_id = branch.tenant_id
+                    LEFT JOIN product_inventory_settings settings
+                      ON settings.tenant_id = branch.tenant_id
+                     AND settings.branch_id = branch.id
+                     AND settings.product_id = :productId
+                    LEFT JOIN locations location
+                      ON location.tenant_id = settings.tenant_id
+                     AND location.branch_id = settings.branch_id
+                     AND location.id = settings.default_location_id
                     LEFT JOIN inventory_balances balance
                       ON balance.tenant_id = branch.tenant_id
                      AND balance.branch_id = branch.id
                      AND balance.product_id = :productId
+                     AND balance.location_id IS NOT DISTINCT FROM
+                         CASE WHEN COALESCE(config.supports_inventory, FALSE)
+                              THEN settings.default_location_id ELSE NULL END
+                     AND (COALESCE(config.supports_inventory, FALSE) = FALSE
+                          OR settings.default_location_id IS NULL OR location.status = 'active')
                     WHERE branch.tenant_id = :tenantId
                       AND branch.id <> :excludedBranchId
                     GROUP BY branch.id, branch.name
@@ -154,10 +169,25 @@ public interface InventoryBalanceRepository extends JpaRepository<InventoryBalan
                                CAST(0 AS numeric)
                            ) AS "availableQuantity"
                     FROM branches branch
+                    LEFT JOIN business_capabilities_configs config
+                      ON config.tenant_id = branch.tenant_id
+                    LEFT JOIN product_inventory_settings settings
+                      ON settings.tenant_id = branch.tenant_id
+                     AND settings.branch_id = branch.id
+                     AND settings.product_id = :productId
+                    LEFT JOIN locations location
+                      ON location.tenant_id = settings.tenant_id
+                     AND location.branch_id = settings.branch_id
+                     AND location.id = settings.default_location_id
                     LEFT JOIN inventory_balances balance
                       ON balance.tenant_id = branch.tenant_id
                      AND balance.branch_id = branch.id
                      AND balance.product_id = :productId
+                     AND balance.location_id IS NOT DISTINCT FROM
+                         CASE WHEN COALESCE(config.supports_inventory, FALSE)
+                              THEN settings.default_location_id ELSE NULL END
+                     AND (COALESCE(config.supports_inventory, FALSE) = FALSE
+                          OR settings.default_location_id IS NULL OR location.status = 'active')
                     WHERE branch.tenant_id = :tenantId
                       AND branch.id IN (:branchIds)
                       AND branch.id <> :excludedBranchId
