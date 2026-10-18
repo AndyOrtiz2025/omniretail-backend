@@ -24,8 +24,7 @@ import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.ecommerce.entity.Order;
 import com.omniretail.backend.ecommerce.entity.OrderStatus;
 import com.omniretail.backend.ecommerce.repository.OrderRepository;
-import com.omniretail.backend.inventory.entity.InventoryBalance;
-import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
+import com.omniretail.backend.inventory.service.InventoryOperationalLocationService;
 import com.omniretail.backend.pos.entity.Sale;
 import com.omniretail.backend.pos.entity.SaleItem;
 import com.omniretail.backend.pos.entity.SaleStatus;
@@ -93,7 +92,7 @@ public class DashboardAdminService {
     private final SaleRepository saleRepository;
     private final SaleItemRepository saleItemRepository;
     private final OrderRepository orderRepository;
-    private final InventoryBalanceRepository inventoryBalanceRepository;
+    private final InventoryOperationalLocationService operationalLocationService;
     private final ProductRepository productRepository;
     private final ReceiptIncidentRepository receiptIncidentRepository;
 
@@ -211,20 +210,17 @@ public class DashboardAdminService {
 
     /**
      * Misma regla que GetInventoryAlertsService.ts: por cada sucursal activa y cada producto publicado
-     * que controla stock, el disponible es la suma de max(cantidad - reservado, 0) de sus balances.
+     * que controla stock, el disponible corresponde al balance operacional realmente reservable.
      * Disponible 0 = sin stock, aunque el producto no tenga ningún balance en esa sucursal. lowStock es
      * 0 porque el backend todavía no guarda stock mínimo por producto y sucursal.
      */
     private List<StockAlertsByBranchDto> stockAlertsByBranch(UUID tenantId, List<Branch> branches) {
         List<Product> stockProducts =
                 productRepository.findByTenantIdAndStatusAndTrackingStockTrue(tenantId, ProductStatus.published);
-        Map<UUID, Map<UUID, BigDecimal>> availableByBranchAndProduct = new HashMap<>();
-        for (InventoryBalance balance : inventoryBalanceRepository.findByTenantId(tenantId)) {
-            BigDecimal available = balance.getQuantity().subtract(balance.getReservedQuantity()).max(BigDecimal.ZERO);
-            availableByBranchAndProduct
-                    .computeIfAbsent(balance.getBranchId(), branchId -> new HashMap<>())
-                    .merge(balance.getProductId(), available, BigDecimal::add);
-        }
+        Map<UUID, Map<UUID, BigDecimal>> availableByBranchAndProduct = branches.stream()
+                .collect(Collectors.toMap(
+                        Branch::getId,
+                        branch -> operationalLocationService.availableByProduct(tenantId, branch.getId())));
 
         return branches.stream()
                 .map(branch -> {

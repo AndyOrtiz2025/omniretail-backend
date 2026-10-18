@@ -42,6 +42,7 @@ public class BusinessCapabilitiesConfig extends TenantScopedEntity {
     @Column(name = "supports_serials", nullable = false)
     private boolean supportsSerials;
 
+    /** Alias persistido de compatibilidad; debe ser igual a {@link #supportsInventory}. */
     @Column(name = "supports_multiple_locations", nullable = false)
     private boolean supportsMultipleLocations;
 

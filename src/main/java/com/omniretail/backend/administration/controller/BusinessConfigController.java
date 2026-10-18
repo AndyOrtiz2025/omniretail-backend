@@ -47,6 +47,7 @@ public class BusinessConfigController {
                     Actualiza la configuración operativa del negocio:
                     * `preset`: Giro comercial (`hardware_store`, `pharmacy`, `grocery`, `services`, `custom`).
                     * Capacidades operativas: `supportsInventory`, `supportsLots`, `supportsExpiration`, `supportsSerials`, `supportsMultipleLocations`, `supportsUnitsAndPackaging`, `supportsProductAttributes`, `supportsKits`, `supportsServices`.
+                    * `supportsMultipleLocations` es un alias de compatibilidad: el backend lo normaliza al valor de `supportsInventory`.
                     * `allowedPosPaymentMethods`: Métodos de pago habilitados en POS (`cash`, `card`, `transfer`, `mixed`).
                     * `defaultProductTracking`: Configuración predeterminada de trazabilidad (`trackInventory`, `trackingLots`, `trackingExpiration`, `trackingSerial`).
                     

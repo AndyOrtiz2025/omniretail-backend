@@ -53,7 +53,7 @@ public class LocationService {
             Pageable pageable) {
         AuthenticatedUser actor = currentUser.require();
         UUID tenantId = actor.tenantId();
-        ensureMultipleLocationsEnabled();
+        ensureInventoryEnabled();
         BranchAccess access = branchAccessResolver.resolve(actor);
 
         Page<Location> locations;
@@ -76,7 +76,7 @@ public class LocationService {
 
     public LocationResponse getById(UUID id) {
         AuthenticatedUser actor = currentUser.require();
-        ensureMultipleLocationsEnabled();
+        ensureInventoryEnabled();
         Location location = requireLocation(actor.tenantId(), id);
         ensureBranchAccess(branchAccessResolver.resolve(actor), location.getBranchId());
         return LocationResponse.from(location);
@@ -86,7 +86,7 @@ public class LocationService {
     public LocationResponse create(LocationCreateRequest request) {
         AuthenticatedUser actor = currentUser.require();
         UUID tenantId = actor.tenantId();
-        ensureMultipleLocationsEnabled();
+        ensureInventoryEnabled();
         requireActiveBranch(tenantId, request.branchId());
         ensureBranchAccess(branchAccessResolver.resolve(actor), request.branchId());
 
@@ -116,8 +116,8 @@ public class LocationService {
     public LocationResponse update(UUID id, LocationUpdateRequest request) {
         AuthenticatedUser actor = currentUser.require();
         UUID tenantId = actor.tenantId();
-        ensureMultipleLocationsEnabled();
-        Location location = requireLocation(tenantId, id);
+        ensureInventoryEnabled();
+        Location location = requireLocationForUpdate(tenantId, id);
         ensureBranchAccess(branchAccessResolver.resolve(actor), location.getBranchId());
         if (location.getId().equals(location.getParentId())) {
             throw hierarchyInvalid();
@@ -143,8 +143,8 @@ public class LocationService {
     public void archive(UUID id) {
         AuthenticatedUser actor = currentUser.require();
         UUID tenantId = actor.tenantId();
-        ensureMultipleLocationsEnabled();
-        Location location = requireLocation(tenantId, id);
+        ensureInventoryEnabled();
+        Location location = requireLocationForUpdate(tenantId, id);
         ensureBranchAccess(branchAccessResolver.resolve(actor), location.getBranchId());
         if (location.getStatus() == LocationStatus.archived) {
             return;
@@ -154,8 +154,8 @@ public class LocationService {
         locationRepository.saveAndFlush(location);
     }
 
-    private void ensureMultipleLocationsEnabled() {
-        if (!businessConfigService.getConfig().supportsMultipleLocations()) {
+    private void ensureInventoryEnabled() {
+        if (!businessConfigService.getConfig().supportsInventory()) {
             throw BusinessException.forbidden(
                     "BUSINESS_CAPABILITY_DISABLED",
                     "La gestión de ubicaciones no está habilitada para este negocio.");
@@ -164,6 +164,14 @@ public class LocationService {
 
     private Location requireLocation(UUID tenantId, UUID id) {
         return locationRepository.findByTenantIdAndId(tenantId, id)
+                .orElseThrow(() -> new BusinessException(
+                        HttpStatus.NOT_FOUND,
+                        "LOCATION_NOT_FOUND",
+                        LOCATION_NOT_FOUND));
+    }
+
+    private Location requireLocationForUpdate(UUID tenantId, UUID id) {
+        return locationRepository.findForUpdateByTenantIdAndId(tenantId, id)
                 .orElseThrow(() -> new BusinessException(
                         HttpStatus.NOT_FOUND,
                         "LOCATION_NOT_FOUND",

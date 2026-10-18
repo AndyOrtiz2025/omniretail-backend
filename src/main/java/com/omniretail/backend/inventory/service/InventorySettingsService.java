@@ -73,10 +73,9 @@ public class InventorySettingsService {
     }
 
     /**
-     * Reemplazo completo (PUT): {@code defaultLocationId} null limpia la ubicacion asignada, igual que antes de
-     * la politica de ubicacion unica, porque el contrato no distingue "omitido" de "null". Con ubicaciones
-     * habilitadas, limpiar o cambiar la asignacion se rechaza (409) si deja saldo, reservas, lotes o series
-     * fuera de la nueva ubicacion; reenviar la misma ubicacion solo actualiza los umbrales.
+     * Reemplazo completo (PUT). Con inventario empresarial activo, {@code defaultLocationId} es obligatorio
+     * salvo para un producto heredado que ya opera sobre un balance NULL. Una asignacion existente nunca puede
+     * limpiarse; cambiarla se rechaza si deja saldo, reservas, lotes o series fuera de la nueva ubicacion.
      */
     public ProductInventorySettingsResponse upsert(
             UUID branchId, UUID productId, UpdateInventorySettingsRequest request) {

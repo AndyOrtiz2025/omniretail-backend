@@ -1,0 +1,119 @@
+databaseChangeLog:
+  - changeSet:
+      id: 062-inventory-location-capability-policy
+      author: omniretail
+      comment: >-
+        Convierte supports_multiple_locations en alias persistido de supports_inventory sin mover inventario.
+        En una base nueva el default queda coherente antes de los seeds; en una existente la politica solo se
+        activa si ninguna configuracion ocultaria balances, lotes ni series.
+      preConditions:
+        - onFail: HALT
+        - onError: HALT
+        - sqlCheck:
+            expectedResult: 0
+            sql: |-
+              SELECT COUNT(*)
+              FROM inventory_balances balance
+              LEFT JOIN business_capabilities_configs config
+                ON config.tenant_id = balance.tenant_id
+              LEFT JOIN product_inventory_settings settings
+                ON settings.tenant_id = balance.tenant_id
+               AND settings.branch_id = balance.branch_id
+               AND settings.product_id = balance.product_id
+              LEFT JOIN locations location
+                ON location.tenant_id = settings.tenant_id
+               AND location.branch_id = settings.branch_id
+               AND location.id = settings.default_location_id
+              WHERE (balance.quantity > 0 OR balance.reserved_quantity > 0)
+                AND (
+                  (COALESCE(config.supports_inventory, FALSE) = FALSE AND balance.location_id IS NOT NULL)
+                  OR (
+                    config.supports_inventory = TRUE
+                    AND (
+                      balance.location_id IS DISTINCT FROM settings.default_location_id
+                      OR (settings.default_location_id IS NOT NULL AND location.status IS DISTINCT FROM 'active')
+                    )
+                  )
+                )
+        - sqlCheck:
+            expectedResult: 0
+            sql: |-
+              SELECT COUNT(*)
+              FROM inventory_lot_balances lot_balance
+              LEFT JOIN business_capabilities_configs config
+                ON config.tenant_id = lot_balance.tenant_id
+              JOIN inventory_lots lot
+                ON lot.tenant_id = lot_balance.tenant_id
+               AND lot.id = lot_balance.lot_id
+              LEFT JOIN product_inventory_settings settings
+                ON settings.tenant_id = lot_balance.tenant_id
+               AND settings.branch_id = lot_balance.branch_id
+               AND settings.product_id = lot.product_id
+              LEFT JOIN locations location
+                ON location.tenant_id = settings.tenant_id
+               AND location.branch_id = settings.branch_id
+               AND location.id = settings.default_location_id
+              WHERE (lot_balance.quantity > 0 OR lot_balance.reserved_quantity > 0)
+                AND (
+                  (COALESCE(config.supports_inventory, FALSE) = FALSE AND lot_balance.location_id IS NOT NULL)
+                  OR (
+                    config.supports_inventory = TRUE
+                    AND (
+                      lot_balance.location_id IS DISTINCT FROM settings.default_location_id
+                      OR (settings.default_location_id IS NOT NULL AND location.status IS DISTINCT FROM 'active')
+                    )
+                  )
+                )
+        - sqlCheck:
+            expectedResult: 0
+            sql: |-
+              SELECT COUNT(*)
+              FROM inventory_serials serial
+              LEFT JOIN business_capabilities_configs config
+                ON config.tenant_id = serial.tenant_id
+              LEFT JOIN product_inventory_settings settings
+                ON settings.tenant_id = serial.tenant_id
+               AND settings.branch_id = serial.branch_id
+               AND settings.product_id = serial.product_id
+              LEFT JOIN locations location
+                ON location.tenant_id = settings.tenant_id
+               AND location.branch_id = settings.branch_id
+               AND location.id = settings.default_location_id
+              WHERE serial.status IN ('AVAILABLE', 'RESERVED', 'IN_TRANSIT')
+                AND (
+                  (COALESCE(config.supports_inventory, FALSE) = FALSE AND serial.location_id IS NOT NULL)
+                  OR (
+                    config.supports_inventory = TRUE
+                    AND (
+                      serial.location_id IS DISTINCT FROM settings.default_location_id
+                      OR (settings.default_location_id IS NOT NULL AND location.status IS DISTINCT FROM 'active')
+                    )
+                  )
+                )
+      changes:
+        - sql:
+            sql: |-
+              UPDATE business_capabilities_configs
+              SET supports_multiple_locations = supports_inventory,
+                  updated_at = now()
+              WHERE supports_multiple_locations IS DISTINCT FROM supports_inventory
+        - addDefaultValue:
+            tableName: business_capabilities_configs
+            columnName: supports_multiple_locations
+            columnDataType: BOOLEAN
+            defaultValueBoolean: true
+        - sql:
+            sql: >-
+              ALTER TABLE business_capabilities_configs
+              ADD CONSTRAINT chk_business_config_inventory_locations
+              CHECK (supports_multiple_locations = supports_inventory)
+      rollback:
+        - sql:
+            sql: >-
+              ALTER TABLE business_capabilities_configs
+              DROP CONSTRAINT IF EXISTS chk_business_config_inventory_locations
+        - addDefaultValue:
+            tableName: business_capabilities_configs
+            columnName: supports_multiple_locations
+            columnDataType: BOOLEAN
+            defaultValueBoolean: false

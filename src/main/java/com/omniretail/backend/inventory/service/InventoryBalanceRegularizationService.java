@@ -447,6 +447,14 @@ public class InventoryBalanceRegularizationService {
         boolean enabled = exclusive
                 ? operationalLocations.lockAssignmentScope(tenantId, productId)
                 : operationalLocations.lockDecisionScope(tenantId, productId);
+        if (enabled) {
+            // Orden global: configuracion -> producto -> ubicacion -> balances. El SHARE evita que el destino
+            // se inactive entre la validacion y la asignacion o consolidacion.
+            locationRepository.findForShareByTenantIdAndId(tenantId, request.locationId())
+                    .filter(location -> branchId.equals(location.getBranchId()))
+                    .orElseThrow(() -> new BusinessException(
+                            HttpStatus.NOT_FOUND, LOCATION_NOT_FOUND_CODE, LOCATION_NOT_FOUND_MESSAGE));
+        }
 
         LegacyBalanceRegularizationResultResponse replay =
                 replayIfRecorded(actor, request.idempotencyKey(), requestFingerprint);
@@ -471,7 +479,7 @@ public class InventoryBalanceRegularizationService {
      * Con el producto bloqueado, vuelve a leer producto y ubicacion (las instancias gestionadas se cargaron
      * antes de esperar) y revalida elegibilidad y pertenencia: un producto que dejo de ser fisico o de
      * controlar stock, o cuya trazabilidad cambio mientras se esperaba, no se regulariza con datos previos.
-     * El estado de la ubicacion sigue sin bloqueo propio: la carrera con su inactivacion es preexistente.
+     * Cuando la politica esta activa, la ubicacion tambien permanece bloqueada en modo compartido.
      */
     private void refreshLockedScope(Scope scope, UUID branchId) {
         try {
