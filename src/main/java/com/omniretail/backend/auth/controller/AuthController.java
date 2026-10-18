@@ -58,7 +58,8 @@ public class AuthController {
                     **Público.** Inicia sesión de un empleado o de un cliente con correo y contraseña y devuelve el
                     token JWT de la sesión.
 
-                    - Empleados: sesión de 8 horas; `rememberMe` se ignora.
+                    - Empleados: sesión de 8 horas; `rememberMe` se ignora. Además el servidor la cierra tras 60 minutos
+                      sin actividad (configurable con `EMPLOYEE_IDLE_TIMEOUT_MINUTES`); cada request la renueva.
                     - Clientes: requieren el `tenantSlug` de la tienda. La sesión dura 2 horas, o 30 días con `rememberMe`.
                     - Bloqueo escalonado: el 5.º fallo en 10 minutos (contraseña o código MFA) bloquea la cuenta
                       15, 30 o 60 minutos, según los bloqueos de las últimas 24 horas.
