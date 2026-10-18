@@ -96,12 +96,31 @@ jobs:
           echo "::error title=Deploy::Falta la variable VPS_SSH_FINGERPRINT (ver deploy/README.md, paso 5)."
           exit 1
 
-      - name: Checkout
+      # Durante la CI y el build pudo entrar otro commit a main: un run viejo no debe pisar uno mas nuevo.
+      # deploy-service.sh repite esta misma comprobacion en el VPS con el lock tomado (cierra la carrera
+      # entre esta verificacion y el despliegue, y entre los CD de backend y web).
+      - name: Comprobar que el commit sigue siendo la punta de main
+        id: fresh
         if: vars.VPS_HOST != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          current=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" -H 'Accept: application/vnd.github.sha')
+          if [ "$current" = "$GITHUB_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=Deploy::$GITHUB_SHA ya no es la punta de main ($current). Se omite este despliegue obsoleto."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.fresh.outputs.current == 'true'
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Copiar archivos de despliegue al VPS
-        if: vars.VPS_HOST != ''
+        if: steps.fresh.outputs.current == 'true'
         uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
         with:
           host: ${{ vars.VPS_HOST }}
@@ -114,11 +133,13 @@ jobs:
           strip_components: 1
 
       - name: Actualizar backend en el VPS
-        if: vars.VPS_HOST != ''
+        if: steps.fresh.outputs.current == 'true'
         env:
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEPLOY_TAG: ${{ needs.image.outputs.tag }}
+          DEPLOY_REPO: ${{ github.repository }}
+          DEPLOY_SHA: ${{ github.sha }}
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ vars.VPS_HOST }}
@@ -128,21 +149,26 @@ jobs:
           fingerprint: ${{ vars.VPS_SSH_FINGERPRINT }}
           command_timeout: 15m
           # Token temporal del run (expira al terminar el job): el VPS no necesita guardar un PAT propio.
-          envs: GHCR_USER,GHCR_TOKEN,DEPLOY_TAG
+          # Tambien lo usa deploy-service.sh (solo lectura) para validar la vigencia del commit.
+          envs: GHCR_USER,GHCR_TOKEN,DEPLOY_TAG,DEPLOY_REPO,DEPLOY_SHA
           script: |
             set -e
             cd "${{ vars.VPS_APP_DIR || '/opt/omniretail' }}"
-            COMPOSE="docker compose -f docker-compose.prod.yml"
-            trap 'docker logout ghcr.io > /dev/null 2>&1 || true' EXIT
+            # Credenciales de GHCR aisladas por ejecucion: un CD concurrente (backend o web) nunca hace login
+            # o logout sobre las credenciales de otro. compose viene como plugin del sistema, no de ~/.docker.
+            DOCKER_CONFIG=$(mktemp -d)
+            export DOCKER_CONFIG
+            trap 'rm -rf "$DOCKER_CONFIG"' EXIT
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+            compose() { docker compose -f docker-compose.prod.yml "$@"; }
             # Postgres primero: el usuario de monitoreo debe existir antes de levantar postgres-exporter.
-            $COMPOSE up -d --no-deps --wait postgres
+            compose up -d --no-deps --wait postgres
             sh monitoring/postgres/ensure-monitoring-role.sh
-            # Fija la etiqueta, espera el healthcheck y vuelve a la version anterior si no queda sano.
-            sh scripts/deploy-service.sh backend "$DEPLOY_TAG"
-            $COMPOSE up -d --no-deps caddy prometheus grafana node-exporter postgres-exporter
+            # Valida la vigencia con el lock tomado, fija la etiqueta, espera el healthcheck y hace rollback si falla.
+            GITHUB_API_TOKEN="$GHCR_TOKEN" sh scripts/deploy-service.sh backend "$DEPLOY_TAG"
+            compose up -d --no-deps caddy prometheus grafana node-exporter postgres-exporter
             # La config llega por carpetas montadas: se recarga sin cortar el trafico (Grafana relee el provisioning al reiniciar).
-            $COMPOSE exec -T caddy caddy reload --config /etc/caddy/Caddyfile
-            $COMPOSE kill -s SIGHUP prometheus
-            $COMPOSE restart grafana
+            compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile
+            compose kill -s SIGHUP prometheus
+            compose restart grafana
             docker image prune -f

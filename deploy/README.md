@@ -12,7 +12,10 @@ push a main ──► CD ─► CI completa (tests, Sonar, gitleaks, SCA) ──
 
 - **Solo despliega lo que pasó la CI.** El CD llama a `ci.yml` como workflow reutilizable (`workflow_call`) y solo si queda en verde construye y despliega. Siempre construye el commit del push, nunca código de otro evento o de un fork.
 - **Etiquetas inmutables.** Cada despliegue usa `sha-<commit>` y la deja escrita en el `.env` del VPS (`BACKEND_TAG` / `WEB_TAG`), así un reinicio o un `up -d` manual levantan siempre la misma versión.
-- **Healthcheck y rollback automático.** `scripts/deploy-service.sh` espera a que el contenedor quede sano; si no lo logra, vuelve a la imagen que estaba corriendo y el job falla en rojo.
+- **Healthcheck y rollback automático.** `scripts/deploy-service.sh` descarga la imagen **antes** de tocar el `.env` (si el pull falla no cambia nada), espera a que el contenedor quede sano y, si no lo logra, vuelve a la imagen que estaba corriendo y restaura la etiqueta previa. Cualquier otro fallo con el `.env` ya modificado también la restaura. El job queda en rojo.
+- **Sin despliegues obsoletos.** Justo antes de desplegar, el CD comprueba que el commit siga siendo la punta de `main`; el script repite la comprobación en el VPS con el lock tomado. Un run viejo nunca pisa uno más nuevo.
+- **Credenciales aisladas.** Cada despliegue hace `docker login` en un `DOCKER_CONFIG` temporal propio que se borra al terminar: los CD de backend y web no se pisan las credenciales de GHCR.
+- **Probado en CI.** `deploy/scripts/tests/deploy-service.test.sh` cubre pull fallido, rollback por healthcheck, fallos inesperados y despliegues obsoletos con dobles de `docker`, `flock` y `curl` (`sh deploy/scripts/tests/deploy-service.test.sh`).
 - **La configuración también se despliega.** El CD del backend copia `docker-compose.prod.yml`, `caddy/`, `monitoring/` y `scripts/`, recarga Caddy y Prometheus sin cortar el tráfico y reinicia Grafana.
 - **SSH verificado.** El CD exige la huella del servidor (`VPS_SSH_FINGERPRINT`); sin ella el despliegue falla en vez de conectarse a ciegas.
 - Redesplegar a mano: *Actions → CD → Run workflow* sobre `main`.
