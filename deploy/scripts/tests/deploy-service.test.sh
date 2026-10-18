@@ -1,7 +1,13 @@
 #!/bin/sh
 # Pruebas de deploy/scripts/deploy-service.sh y deploy/scripts/deploy-backend.sh sin Docker real: docker,
-# flock y curl se reemplazan por dobles que registran las llamadas y simulan fallos.
+# flock y curl se reemplazan por dobles que registran cada paso y permiten inyectar fallos en cualquiera.
 # Uso:  sh deploy/scripts/tests/deploy-service.test.sh
+#
+# Inyeccion de fallos en el doble de docker (por nombre de evento, ver `emit`):
+#   FAKE_FAIL="evento ..."       el evento falla siempre.
+#   FAKE_FAIL_ONCE="evento ..."  falla solo la primera vez (p. ej. la fase final, y no su reintento al volver atras).
+#   FAKE_TERM_ON=evento          al llegar a ese evento manda SIGTERM al script que lo llamo (corte del SSH).
+#   FAKE_UNHEALTHY="sha-x ..."   el servicio desplegado con esas etiquetas no queda sano.
 set -u
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -24,8 +30,25 @@ echo "curl" >> "$FAKE_LOG"
 [ "${FAKE_CURL_FAIL:-0}" = 1 ] && exit 22
 printf '%s' "$FAKE_MAIN_SHA"
 EOF
+    # cp que falla cuando el ORIGEN contiene FAKE_CP_FAIL_FROM (p. ej. al restaurar desde el respaldo, pero
+    # no al crearlo). Los scripts siempre llaman `cp <origen> <destino>`.
+    cat > "$WORK/bin/cp" <<'EOF'
+#!/bin/sh
+case "$1" in *"${FAKE_CP_FAIL_FROM:-<nunca>}"*) echo "cp-fail" >> "$FAKE_LOG"; exit 1 ;; esac
+exec /bin/cp "$@"
+EOF
     cat > "$WORK/bin/docker" <<'EOF'
 #!/bin/sh
+# Registra el evento y aplica la inyeccion de fallos configurada.
+emit() {
+    echo "$1" >> "$FAKE_LOG"
+    if [ "${FAKE_TERM_ON:-}" = "$1" ]; then kill -TERM "$PPID"; fi
+    for f in ${FAKE_FAIL:-}; do [ "$f" = "$1" ] && exit 1; done
+    for f in ${FAKE_FAIL_ONCE:-}; do
+        if [ "$f" = "$1" ] && [ ! -e "$FAKE_STATE/once-$1" ]; then : > "$FAKE_STATE/once-$1"; exit 1; fi
+    done
+    return 0
+}
 # Etiqueta activa: la variable de entorno manda sobre el .env, igual que en docker compose.
 active_tag() {
     eval "value=\${$FAKE_TAG_VAR:-}"
@@ -39,10 +62,14 @@ case "$1" in
         shift
         case "$sub" in
             ps) [ -n "${FAKE_PS_ID:-}" ] && echo "$FAKE_PS_ID"; exit 0 ;;
+            config) emit config ;;
+            run)
+                case "$*" in
+                    *promtool*) emit validate-prometheus ;;
+                    *) emit validate-caddy ;;
+                esac ;;
             pull)
-                echo "pull $(active_tag)" >> "$FAKE_LOG"
-                [ "${FAKE_PULL_FAIL:-0}" = 1 ] && exit 1
-                exit 0 ;;
+                emit "pull-$(active_tag)" ;;
             up)
                 services=""
                 for a in "$@"; do
@@ -53,38 +80,39 @@ case "$1" in
                 services=${services# }
                 if [ "$services" = "$FAKE_SERVICE" ]; then
                     tag=$(active_tag)
-                    echo "up $tag" >> "$FAKE_LOG"
+                    emit "up-$tag"
                     for bad in ${FAKE_UNHEALTHY:-}; do [ "$bad" = "$tag" ] && exit 1; done
+                elif [ "$services" = postgres ]; then
+                    emit up-postgres
                 else
-                    echo "up $services" >> "$FAKE_LOG"
-                fi
-                exit 0 ;;
-            exec) echo "reload-caddy" >> "$FAKE_LOG"; exit 0 ;;
-            kill) echo "sighup-prometheus" >> "$FAKE_LOG"; exit 0 ;;
-            restart) echo "restart $*" >> "$FAKE_LOG"; exit 0 ;;
-            logs) exit 0 ;;
-        esac ;;
+                    emit up-edge
+                fi ;;
+            exec) emit reload-caddy ;;
+            kill) emit sighup-prometheus ;;
+            restart) emit restart-grafana ;;
+            stop) emit "stop-$1" ;;
+            logs) ;;
+        esac
+        exit 0 ;;
     inspect)
         case "$3" in
             '{{.Image}}') echo "sha256:previmage" ;;
             '{{.Config.Image}}') echo "ghcr.io/acme/app:${FAKE_PREV_REF_TAG:-sha-old}" ;;
         esac
         exit 0 ;;
-    tag)
-        echo "tag $2 $3" >> "$FAKE_LOG"
-        exit "${FAKE_TAG_FAIL:-0}" ;;
-    image) echo "prune" >> "$FAKE_LOG"; exit 0 ;;
+    tag) emit "tag-$3"; exit 0 ;;
+    image) emit prune; exit 0 ;;
 esac
 echo "docker inesperado: $*" >&2
 exit 99
 EOF
-    chmod +x "$WORK/bin/flock" "$WORK/bin/curl" "$WORK/bin/docker"
+    chmod +x "$WORK/bin/flock" "$WORK/bin/curl" "$WORK/bin/cp" "$WORK/bin/docker"
 }
 
 install_scripts() { # install_scripts <destino>
     mkdir -p "$1/lib"
-    cp "$SCRIPTS/deploy-service.sh" "$SCRIPTS/deploy-backend.sh" "$1/"
-    cp "$SCRIPTS/lib/deploy-common.sh" "$1/lib/"
+    /bin/cp "$SCRIPTS/deploy-service.sh" "$SCRIPTS/deploy-backend.sh" "$1/"
+    /bin/cp "$SCRIPTS/lib/deploy-common.sh" "$1/lib/"
 }
 
 # Arbol de configuracion de despliegue con la "version" $2 (old | new) en $1.
@@ -101,9 +129,19 @@ EOF
 # Prepara un /opt/omniretail falso. $1 = contenido inicial del .env.
 setup() {
     WORK=$(mktemp -d)
-    mkdir -p "$WORK/app"
+    mkdir -p "$WORK/app" "$WORK/state"
     install_scripts "$WORK/app/scripts"
     write_config "$WORK/app" old
+    echo "solo-en-la-version-vieja" > "$WORK/app/caddy/obsoleto.conf"
+    printf '%s\n' "$1" > "$WORK/app/.env"
+    : > "$WORK/calls.log"
+    make_fakes
+}
+
+# Primer despliegue: el VPS solo tiene el .env.
+setup_empty() {
+    WORK=$(mktemp -d)
+    mkdir -p "$WORK/app" "$WORK/state"
     printf '%s\n' "$1" > "$WORK/app/.env"
     : > "$WORK/calls.log"
     make_fakes
@@ -112,12 +150,12 @@ setup() {
 # Staging del commit $SHA con la configuracion nueva (lo que copia el CD por SCP).
 setup_staging() {
     write_config "$WORK/app/.staging/$SHA" new
-    echo "solo-en-la-version-vieja" > "$WORK/app/caddy/obsoleto.conf"
     install_scripts "$WORK/app/.staging/$SHA/scripts"
 }
 
 base_env() {
-    echo PATH="$WORK/bin:/usr/bin:/bin" HOME="$WORK" FAKE_LOG="$WORK/calls.log" DEPLOY_WAIT_TIMEOUT=5
+    echo PATH="$WORK/bin:/usr/bin:/bin" HOME="$WORK" FAKE_LOG="$WORK/calls.log" FAKE_STATE="$WORK/state" \
+        DEPLOY_WAIT_TIMEOUT=5
 }
 
 # deploy-service.sh web <TAG>. Variables FAKE_* y DEPLOY_* se pasan como "NOMBRE=valor".
@@ -132,18 +170,20 @@ run_web() {
 run_backend() {
     # shellcheck disable=SC2046
     (cd "$WORK/app" && env -i $(base_env) FAKE_TAG_VAR=BACKEND_TAG FAKE_SERVICE=backend \
-        DEPLOY_REPO=acme/app GITHUB_API_TOKEN=t "$@" \
+        DEPLOY_REPO=acme/app GITHUB_API_TOKEN=t FAKE_MAIN_SHA=$SHA "$@" \
         sh ".staging/$SHA/scripts/deploy-backend.sh" "$SHA" sha-new) > "$WORK/out.log" 2>&1
     echo $?
 }
 
 env_tag() { grep -E "^$1=" "$WORK/app/.env" | tail -n 1 | cut -d= -f2-; }
 calls() { tr '\n' '|' < "$WORK/calls.log"; }
+count() { grep -c "^$1\$" "$WORK/calls.log"; }
 file() { cat "$WORK/app/$1" 2>/dev/null || echo "<no existe>"; }
 dir_id() { stat -c %i "$WORK/app/$1"; } # Inodo: un bind mount de carpeta apunta a el.
-config_is() { # config_is <old|new>: los tres archivos de configuracion son de esa version
-    echo "$(file docker-compose.prod.yml) $(file caddy/Caddyfile) $(file monitoring/prometheus/prometheus.yml)"
-}
+config_is() { echo "$(file docker-compose.prod.yml) $(file caddy/Caddyfile) $(file monitoring/prometheus/prometheus.yml)"; }
+recovery_dirs() { find "$WORK/app/.recovery" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' '; }
+recovery_dir() { find "$WORK/app/.recovery" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n 1; }
+staging_left() { find "$WORK/app/.staging" -mindepth 1 2>/dev/null | wc -l | tr -d ' '; }
 
 check() { # check <descripcion> <obtenido> <esperado>
     if [ "$2" = "$3" ]; then
@@ -159,6 +199,8 @@ teardown() { rm -rf "$WORK"; }
 
 OLD_CONFIG="compose-old caddy-old prom-old"
 NEW_CONFIG="compose-new caddy-new prom-new"
+VALIDATE="config|validate-caddy|validate-prometheus"
+EDGE="up-edge|reload-caddy|sighup-prometheus|restart-grafana|up-edge"
 
 # =====================================================================
 echo "== deploy-service.sh (web) =="
@@ -170,7 +212,14 @@ code=$(run_web FAKE_PS_ID=c1)
 check "termina en 0" "$code" 0
 check "fija la etiqueta nueva" "$(env_tag WEB_TAG)" sha-new
 check "conserva el resto del .env" "$(grep -c '^SECRET=s3cr3t$' "$WORK/app/.env")" 1
-check "lock -> pull -> up -> prune (prune dentro del lock)" "$(calls)" "flock|pull sha-new|up sha-new|prune|"
+check "lock -> pull -> up -> prune (prune dentro del lock)" "$(calls)" "flock|pull-sha-new|up-sha-new|prune|"
+teardown
+
+echo "DEPLOY_PRUNE=0 no limpia imagenes"
+setup "WEB_TAG=sha-old"
+code=$(run_web FAKE_PS_ID=c1 DEPLOY_PRUNE=0)
+check "termina en 0" "$code" 0
+check "sin prune" "$(calls)" "flock|pull-sha-new|up-sha-new|"
 teardown
 
 echo "primer despliegue (sin etiqueta ni contenedor previos)"
@@ -182,10 +231,10 @@ teardown
 
 echo "pull fallido"
 setup "WEB_TAG=sha-old"
-code=$(run_web FAKE_PS_ID=c1 FAKE_PULL_FAIL=1)
+code=$(run_web FAKE_PS_ID=c1 FAKE_FAIL=pull-sha-new)
 check "termina en 1" "$code" 1
 check ".env intacto" "$(env_tag WEB_TAG)" sha-old
-check "no levanta ni limpia nada" "$(calls)" "flock|pull sha-new|"
+check "no levanta ni limpia nada" "$(calls)" "flock|pull-sha-new|"
 teardown
 
 echo "healthcheck fallido con version anterior: rollback"
@@ -193,17 +242,17 @@ setup "WEB_TAG=sha-old"
 code=$(run_web FAKE_PS_ID=c1 FAKE_UNHEALTHY=sha-new)
 check "termina en 1" "$code" 1
 check "restaura la etiqueta previa" "$(env_tag WEB_TAG)" sha-old
-check "reetiqueta la imagen previa y la levanta" "$(calls)" \
-    "flock|pull sha-new|up sha-new|tag sha256:previmage ghcr.io/acme/app:sha-old|up sha-old|"
+check "reetiqueta la imagen previa y la levanta, sin prune" "$(calls)" \
+    "flock|pull-sha-new|up-sha-new|tag-ghcr.io/acme/app:sha-old|up-sha-old|"
 teardown
 
 echo "fallan la imagen nueva Y su rollback"
 setup "WEB_TAG=sha-old"
 code=$(run_web FAKE_PS_ID=c1 FAKE_UNHEALTHY="sha-new sha-old")
-check "termina en 1" "$code" 1
+check "termina en 3 (sin version sana)" "$code" 3
 check "deja la etiqueta previa" "$(env_tag WEB_TAG)" sha-old
 check "intenta la nueva y luego la previa" "$(calls)" \
-    "flock|pull sha-new|up sha-new|tag sha256:previmage ghcr.io/acme/app:sha-old|up sha-old|"
+    "flock|pull-sha-new|up-sha-new|tag-ghcr.io/acme/app:sha-old|up-sha-old|"
 check "lo reporta" "$(grep -c 'tampoco quedo sana' "$WORK/out.log")" 1
 teardown
 
@@ -223,8 +272,8 @@ teardown
 
 echo "fallo inesperado durante el rollback (docker tag)"
 setup "WEB_TAG=sha-old"
-code=$(run_web FAKE_PS_ID=c1 FAKE_UNHEALTHY=sha-new FAKE_TAG_FAIL=1)
-check "termina con error" "$([ "$code" -ne 0 ] && echo error)" error
+code=$(run_web FAKE_PS_ID=c1 FAKE_UNHEALTHY=sha-new FAKE_FAIL=tag-ghcr.io/acme/app:sha-old)
+check "termina en 3" "$code" 3
 check "restaura la etiqueta previa (trap)" "$(env_tag WEB_TAG)" sha-old
 teardown
 
@@ -251,25 +300,34 @@ check ".env intacto" "$(env_tag WEB_TAG)" sha-old
 teardown
 
 # =====================================================================
-echo "== deploy-backend.sh (staging + promocion bajo el lock) =="
+echo "== deploy-backend.sh: camino feliz y obsolescencia =="
 
-echo "commit vigente: promueve, despliega y recarga"
+echo "commit vigente: valida, promueve, despliega, fase final y prune al final"
 setup "SECRET=s3cr3t
 BACKEND_TAG=sha-old"
 setup_staging
 caddy_dir=$(dir_id caddy)
 prom_dir=$(dir_id monitoring/prometheus)
-code=$(run_backend FAKE_PS_ID=c1 FAKE_MAIN_SHA=$SHA)
+code=$(run_backend FAKE_PS_ID=c1)
 check "termina en 0" "$code" 0
 check "configuracion nueva promovida" "$(config_is)" "$NEW_CONFIG"
 check "borra lo que ya no existe en el repo" "$(file caddy/obsoleto.conf)" "<no existe>"
 check "no reemplaza la carpeta de caddy (bind mount)" "$(dir_id caddy)" "$caddy_dir"
 check "no reemplaza la carpeta de prometheus (bind mount)" "$(dir_id monitoring/prometheus)" "$prom_dir"
 check "etiqueta nueva" "$(env_tag BACKEND_TAG)" sha-new
-check "un solo lock para toda la secuencia, en orden" "$(calls)" \
-    "flock|curl|up postgres|ensure-role-new|pull sha-new|up sha-new|prune|up caddy prometheus grafana node-exporter postgres-exporter|reload-caddy|sighup-prometheus|restart grafana|"
-check "borra el staging" "$(file .staging/$SHA/docker-compose.prod.yml)" "<no existe>"
-check "no deja respaldos" "$(find "$WORK/app/.staging" -mindepth 1 | wc -l | tr -d ' ')" 0
+check "un solo lock, valida antes de tocar contenedores, prune solo al final" "$(calls)" \
+    "flock|curl|$VALIDATE|up-postgres|ensure-role-new|pull-sha-new|up-sha-new|$EDGE|prune|"
+check "no deja staging ni respaldos" "$(staging_left)" 0
+check "no deja recuperacion" "$(recovery_dirs)" 0
+teardown
+
+echo "primer despliegue (VPS solo con .env)"
+setup_empty "SECRET=s3cr3t"
+setup_staging
+code=$(run_backend)
+check "termina en 0" "$code" 0
+check "configuracion promovida" "$(config_is)" "$NEW_CONFIG"
+check "etiqueta nueva" "$(env_tag BACKEND_TAG)" sha-new
 teardown
 
 echo "commit que se vuelve obsoleto tras la comprobacion del runner (main avanzo)"
@@ -279,39 +337,9 @@ code=$(run_backend FAKE_PS_ID=c1 FAKE_MAIN_SHA=fffffffffffffffffffffffffffffffff
 check "termina en 0" "$code" 0
 check "NO promueve configuracion" "$(config_is)" "$OLD_CONFIG"
 check "conserva los archivos viejos" "$(file caddy/obsoleto.conf)" "solo-en-la-version-vieja"
-check "NO toca contenedores ni recarga nada" "$(calls)" "flock|curl|"
+check "NO toca contenedores, NO recarga, NO prune" "$(calls)" "flock|curl|"
 check ".env intacto" "$(env_tag BACKEND_TAG)" sha-old
-check "borra su staging" "$(file .staging/$SHA/docker-compose.prod.yml)" "<no existe>"
-teardown
-
-echo "backend no queda sano (rollback de la imagen)"
-setup "BACKEND_TAG=sha-old"
-setup_staging
-code=$(run_backend FAKE_PS_ID=c1 FAKE_MAIN_SHA=$SHA FAKE_UNHEALTHY=sha-new)
-check "termina en 1" "$code" 1
-check "restaura la configuracion anterior" "$(config_is)" "$OLD_CONFIG"
-check "restaura archivos borrados" "$(file caddy/obsoleto.conf)" "solo-en-la-version-vieja"
-check "etiqueta previa" "$(env_tag BACKEND_TAG)" sha-old
-check "NO recarga Caddy/Prometheus/Grafana" "$(calls | grep -c 'reload\|sighup\|restart')" 0
-teardown
-
-echo "fallan la imagen nueva del backend Y su rollback"
-setup "BACKEND_TAG=sha-old"
-setup_staging
-code=$(run_backend FAKE_PS_ID=c1 FAKE_MAIN_SHA=$SHA FAKE_UNHEALTHY="sha-new sha-old")
-check "termina en 1" "$code" 1
-check "restaura la configuracion anterior" "$(config_is)" "$OLD_CONFIG"
-check "etiqueta previa" "$(env_tag BACKEND_TAG)" sha-old
-check "NO recarga nada" "$(calls | grep -c 'reload\|sighup\|restart')" 0
-teardown
-
-echo "pull del backend fallido"
-setup "BACKEND_TAG=sha-old"
-setup_staging
-code=$(run_backend FAKE_PS_ID=c1 FAKE_MAIN_SHA=$SHA FAKE_PULL_FAIL=1)
-check "termina en 1" "$code" 1
-check "restaura la configuracion anterior" "$(config_is)" "$OLD_CONFIG"
-check ".env intacto" "$(env_tag BACKEND_TAG)" sha-old
+check "borra su staging" "$(staging_left)" 0
 teardown
 
 echo "GitHub no responde"
@@ -321,6 +349,160 @@ code=$(run_backend FAKE_PS_ID=c1 FAKE_CURL_FAIL=1)
 check "termina en 1" "$code" 1
 check "NO promueve configuracion" "$(config_is)" "$OLD_CONFIG"
 check "no toca contenedores" "$(calls)" "flock|curl|"
+teardown
+
+# =====================================================================
+echo "== deploy-backend.sh: fallos antes de la fase final =="
+
+echo "configuracion nueva invalida (Caddyfile)"
+setup "BACKEND_TAG=sha-old"
+setup_staging
+code=$(run_backend FAKE_PS_ID=c1 FAKE_FAIL=validate-caddy)
+check "termina en 1" "$code" 1
+check "restaura la configuracion anterior" "$(config_is)" "$OLD_CONFIG"
+check "restaura archivos borrados" "$(file caddy/obsoleto.conf)" "solo-en-la-version-vieja"
+check "NO toca ningun contenedor" "$(calls)" "flock|curl|config|validate-caddy|"
+check ".env intacto" "$(env_tag BACKEND_TAG)" sha-old
+check "no deja recuperacion (se restauro)" "$(recovery_dirs)" 0
+teardown
+
+echo "pull del backend fallido"
+setup "BACKEND_TAG=sha-old"
+setup_staging
+code=$(run_backend FAKE_PS_ID=c1 FAKE_FAIL=pull-sha-new)
+check "termina en 1" "$code" 1
+check "restaura la configuracion anterior" "$(config_is)" "$OLD_CONFIG"
+check ".env intacto" "$(env_tag BACKEND_TAG)" sha-old
+check "reconcilia postgres con la config anterior y no recarga ni limpia" "$(calls)" \
+    "flock|curl|$VALIDATE|up-postgres|ensure-role-new|pull-sha-new|up-postgres|"
+teardown
+
+echo "backend no queda sano (deploy-service vuelve a la imagen anterior)"
+setup "BACKEND_TAG=sha-old"
+setup_staging
+code=$(run_backend FAKE_PS_ID=c1 FAKE_UNHEALTHY=sha-new)
+check "termina en 1" "$code" 1
+check "restaura la configuracion anterior" "$(config_is)" "$OLD_CONFIG"
+check "etiqueta previa" "$(env_tag BACKEND_TAG)" sha-old
+check "NO toca la fase final ni hace prune" "$(calls | grep -c 'edge\|reload\|sighup\|restart\|prune')" 0
+check "no deja recuperacion" "$(recovery_dirs)" 0
+teardown
+
+echo "fallan la imagen nueva del backend Y su rollback"
+setup "BACKEND_TAG=sha-old"
+setup_staging
+code=$(run_backend FAKE_PS_ID=c1 FAKE_UNHEALTHY="sha-new sha-old")
+check "termina en 1" "$code" 1
+check "restaura la configuracion anterior" "$(config_is)" "$OLD_CONFIG"
+check "NO toca la fase final ni hace prune" "$(calls | grep -c 'edge\|reload\|sighup\|restart\|prune')" 0
+check "conserva el respaldo para recuperacion manual" "$(recovery_dirs)" 1
+check "informa la ubicacion" "$(grep -c '.recovery/' "$WORK/out.log")" 1
+teardown
+
+# =====================================================================
+echo "== deploy-backend.sh: fallos en la fase final (Caddy/Prometheus/Grafana) =="
+
+for failing in up-edge reload-caddy sighup-prometheus restart-grafana; do
+    echo "falla '$failing': vuelta atras completa"
+    setup "BACKEND_TAG=sha-old"
+    setup_staging
+    code=$(run_backend FAKE_PS_ID=c1 FAKE_FAIL_ONCE=$failing)
+    check "termina en 1" "$code" 1
+    check "restaura la configuracion anterior" "$(config_is)" "$OLD_CONFIG"
+    check "vuelve el backend a la imagen anterior" "$(env_tag BACKEND_TAG)" sha-old
+    check "reetiqueta la imagen previa y la levanta" "$(count tag-ghcr.io/acme/app:sha-old)|$(count up-sha-old)" "1|1"
+    check "reaplica la fase final con la config anterior" "$(calls | sed 's/.*up-sha-old|//')" "$EDGE|"
+    check "no hace prune" "$(count prune)" 0
+    check "no deja recuperacion (se restauro)" "$(recovery_dirs)" 0
+    teardown
+done
+
+echo "falla la fase final en el primer despliegue: se detiene el backend nuevo"
+setup_empty "SECRET=s3cr3t"
+setup_staging
+code=$(run_backend FAKE_FAIL_ONCE=reload-caddy)
+check "termina en 1" "$code" 1
+check "quita la etiqueta (no habia)" "$(env_tag BACKEND_TAG)" ""
+check "detiene el backend" "$(count stop-backend)" 1
+teardown
+
+echo "falla la fase final Y la imagen anterior del backend no queda sana"
+setup "BACKEND_TAG=sha-old"
+setup_staging
+code=$(run_backend FAKE_PS_ID=c1 FAKE_FAIL_ONCE=reload-caddy FAKE_UNHEALTHY=sha-old)
+check "termina en 1" "$code" 1
+check "restaura la configuracion anterior" "$(config_is)" "$OLD_CONFIG"
+check "conserva el respaldo" "$(recovery_dirs)" 1
+check "no hace prune" "$(count prune)" 0
+teardown
+
+echo "falla la fase final y tambien su reintento con la config anterior"
+setup "BACKEND_TAG=sha-old"
+setup_staging
+code=$(run_backend FAKE_PS_ID=c1 FAKE_FAIL=reload-caddy)
+check "termina en 1" "$code" 1
+check "conserva el respaldo" "$(recovery_dirs)" 1
+teardown
+
+# =====================================================================
+echo "== deploy-backend.sh: restauracion fallida e interrupciones =="
+
+echo "falla la restauracion de la configuracion (promote del respaldo)"
+setup "BACKEND_TAG=sha-old"
+setup_staging
+code=$(run_backend FAKE_PS_ID=c1 FAKE_FAIL_ONCE=reload-caddy FAKE_CP_FAIL_FROM=.staging/backup.)
+check "termina en 1" "$code" 1
+check "conserva el respaldo" "$(recovery_dirs)" 1
+rec=$(recovery_dir)
+check "el respaldo tiene la configuracion anterior completa" \
+    "$(cat "$rec/config/docker-compose.prod.yml") $(cat "$rec/config/caddy/Caddyfile") $(cat "$rec/config/caddy/obsoleto.conf")" \
+    "compose-old caddy-old solo-en-la-version-vieja"
+check "deja instrucciones con la imagen previa" "$(grep -c 'docker tag sha256:previmage ghcr.io/acme/app:sha-old' "$rec/LEEME.txt")" 1
+check "informa la ubicacion" "$(grep -c "$rec" "$WORK/out.log")" 1
+check "no intenta recargar con config a medias" "$(calls | sed 's/.*cp-fail|//')" ""
+check "no hace prune" "$(count prune)" 0
+teardown
+
+echo "interrumpido a mitad (SIGTERM, p. ej. corte del SSH)"
+setup "BACKEND_TAG=sha-old"
+setup_staging
+code=$(run_backend FAKE_PS_ID=c1 FAKE_TERM_ON=up-postgres)
+check "termina en 143" "$code" 143
+check "conserva el respaldo" "$(recovery_dirs)" 1
+check "registra la causa" "$(grep -c 'interrumpido a mitad' "$(recovery_dir)/LEEME.txt")" 1
+check "no sigue desplegando" "$(count pull-sha-new)" 0
+teardown
+
+echo "recuperacion pendiente de un despliegue anterior: el backend no avanza"
+setup "BACKEND_TAG=sha-old"
+setup_staging
+mkdir -p "$WORK/app/.recovery/20261018T000000Z-$SHA/config"
+code=$(run_backend FAKE_PS_ID=c1)
+check "termina en 1" "$code" 1
+check "NO promueve configuracion" "$(config_is)" "$OLD_CONFIG"
+check "no consulta GitHub ni toca contenedores" "$(calls)" "flock|"
+check "lo informa" "$(grep -c 'recuperacion manual pendiente' "$WORK/out.log")" 1
+check "no toca la recuperacion pendiente" "$(recovery_dirs)" 1
+teardown
+
+echo "recuperacion pendiente: el CD de web tampoco avanza"
+setup "WEB_TAG=sha-old"
+mkdir -p "$WORK/app/.recovery/20261018T000000Z-$SHA/config"
+code=$(run_web FAKE_PS_ID=c1)
+check "termina en 1" "$code" 1
+check ".env intacto" "$(env_tag WEB_TAG)" sha-old
+check "no toca contenedores" "$(calls)" "flock|"
+teardown
+
+echo "despues de una interrupcion, el siguiente despliegue queda bloqueado hasta la intervencion manual"
+setup "BACKEND_TAG=sha-old"
+setup_staging
+run_backend FAKE_PS_ID=c1 FAKE_TERM_ON=up-postgres > /dev/null
+: > "$WORK/calls.log"
+setup_staging
+code=$(run_backend FAKE_PS_ID=c1)
+check "el segundo intento termina en 1" "$code" 1
+check "y no toca nada" "$(calls)" "flock|"
 teardown
 
 echo "script ejecutado fuera de su staging"

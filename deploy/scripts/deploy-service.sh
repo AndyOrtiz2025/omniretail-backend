@@ -1,6 +1,7 @@
 #!/bin/sh
 # Despliega un servicio (backend | web) con una etiqueta inmutable (sha-...) y espera a que quede sano.
-# Lo ejecutan los CD de backend y web en el VPS:  sh scripts/deploy-service.sh <servicio> <etiqueta>
+# Lo ejecutan el CD de web directamente y deploy-backend.sh para el backend:
+#   sh scripts/deploy-service.sh <servicio> <etiqueta>
 #
 # Garantias:
 # - La etiqueta desplegada queda en .env (BACKEND_TAG / WEB_TAG): un `docker compose up -d` manual, un
@@ -10,8 +11,13 @@
 # - Cualquier otro fallo inesperado con el .env ya modificado restaura la etiqueta previa (trap EXIT).
 # - Con DEPLOY_REPO + DEPLOY_SHA + GITHUB_API_TOKEN (los pasa el CD), ya con el lock tomado comprueba que el
 #   commit siga siendo la punta de main; si main avanzo, el despliegue es obsoleto y se omite sin tocar nada.
-# - Todo (pull, healthcheck, rollback y prune) ocurre bajo el lock unico del VPS; deploy-backend.sh lo
-#   comparte (DEPLOY_LOCK_HELD=1).
+# - Todo ocurre bajo el lock unico del VPS; deploy-backend.sh lo comparte (DEPLOY_LOCK_HELD=1).
+# - Si hay una recuperacion manual pendiente en .recovery/, no hace nada y sale con 1.
+# - Al terminar con exito limpia imagenes huerfanas, salvo DEPLOY_PRUNE=0 (deploy-backend.sh lo hace
+#   recien cuando termina el despliegue completo).
+#
+# Codigos de salida: 0 desplegado (u obsoleto omitido) | 1 fallo, el servicio quedo en la version anterior
+# (o no habia anterior) | 2 uso invalido | 3 fallo y la version anterior TAMPOCO quedo sana.
 set -eu
 
 SERVICE=${1:?Uso: deploy-service.sh <backend|web> <etiqueta>}
@@ -32,47 +38,29 @@ cd "$SCRIPT_DIR/.."
 
 # Lock unico del VPS (lo comparten los CD de backend y web). Si lo llama deploy-backend.sh, ya lo tiene.
 acquire_deploy_lock
-
-# Backend: Liquibase + arranque de la JVM. Web: Next.js arranca en segundos.
-WAIT_TIMEOUT=${DEPLOY_WAIT_TIMEOUT:-300}
+require_no_pending_recovery
 
 if [ -n "${DEPLOY_SHA:-}" ] && ! deploy_is_current; then
     exit 0
 fi
 
-current_tag() { grep -E "^$TAG_VAR=" .env | tail -n 1 | cut -d= -f2- || true; }
-
-# Reescribe solo la linea de la etiqueta (valor vacio = quitarla); el resto del .env (secretos) no se toca.
-write_tag() {
-    tmp=$(mktemp .env.XXXXXX)
-    grep -v "^$TAG_VAR=" .env > "$tmp" || true
-    if [ -n "$1" ]; then echo "$TAG_VAR=$1" >> "$tmp"; fi
-    chmod 600 "$tmp"
-    mv "$tmp" .env
-}
-
-PREV_TAG=$(current_tag)
+PREV_TAG=$(env_tag "$TAG_VAR")
 TAG_WRITTEN=false
 # Se invoca desde `trap ... EXIT`; shellcheck no lo detecta.
 # shellcheck disable=SC2317,SC2329
 restore_on_failure() {
     status=$?
     if [ "$TAG_WRITTEN" = true ]; then
-        write_tag "$PREV_TAG"
+        write_env_tag "$TAG_VAR" "$PREV_TAG"
         echo "::error::Fallo inesperado (codigo $status): $TAG_VAR restaurada a '${PREV_TAG:-<sin definir>}'." >&2
     fi
 }
 trap restore_on_failure EXIT
 
-# Imagen que corre ahora (por ID, no por etiqueta: `latest` pudo moverse). Vacio en el primer despliegue.
-PREV_IMAGE_ID=""
-PREV_REPO=""
-PREV_CONTAINER=$(compose ps -q "$SERVICE" 2>/dev/null || true)
-if [ -n "$PREV_CONTAINER" ]; then
-    PREV_IMAGE_ID=$(docker inspect --format '{{.Image}}' "$PREV_CONTAINER")
-    PREV_REF=$(docker inspect --format '{{.Config.Image}}' "$PREV_CONTAINER")
-    PREV_REPO=${PREV_REF%:*}
-fi
+# Imagen que corre ahora ("<id> <repo>"). Vacio en el primer despliegue.
+PREV=$(running_image "$SERVICE")
+PREV_IMAGE_ID=${PREV%% *}
+PREV_REPO=${PREV#* }
 
 # 1. Descargar con la etiqueta nueva SIN escribirla en el .env (la variable del entorno manda sobre el .env).
 if ! (export "$TAG_VAR=$TAG"; compose pull "$SERVICE"); then
@@ -81,13 +69,15 @@ if ! (export "$TAG_VAR=$TAG"; compose pull "$SERVICE"); then
 fi
 
 # 2. Activar la version nueva.
-write_tag "$TAG"
+write_env_tag "$TAG_VAR" "$TAG"
 TAG_WRITTEN=true
 if compose up -d --no-deps --wait --wait-timeout "$WAIT_TIMEOUT" "$SERVICE"; then
     TAG_WRITTEN=false
     echo "$SERVICE desplegado con la etiqueta $TAG."
-    # Dentro del lock: no puede borrar capas que otro despliegue este descargando.
-    docker image prune -f > /dev/null || true
+    if [ "${DEPLOY_PRUNE:-1}" = 1 ]; then
+        # Dentro del lock: no puede borrar capas que otro despliegue este descargando.
+        docker image prune -f > /dev/null || true
+    fi
     exit 0
 fi
 
@@ -96,22 +86,20 @@ compose logs --no-color --tail 80 "$SERVICE" >&2 || true
 
 # 3. Rollback. Sin version anterior corriendo no hay a donde volver: solo se restaura la etiqueta previa.
 if [ -z "$PREV_IMAGE_ID" ]; then
-    write_tag "$PREV_TAG"
+    write_env_tag "$TAG_VAR" "$PREV_TAG"
     TAG_WRITTEN=false
     echo "::error::No habia una version anterior corriendo; $TAG_VAR restaurada a '${PREV_TAG:-<sin definir>}'." >&2
     exit 1
 fi
 
-# La imagen anterior se reetiqueta (con su etiqueta previa, o `rollback` si no habia) para que compose la
-# use sin descargar nada, aunque la etiqueta remota haya cambiado.
-ROLLBACK_TAG=${PREV_TAG:-rollback}
-echo "Volviendo a la imagen anterior ($PREV_IMAGE_ID) como $ROLLBACK_TAG..." >&2
-docker tag "$PREV_IMAGE_ID" "$PREV_REPO:$ROLLBACK_TAG"
-write_tag "$ROLLBACK_TAG"
-TAG_WRITTEN=false
-if compose up -d --no-deps --wait --wait-timeout "$WAIT_TIMEOUT" "$SERVICE"; then
-    echo "::error::Despliegue fallido: $SERVICE quedo en la version anterior ($TAG_VAR=$ROLLBACK_TAG)." >&2
-else
-    echo "::error::Despliegue fallido y la version anterior tampoco quedo sana. Revisar el VPS a mano." >&2
+echo "Volviendo a la imagen anterior ($PREV_IMAGE_ID)..." >&2
+if restore_image "$SERVICE" "$TAG_VAR" "$PREV_TAG" "$PREV_IMAGE_ID" "$PREV_REPO"; then
+    TAG_WRITTEN=false
+    echo "::error::Despliegue fallido: $SERVICE quedo en la version anterior ($TAG_VAR=$(env_tag "$TAG_VAR"))." >&2
+    exit 1
 fi
-exit 1
+# Si restore_image alcanzo a fijar la etiqueta previa, se deja (es la version a la que se intento volver);
+# si fallo antes (p. ej. en `docker tag`), el trap restaura la etiqueta previa.
+if [ "$(env_tag "$TAG_VAR")" = "${PREV_TAG:-rollback}" ]; then TAG_WRITTEN=false; fi
+echo "::error::Despliegue fallido y la version anterior tampoco quedo sana. Revisar el VPS a mano." >&2
+exit 3
