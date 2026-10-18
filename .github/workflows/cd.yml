@@ -78,7 +78,7 @@ jobs:
     name: Desplegar en VPS
     needs: image
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45 # Peor caso de deploy-backend.sh con vuelta atras completa: ~23 min.
     environment: production
     permissions:
       contents: read
@@ -96,12 +96,33 @@ jobs:
           echo "::error title=Deploy::Falta la variable VPS_SSH_FINGERPRINT (ver deploy/README.md, paso 5)."
           exit 1
 
-      - name: Checkout
+      # Durante la CI y el build pudo entrar otro commit a main: un run viejo no debe pisar uno mas nuevo.
+      # deploy-backend.sh repite esta misma comprobacion en el VPS con el lock tomado, ANTES de promover
+      # configuracion o tocar contenedores (cierra la carrera entre esta verificacion y el despliegue).
+      - name: Comprobar que el commit sigue siendo la punta de main
+        id: fresh
         if: vars.VPS_HOST != ''
-        uses: actions/checkout@v7
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          current=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" -H 'Accept: application/vnd.github.sha')
+          if [ "$current" = "$GITHUB_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=Deploy::$GITHUB_SHA ya no es la punta de main ($current). Se omite este despliegue obsoleto."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Copiar archivos de despliegue al VPS
-        if: vars.VPS_HOST != ''
+      - name: Checkout
+        if: steps.fresh.outputs.current == 'true'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Staging por commit: copiar aqui es inofensivo (nada lee de .staging). deploy-backend.sh promueve la
+      # configuracion solo si el commit sigue vigente con el lock tomado, y borra el staging al terminar.
+      - name: Copiar archivos de despliegue al staging del VPS
+        if: steps.fresh.outputs.current == 'true'
         uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
         with:
           host: ${{ vars.VPS_HOST }}
@@ -110,15 +131,17 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           fingerprint: ${{ vars.VPS_SSH_FINGERPRINT }}
           source: deploy/docker-compose.prod.yml,deploy/caddy,deploy/monitoring,deploy/scripts
-          target: ${{ vars.VPS_APP_DIR || '/opt/omniretail' }}
+          target: ${{ vars.VPS_APP_DIR || '/opt/omniretail' }}/.staging/${{ github.sha }}
           strip_components: 1
 
       - name: Actualizar backend en el VPS
-        if: vars.VPS_HOST != ''
+        if: steps.fresh.outputs.current == 'true'
         env:
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEPLOY_TAG: ${{ needs.image.outputs.tag }}
+          DEPLOY_REPO: ${{ github.repository }}
+          DEPLOY_SHA: ${{ github.sha }}
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ vars.VPS_HOST }}
@@ -126,23 +149,22 @@ jobs:
           username: ${{ vars.VPS_USER || 'deploy' }}
           key: ${{ secrets.VPS_SSH_KEY }}
           fingerprint: ${{ vars.VPS_SSH_FINGERPRINT }}
-          command_timeout: 15m
+          # Cubre el peor caso (validacion, backend, fase final y vuelta atras completa). Si aun asi se corta,
+          # deploy-backend.sh conserva el respaldo en .recovery/ para recuperacion manual.
+          command_timeout: 35m
           # Token temporal del run (expira al terminar el job): el VPS no necesita guardar un PAT propio.
-          envs: GHCR_USER,GHCR_TOKEN,DEPLOY_TAG
+          # Tambien lo usa deploy-backend.sh (solo lectura) para validar la vigencia del commit.
+          envs: GHCR_USER,GHCR_TOKEN,DEPLOY_TAG,DEPLOY_REPO,DEPLOY_SHA
           script: |
             set -e
             cd "${{ vars.VPS_APP_DIR || '/opt/omniretail' }}"
-            COMPOSE="docker compose -f docker-compose.prod.yml"
-            trap 'docker logout ghcr.io > /dev/null 2>&1 || true' EXIT
+            # Credenciales de GHCR aisladas por ejecucion: un CD concurrente (backend o web) nunca hace login
+            # o logout sobre las credenciales de otro. compose viene como plugin del sistema, no de ~/.docker.
+            DOCKER_CONFIG=$(mktemp -d)
+            export DOCKER_CONFIG
+            trap 'rm -rf "$DOCKER_CONFIG"' EXIT
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
-            # Postgres primero: el usuario de monitoreo debe existir antes de levantar postgres-exporter.
-            $COMPOSE up -d --no-deps --wait postgres
-            sh monitoring/postgres/ensure-monitoring-role.sh
-            # Fija la etiqueta, espera el healthcheck y vuelve a la version anterior si no queda sano.
-            sh scripts/deploy-service.sh backend "$DEPLOY_TAG"
-            $COMPOSE up -d --no-deps caddy prometheus grafana node-exporter postgres-exporter
-            # La config llega por carpetas montadas: se recarga sin cortar el trafico (Grafana relee el provisioning al reiniciar).
-            $COMPOSE exec -T caddy caddy reload --config /etc/caddy/Caddyfile
-            $COMPOSE kill -s SIGHUP prometheus
-            $COMPOSE restart grafana
-            docker image prune -f
+            # Todo o nada, bajo el lock unico del VPS: vigencia, validacion y promocion de config, backend, fase
+            # final (Caddy/Prometheus/Grafana) y, solo con todo en verde, prune. Si algo falla vuelve al estado
+            # anterior; un commit obsoleto sale sin tocar nada. Ver deploy/scripts/deploy-backend.sh.
+            GITHUB_API_TOKEN="$GHCR_TOKEN" sh ".staging/$DEPLOY_SHA/scripts/deploy-backend.sh" "$DEPLOY_SHA" "$DEPLOY_TAG"

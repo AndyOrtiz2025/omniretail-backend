@@ -111,6 +111,28 @@ jobs:
           git --redact --verbose /repo
 
   # ===========================================================================
+  # Scripts de despliegue del VPS: pruebas con dobles de docker/flock/curl (pull fallido, rollback por
+  # healthcheck, despliegue obsoleto, promocion de configuracion desde staging) y shellcheck.
+  # No necesita Docker ni el VPS.
+  # ===========================================================================
+  deploy-scripts:
+    name: Scripts de despliegue
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Shellcheck
+        run: shellcheck -x deploy/scripts/*.sh deploy/scripts/lib/*.sh deploy/scripts/tests/*.sh
+
+      - name: Pruebas de deploy-service.sh
+        run: sh deploy/scripts/tests/deploy-service.test.sh
+
+  # ===========================================================================
   # SCA con Trivy sobre los JAR reales de runtime (incluidas transitivas). Bloquea si alguno tiene una
   # vulnerabilidad alta o critica con version corregida disponible. No depende del Dependency graph del repo.
   # Ojo: `trivy fs` sobre el pom solo ve las dependencias declaradas; por eso se copian los JAR y se usa rootfs.
