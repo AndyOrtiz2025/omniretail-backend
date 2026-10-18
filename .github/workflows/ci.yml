@@ -111,8 +111,9 @@ jobs:
           git --redact --verbose /repo
 
   # ===========================================================================
-  # Script de despliegue del VPS: pruebas con dobles de docker/flock/curl (pull fallido, rollback por
-  # healthcheck, despliegue obsoleto) y shellcheck. No necesita Docker ni el VPS.
+  # Scripts de despliegue del VPS: pruebas con dobles de docker/flock/curl (pull fallido, rollback por
+  # healthcheck, despliegue obsoleto, promocion de configuracion desde staging) y shellcheck.
+  # No necesita Docker ni el VPS.
   # ===========================================================================
   deploy-scripts:
     name: Scripts de despliegue
@@ -126,7 +127,7 @@ jobs:
           persist-credentials: false
 
       - name: Shellcheck
-        run: shellcheck deploy/scripts/deploy-service.sh deploy/scripts/tests/deploy-service.test.sh
+        run: shellcheck -x deploy/scripts/*.sh deploy/scripts/lib/*.sh deploy/scripts/tests/*.sh
 
       - name: Pruebas de deploy-service.sh
         run: sh deploy/scripts/tests/deploy-service.test.sh

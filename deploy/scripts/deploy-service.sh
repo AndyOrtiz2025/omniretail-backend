@@ -10,6 +10,8 @@
 # - Cualquier otro fallo inesperado con el .env ya modificado restaura la etiqueta previa (trap EXIT).
 # - Con DEPLOY_REPO + DEPLOY_SHA + GITHUB_API_TOKEN (los pasa el CD), ya con el lock tomado comprueba que el
 #   commit siga siendo la punta de main; si main avanzo, el despliegue es obsoleto y se omite sin tocar nada.
+# - Todo (pull, healthcheck, rollback y prune) ocurre bajo el lock unico del VPS; deploy-backend.sh lo
+#   comparte (DEPLOY_LOCK_HELD=1).
 set -eu
 
 SERVICE=${1:?Uso: deploy-service.sh <backend|web> <etiqueta>}
@@ -23,32 +25,19 @@ case "$TAG" in
     '' | *[!A-Za-z0-9._-]*) echo "Etiqueta invalida: $TAG" >&2; exit 2 ;;
 esac
 
-cd "$(dirname "$0")/.."
-# Los CD de backend y web pueden coincidir: se serializan para no pisarse el .env ni el compose.
-exec 9> .deploy.lock
-flock 9
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+cd "$SCRIPT_DIR/.."
+# shellcheck source=deploy/scripts/lib/deploy-common.sh
+. "$SCRIPT_DIR/lib/deploy-common.sh"
 
-compose() { docker compose -f docker-compose.prod.yml "$@"; }
+# Lock unico del VPS (lo comparten los CD de backend y web). Si lo llama deploy-backend.sh, ya lo tiene.
+acquire_deploy_lock
+
 # Backend: Liquibase + arranque de la JVM. Web: Next.js arranca en segundos.
 WAIT_TIMEOUT=${DEPLOY_WAIT_TIMEOUT:-300}
 
-# Punta actual de main segun GitHub. El token va por stdin, nunca en la linea de comandos (visible en `ps`).
-main_sha() {
-    printf 'Authorization: Bearer %s\n' "$GITHUB_API_TOKEN" |
-        curl -fsS --max-time 15 -H @- -H 'Accept: application/vnd.github.sha' \
-            "https://api.github.com/repos/$DEPLOY_REPO/commits/main"
-}
-
-if [ -n "${DEPLOY_SHA:-}" ]; then
-    : "${DEPLOY_REPO:?Falta DEPLOY_REPO para validar la vigencia}" "${GITHUB_API_TOKEN:?Falta GITHUB_API_TOKEN}"
-    if ! CURRENT_SHA=$(main_sha); then
-        echo "::error::No se pudo consultar la punta de main en GitHub; no se despliega a ciegas." >&2
-        exit 1
-    fi
-    if [ "$CURRENT_SHA" != "$DEPLOY_SHA" ]; then
-        echo "::notice::$SERVICE: $DEPLOY_SHA ya no es la punta de main ($CURRENT_SHA). Despliegue obsoleto omitido."
-        exit 0
-    fi
+if [ -n "${DEPLOY_SHA:-}" ] && ! deploy_is_current; then
+    exit 0
 fi
 
 current_tag() { grep -E "^$TAG_VAR=" .env | tail -n 1 | cut -d= -f2- || true; }
@@ -97,6 +86,8 @@ TAG_WRITTEN=true
 if compose up -d --no-deps --wait --wait-timeout "$WAIT_TIMEOUT" "$SERVICE"; then
     TAG_WRITTEN=false
     echo "$SERVICE desplegado con la etiqueta $TAG."
+    # Dentro del lock: no puede borrar capas que otro despliegue este descargando.
+    docker image prune -f > /dev/null || true
     exit 0
 fi
 

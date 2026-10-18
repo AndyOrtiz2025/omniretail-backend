@@ -97,8 +97,8 @@ jobs:
           exit 1
 
       # Durante la CI y el build pudo entrar otro commit a main: un run viejo no debe pisar uno mas nuevo.
-      # deploy-service.sh repite esta misma comprobacion en el VPS con el lock tomado (cierra la carrera
-      # entre esta verificacion y el despliegue, y entre los CD de backend y web).
+      # deploy-backend.sh repite esta misma comprobacion en el VPS con el lock tomado, ANTES de promover
+      # configuracion o tocar contenedores (cierra la carrera entre esta verificacion y el despliegue).
       - name: Comprobar que el commit sigue siendo la punta de main
         id: fresh
         if: vars.VPS_HOST != ''
@@ -119,7 +119,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Copiar archivos de despliegue al VPS
+      # Staging por commit: copiar aqui es inofensivo (nada lee de .staging). deploy-backend.sh promueve la
+      # configuracion solo si el commit sigue vigente con el lock tomado, y borra el staging al terminar.
+      - name: Copiar archivos de despliegue al staging del VPS
         if: steps.fresh.outputs.current == 'true'
         uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
         with:
@@ -129,7 +131,7 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           fingerprint: ${{ vars.VPS_SSH_FINGERPRINT }}
           source: deploy/docker-compose.prod.yml,deploy/caddy,deploy/monitoring,deploy/scripts
-          target: ${{ vars.VPS_APP_DIR || '/opt/omniretail' }}
+          target: ${{ vars.VPS_APP_DIR || '/opt/omniretail' }}/.staging/${{ github.sha }}
           strip_components: 1
 
       - name: Actualizar backend en el VPS
@@ -149,7 +151,7 @@ jobs:
           fingerprint: ${{ vars.VPS_SSH_FINGERPRINT }}
           command_timeout: 15m
           # Token temporal del run (expira al terminar el job): el VPS no necesita guardar un PAT propio.
-          # Tambien lo usa deploy-service.sh (solo lectura) para validar la vigencia del commit.
+          # Tambien lo usa deploy-backend.sh (solo lectura) para validar la vigencia del commit.
           envs: GHCR_USER,GHCR_TOKEN,DEPLOY_TAG,DEPLOY_REPO,DEPLOY_SHA
           script: |
             set -e
@@ -160,15 +162,6 @@ jobs:
             export DOCKER_CONFIG
             trap 'rm -rf "$DOCKER_CONFIG"' EXIT
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
-            compose() { docker compose -f docker-compose.prod.yml "$@"; }
-            # Postgres primero: el usuario de monitoreo debe existir antes de levantar postgres-exporter.
-            compose up -d --no-deps --wait postgres
-            sh monitoring/postgres/ensure-monitoring-role.sh
-            # Valida la vigencia con el lock tomado, fija la etiqueta, espera el healthcheck y hace rollback si falla.
-            GITHUB_API_TOKEN="$GHCR_TOKEN" sh scripts/deploy-service.sh backend "$DEPLOY_TAG"
-            compose up -d --no-deps caddy prometheus grafana node-exporter postgres-exporter
-            # La config llega por carpetas montadas: se recarga sin cortar el trafico (Grafana relee el provisioning al reiniciar).
-            compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile
-            compose kill -s SIGHUP prometheus
-            compose restart grafana
-            docker image prune -f
+            # Toda la secuencia (vigencia, promocion de config, backend, recargas y prune) corre bajo el lock
+            # unico del VPS; un commit obsoleto sale sin tocar nada. Ver deploy/scripts/deploy-backend.sh.
+            GITHUB_API_TOKEN="$GHCR_TOKEN" sh ".staging/$DEPLOY_SHA/scripts/deploy-backend.sh" "$DEPLOY_SHA" "$DEPLOY_TAG"
