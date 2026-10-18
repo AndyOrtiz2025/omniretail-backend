@@ -42,6 +42,8 @@ services:
     environment:
       # El frontend habla con el backend por la red interna de Docker, no por internet.
       OMNIRETAIL_API_URL: http://backend:8080/api/v1
+      # Origen publico (https) para el chequeo anti-CSRF: detras de Caddy, Next.js ve la peticion como http.
+      APP_ORIGIN: ${FRONTEND_BASE_URL:?Define FRONTEND_BASE_URL en .env}
     depends_on:
       - backend
 
