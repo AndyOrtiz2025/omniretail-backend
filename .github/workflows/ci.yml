@@ -4,7 +4,8 @@ on:
   pull_request:
     branches: [development, main]
   push:
-    branches: [development, main]
+    branches: [development] # En main la CI la ejecuta el CD (workflow_call) antes de desplegar.
+  workflow_call:
   workflow_dispatch:
 
 concurrency:
