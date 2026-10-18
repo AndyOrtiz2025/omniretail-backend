@@ -1,10 +1,14 @@
 name: CD
 
-# Despliegue a produccion: cada push a main publica la imagen en GHCR y, si hay VPS configurado, la despliega.
+# Despliegue a produccion. Solo sale a produccion un commit de main que paso la CI completa: este workflow
+# arranca cuando termina el workflow CI de un push a main (workflow_run), nunca en paralelo a el.
+# Ojo: workflow_run usa la version de este archivo que esta en la rama por defecto del repo (development).
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-  workflow_dispatch:
+  workflow_dispatch: # Redesplegar main a mano (p. ej. despues de cambiar el .env del VPS).
 
 concurrency:
   group: cd-production-backend
@@ -16,15 +20,34 @@ permissions:
 jobs:
   image:
     name: Imagen Docker (GHCR)
+    # CI verde de un push a main, o ejecucion manual sobre main. Un CI fallido o de un PR no despliega nada.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
       packages: write
+    outputs:
+      sha: ${{ steps.version.outputs.sha }}
+      tag: ${{ steps.version.outputs.tag }}
 
     steps:
+      # En workflow_run, github.sha es la punta de la rama por defecto: el commit que paso la CI es head_sha.
+      - name: Version a desplegar
+        id: version
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "tag=sha-${SHA::7}" >> "$GITHUB_OUTPUT"
+
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.version.outputs.sha }}
 
       - name: Configurar Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -41,9 +64,12 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/${{ github.repository }}
+          # sha-xxxxxxx es la etiqueta inmutable que se despliega; latest queda solo como referencia.
           tags: |
+            type=raw,value=${{ steps.version.outputs.tag }}
             type=raw,value=latest
-            type=sha,format=short
+          labels: |
+            org.opencontainers.image.revision=${{ steps.version.outputs.sha }}
 
       - name: Build y push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -59,7 +85,7 @@ jobs:
     name: Desplegar en VPS
     needs: image
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     environment: production
     permissions:
       contents: read
@@ -70,9 +96,18 @@ jobs:
         if: vars.VPS_HOST == ''
         run: echo "::notice title=Deploy::La variable VPS_HOST esta vacia. La imagen quedo publicada en GHCR; el despliegue se omite."
 
+      # Sin huella, el runner aceptaria cualquier servidor que responda en VPS_HOST (y le entregaria el token de GHCR).
+      - name: Exigir la huella SSH del VPS
+        if: vars.VPS_HOST != '' && vars.VPS_SSH_FINGERPRINT == ''
+        run: |
+          echo "::error title=Deploy::Falta la variable VPS_SSH_FINGERPRINT (ver deploy/README.md, paso 5)."
+          exit 1
+
       - name: Checkout
         if: vars.VPS_HOST != ''
         uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.image.outputs.sha }}
 
       - name: Copiar archivos de despliegue al VPS
         if: vars.VPS_HOST != ''
@@ -82,7 +117,8 @@ jobs:
           port: ${{ vars.VPS_PORT || 22 }}
           username: ${{ vars.VPS_USER || 'deploy' }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          source: deploy/docker-compose.prod.yml,deploy/Caddyfile,deploy/monitoring
+          fingerprint: ${{ vars.VPS_SSH_FINGERPRINT }}
+          source: deploy/docker-compose.prod.yml,deploy/caddy,deploy/monitoring,deploy/scripts
           target: ${{ vars.VPS_APP_DIR || '/opt/omniretail' }}
           strip_components: 1
 
@@ -91,22 +127,31 @@ jobs:
         env:
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPLOY_TAG: ${{ needs.image.outputs.tag }}
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ vars.VPS_HOST }}
           port: ${{ vars.VPS_PORT || 22 }}
           username: ${{ vars.VPS_USER || 'deploy' }}
           key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ vars.VPS_SSH_FINGERPRINT }}
+          command_timeout: 15m
           # Token temporal del run (expira al terminar el job): el VPS no necesita guardar un PAT propio.
-          envs: GHCR_USER,GHCR_TOKEN
+          envs: GHCR_USER,GHCR_TOKEN,DEPLOY_TAG
           script: |
             set -e
             cd "${{ vars.VPS_APP_DIR || '/opt/omniretail' }}"
+            COMPOSE="docker compose -f docker-compose.prod.yml"
             trap 'docker logout ghcr.io > /dev/null 2>&1 || true' EXIT
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
-            docker compose -f docker-compose.prod.yml pull backend
             # Postgres primero: el usuario de monitoreo debe existir antes de levantar postgres-exporter.
-            docker compose -f docker-compose.prod.yml up -d --no-deps --wait postgres
+            $COMPOSE up -d --no-deps --wait postgres
             sh monitoring/postgres/ensure-monitoring-role.sh
-            docker compose -f docker-compose.prod.yml up -d --no-deps backend caddy prometheus grafana node-exporter postgres-exporter
+            # Fija la etiqueta, espera el healthcheck y vuelve a la version anterior si no queda sano.
+            sh scripts/deploy-service.sh backend "$DEPLOY_TAG"
+            $COMPOSE up -d --no-deps caddy prometheus grafana node-exporter postgres-exporter
+            # La config llega por carpetas montadas: se recarga sin cortar el trafico (Grafana relee el provisioning al reiniciar).
+            $COMPOSE exec -T caddy caddy reload --config /etc/caddy/Caddyfile
+            $COMPOSE kill -s SIGHUP prometheus
+            $COMPOSE restart grafana
             docker image prune -f

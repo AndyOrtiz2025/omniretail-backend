@@ -3,6 +3,23 @@
 Stack de producción: **Caddy** (reverse proxy, HTTPS automático con dominio) → **web** (Next.js) y **backend** (Spring Boot) → **PostgreSQL 16**.
 Las imágenes se construyen en GitHub Actions (`cd.yml` de cada repo) y se publican en GHCR. El VPS solo hace `docker compose pull && up`.
 
+### Flujo del despliegue automático
+
+```
+merge a main ──► CI (tests, Sonar, gitleaks, SCA) ──verde──► CD: imagen sha-xxxxxxx en GHCR ──► VPS
+                                └──rojo──► no se despliega nada
+```
+
+- **Solo despliega lo que pasó la CI.** El CD arranca cuando termina el workflow CI de un push a `main` (`workflow_run`), nunca en paralelo a él.
+- **Etiquetas inmutables.** Cada despliegue usa `sha-<commit>` y la deja escrita en el `.env` del VPS (`BACKEND_TAG` / `WEB_TAG`), así un reinicio o un `up -d` manual levantan siempre la misma versión.
+- **Healthcheck y rollback automático.** `scripts/deploy-service.sh` espera a que el contenedor quede sano; si no lo logra, vuelve a la imagen que estaba corriendo y el job falla en rojo.
+- **La configuración también se despliega.** El CD del backend copia `docker-compose.prod.yml`, `caddy/`, `monitoring/` y `scripts/`, recarga Caddy y Prometheus sin cortar el tráfico y reinicia Grafana.
+- **SSH verificado.** El CD exige la huella del servidor (`VPS_SSH_FINGERPRINT`); sin ella el despliegue falla en vez de conectarse a ciegas.
+- Redesplegar a mano: *Actions → CD → Run workflow* sobre `main`.
+
+> `workflow_run` usa la versión de `cd.yml` de la **rama por defecto** del repo (backend: `development`, web: `main`).
+> Un cambio al CD entra en vigor cuando se mergea a esa rama.
+
 ```
 Internet ──► Caddy :80/:443 ──┬─ /api/v1/*, /media/* ──► backend:8080 ──► postgres:5432
                               └─ todo lo demás ────────► web:3000 ──(red interna)──► backend
@@ -50,7 +67,7 @@ Los paquetes de GHCR nacen **privados** y pueden quedarse así:
   docker logout ghcr.io
   ```
 
-Orden del primer despliegue: **backend primero** (copia `docker-compose.prod.yml` y `Caddyfile` al VPS y levanta postgres, backend y Caddy), luego web. Cada CD levanta solo sus servicios (`--no-deps`), así un repo nunca necesita credenciales de la imagen del otro.
+Orden del primer despliegue: **backend primero** (copia `docker-compose.prod.yml`, `caddy/`, `monitoring/` y `scripts/` al VPS y levanta postgres, backend y Caddy), luego web. Cada CD levanta solo sus servicios (`--no-deps`), así un repo nunca necesita credenciales de la imagen del otro.
 
 ## 4. Archivo de secretos
 
@@ -63,7 +80,7 @@ chmod 600 .env
 Define `SITE_ADDRESS`, `FRONTEND_BASE_URL` y `CORS_ALLOWED_ORIGINS` con el mismo dominio y esquema `https://`.
 Antes del primer arranque, confirma que el DNS ya resuelve al VPS y que los puertos 80 y 443 están abiertos.
 
-`docker-compose.prod.yml` y `Caddyfile` los copia el CD del backend en cada despliegue. Para el primer arranque manual, cópialos tú con `scp`.
+`docker-compose.prod.yml`, `caddy/`, `monitoring/` y `scripts/` los copia el CD del backend en cada despliegue. Para el primer arranque manual, cópialos tú con `scp`.
 
 ## 5. Activar el despliegue automático
 
@@ -75,9 +92,20 @@ En GitHub → *Settings → Secrets and variables → Actions* de **backend** y 
 | `VPS_USER` | Variable | `deploy` (por defecto) |
 | `VPS_PORT` | Variable | `22` (por defecto) |
 | `VPS_APP_DIR` | Variable | `/opt/omniretail` (por defecto) |
+| `VPS_SSH_FINGERPRINT` | Variable | huella SHA256 del servidor (ver abajo). **Obligatoria** |
 | `VPS_SSH_KEY` | Secret | clave privada del paso 2 |
 
 Mientras `VPS_HOST` esté vacío, el CD publica la imagen y **omite** el despliegue sin fallar.
+
+Huella del servidor (en el VPS):
+
+```bash
+ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub   # copia el valor SHA256:... (sin el "256" ni el "(ED25519)")
+```
+
+Compárala con la que te muestra tu propia terminal la primera vez que entras por SSH: si coinciden, nadie está en medio.
+
+Recomendado: proteger `main` (*Settings → Branches*) exigiendo PR y los checks de CI, para que nada llegue a producción sin revisión.
 
 Opcional: en *Settings → Environments → production* agrega *Required reviewers* para aprobar cada despliegue a mano.
 
@@ -88,9 +116,11 @@ cd /opt/omniretail
 docker compose -f docker-compose.prod.yml ps
 docker compose -f docker-compose.prod.yml logs -f backend
 
-# Rollback: fijar una versión anterior (las etiquetas sha-xxxxxxx están en GHCR)
-echo "BACKEND_TAG=sha-abc1234" >> .env
-docker compose -f docker-compose.prod.yml up -d backend
+# Versión desplegada de cada servicio
+grep -E '^(BACKEND|WEB)_TAG=' .env
+
+# Rollback manual a una versión anterior (las etiquetas sha-xxxxxxx están en GHCR). Requiere login en GHCR (paso 3).
+sh scripts/deploy-service.sh backend sha-abc1234
 
 # Backup manual de la base de datos
 docker compose -f docker-compose.prod.yml exec -T postgres pg_dump -U omniretail omniretail | gzip > backup-$(date +%F).sql.gz
