@@ -1,0 +1,23 @@
+databaseChangeLog:
+  - changeSet:
+      id: 063-auth-session-last-activity
+      author: AndyOrtiz2025
+      changes:
+        # Ultima actividad de la sesion, para expirar por inactividad en el servidor las sesiones de empleados.
+        # DEFAULT now(): las sesiones que ya existen arrancan su ventana de inactividad al aplicar este cambio
+        # en lugar de quedar vencidas.
+        - addColumn:
+            tableName: sessions
+            columns:
+              - column:
+                  name: last_activity_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+      rollback:
+        - dropColumn:
+            tableName: sessions
+            columns:
+              - column:
+                  name: last_activity_at
