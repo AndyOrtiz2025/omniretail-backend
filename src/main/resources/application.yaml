@@ -83,13 +83,20 @@ app:
       enabled: ${PUBLIC_RATE_LIMIT_ENABLED:true}
       window-seconds: ${PUBLIC_RATE_LIMIT_WINDOW_SECONDS:60}
       max-tracked-clients: ${PUBLIC_RATE_LIMIT_MAX_TRACKED_CLIENTS:10000}
-      login-per-window: ${PUBLIC_RATE_LIMIT_LOGIN_PER_WINDOW:10}
+      # Comparte grupo con POST /auth/google. Holgado para NAT compartido; el tope por correo va abajo.
+      login-per-window: ${PUBLIC_RATE_LIMIT_LOGIN_PER_WINDOW:15}
       mfa-per-window: ${PUBLIC_RATE_LIMIT_MFA_PER_WINDOW:10}
       recovery-per-window: ${PUBLIC_RATE_LIMIT_RECOVERY_PER_WINDOW:5}
       registration-per-window: ${PUBLIC_RATE_LIMIT_REGISTRATION_PER_WINDOW:5}
       checkout-per-window: ${PUBLIC_RATE_LIMIT_CHECKOUT_PER_WINDOW:20}
       tracking-per-window: ${PUBLIC_RATE_LIMIT_TRACKING_PER_WINDOW:30}
       contact-per-window: ${PUBLIC_RATE_LIMIT_CONTACT_PER_WINDOW:3}
+    login-failure-limit:
+      # Logins fallidos por IP + email normalizado (en memoria). Convive con el bloqueo por cuenta (B-01).
+      enabled: ${LOGIN_FAILURE_LIMIT_ENABLED:true}
+      max-failures: ${LOGIN_FAILURE_LIMIT_MAX_FAILURES:5}
+      window-seconds: ${LOGIN_FAILURE_LIMIT_WINDOW_SECONDS:900}
+      max-tracked-keys: ${LOGIN_FAILURE_LIMIT_MAX_TRACKED_KEYS:10000}
   commercial:
     # Solicitudes comerciales de la landing MARJYM. SOLO el servicio comercial lo activa; las instalaciones de
     # clientes lo dejan en false: sin controller, sin jobs y sin correos comerciales.

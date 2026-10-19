@@ -3,6 +3,7 @@ package com.omniretail.backend.shared.security;
 import jakarta.servlet.http.HttpServletRequest;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.util.regex.Pattern;
 
 /**
  * IP del cliente para limites y cuotas. {@code X-Forwarded-For} solo se acepta cuando la conexion llega de un
@@ -11,6 +12,9 @@ import java.net.UnknownHostException;
  * controla el navegador y se ignora: se usa la direccion del socket.
  */
 public final class ClientAddressResolver {
+
+    private static final Pattern IPV4 =
+            Pattern.compile("((25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)");
 
     private ClientAddressResolver() {
     }
@@ -22,7 +26,7 @@ public final class ClientAddressResolver {
         }
         int comma = forwarded.indexOf(',');
         String first = forwarded.substring(0, comma >= 0 ? comma : forwarded.length()).trim();
-        if (!first.matches("[0-9a-fA-F:.]+")) {
+        if (!isIpLiteral(first)) {
             return request.getRemoteAddr();
         }
         try {
@@ -30,6 +34,14 @@ public final class ClientAddressResolver {
         } catch (UnknownHostException ex) {
             return request.getRemoteAddr();
         }
+    }
+
+    /**
+     * Solo literales: IPv4 con octetos validos o IPv6 (lleva ':'). Asi {@code getByName} nunca resuelve por DNS
+     * un nombre como {@code bad.cafe}, que solo tiene caracteres hexadecimales.
+     */
+    private static boolean isIpLiteral(String value) {
+        return IPV4.matcher(value).matches() || (value.indexOf(':') >= 0 && value.matches("[0-9a-fA-F:.]+"));
     }
 
     private static boolean isTrustedProxy(String remoteAddress) {
