@@ -1,0 +1,25 @@
+databaseChangeLog:
+  - changeSet:
+      id: 999-15-seed-catalog-promotions-admin-permissions
+      author: joga17000
+      context: dev
+      changes:
+        - sql:
+            # En una BD nueva 026 y 065 corren antes de 999-01 y no encuentran el Administrador; este seed
+            # (posterior) le concede las promociones al Administrador de sistema que crea 999-01. Mismo patron
+            # que 999-07. Idempotente: union de conjuntos, conserva los permisos existentes y no duplica.
+            sql: |
+              UPDATE roles
+              SET permissions = (
+                SELECT ARRAY(
+                  SELECT DISTINCT permission
+                  FROM unnest(COALESCE(permissions, ARRAY[]::text[])
+                              || ARRAY['catalog.promotions.read', 'catalog.promotions.manage']::text[]) AS permission
+                  ORDER BY permission
+                )
+              )
+              WHERE name = 'Administrador' AND is_system = TRUE;
+      rollback:
+        # Seed de demo: sin efecto intencional (no se sabe si el permiso ya existia antes).
+        - sql:
+            sql: SELECT 1
