@@ -352,13 +352,16 @@ class PublicStorefrontCatalogServiceTest {
         UUID branchId = UUID.randomUUID();
         UUID attributeId = UUID.randomUUID();
         Product product = trackedProduct(productId, unitId);
+        Tenant storefrontTenant = tenant(tenantId);
+        Category productCategory = category(categoryId);
+        Unit productUnit = unit(unitId);
         when(product.getCategoryId()).thenReturn(categoryId);
         when(tenantRepository.findBySlug("ferreteria-los-simpson"))
-                .thenReturn(Optional.of(tenant(tenantId)));
+                .thenReturn(Optional.of(storefrontTenant));
         when(productRepository.findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
                 tenantId, productId, ProductStatus.published)).thenReturn(Optional.of(product));
-        when(categoryRepository.findById(categoryId)).thenReturn(Optional.of(category(categoryId)));
-        when(unitRepository.findById(unitId)).thenReturn(Optional.of(unit(unitId)));
+        when(categoryRepository.findById(categoryId)).thenReturn(Optional.of(productCategory));
+        when(unitRepository.findById(unitId)).thenReturn(Optional.of(productUnit));
         when(productAttributeValueRepository.findByTenantIdAndProductId(tenantId, productId))
                 .thenReturn(List.of(ProductAttributeValue.builder()
                         .productId(productId)
