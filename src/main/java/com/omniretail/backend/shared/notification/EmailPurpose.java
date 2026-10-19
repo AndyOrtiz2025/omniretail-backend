@@ -19,6 +19,13 @@ public enum EmailPurpose {
     MFA_CODE(Scope.PLATFORM),
     /** Aviso "ya tienes una cuenta" cuando alguien intenta registrarse con un correo ya registrado. */
     ACCOUNT_ALREADY_EXISTS(Scope.PLATFORM),
+    /**
+     * Solicitudes comerciales (landing MARJYM): no pertenecen a ningun tenant, asi que salen SIEMPRE por la
+     * plataforma y su mensaje no lleva tenantId. No pasan por email_delivery (que exige tenant): tienen su propio
+     * seguimiento en contact_requests.
+     */
+    CONTACT_TEAM_NOTIFICATION(Scope.PLATFORM),
+    CONTACT_CONFIRMATION(Scope.PLATFORM),
     // Seguridad sin acceso a la cuenta: el Gmail del negocio verificado, con la plataforma de respaldo.
     EMAIL_VERIFICATION(Scope.TENANT_PREFERRED),
     // Operativos: cuenta Gmail del tenant. Nunca caen al remitente de plataforma.
@@ -44,5 +51,10 @@ public enum EmailPurpose {
 
     public Scope scope() {
         return scope;
+    }
+
+    /** Propositos de plataforma que no pertenecen a un tenant (solicitudes comerciales). */
+    public boolean isTenantless() {
+        return this == CONTACT_TEAM_NOTIFICATION || this == CONTACT_CONFIRMATION;
     }
 }

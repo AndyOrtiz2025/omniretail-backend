@@ -69,4 +69,21 @@ class EmailLayoutTest {
                 "font-size:32px", ">123456</div>", "Mensaje generado automaticamente por OmniRetail.")
                 .doesNotContain("<link", "<style", "<script");
     }
+
+    @Test
+    void brandedFooterDetailsAndFreeTextAreEscaped() {
+        String html = EmailLayout.render("MARJYM", "Solicitud", List.of(
+                EmailLayout.sectionTitle("Datos <b>principales</b>"),
+                EmailLayout.details(List.of(
+                        new String[] {"Empresa", "Comercio <script>alert(1)</script>"},
+                        new String[] {"Ausente", " "})),
+                EmailLayout.textPanel("Línea <img src=x>\nDos")), "MARJYM <b>pie</b>");
+
+        assertThat(html).contains(
+                        "Datos &lt;b&gt;principales&lt;/b&gt;",
+                        "Comercio &lt;script&gt;alert(1)&lt;/script&gt;",
+                        "Línea &lt;img src=x&gt;\nDos",
+                        "MARJYM &lt;b&gt;pie&lt;/b&gt;")
+                .doesNotContain("<b>principales</b>", "<script>alert(1)</script>", "<img src=x>", ">Ausente<");
+    }
 }
