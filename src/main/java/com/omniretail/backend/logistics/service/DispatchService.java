@@ -324,7 +324,7 @@ public class DispatchService {
                 .toList());
         order.setStatus(OrderStatus.dispatched);
         orders.save(order);
-        orderEmailNotifier.orderDispatched(order);
+        orderEmailNotifier.orderDispatched(order, dispatch.getCarrierName(), dispatch.getTrackingNumber());
         DispatchResponse result = response(dispatch, saved, false);
         operations.saveAndFlush(DispatchOperation.builder()
                 .tenantId(actor.tenantId())
