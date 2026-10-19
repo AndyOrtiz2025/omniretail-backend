@@ -1147,6 +1147,9 @@ public class PickingService {
             UUID tenantId, UUID branchId, UUID orderId, PickingItem item) {
         List<InventoryBalance> balances = inventoryBalanceRepository
                 .findByTenantIdAndBranchIdAndProductId(tenantId, branchId, item.getProductId());
+        // El item hereda la ubicacion de la asignacion persistida de la reserva. Mostrar otra ubicacion
+        // anunciaria stock que este picking no puede consumir.
+        UUID operationalLocation = item.getLocationId();
         InventoryReservationSourceType sourceType = item.getOrderItemId() == null
                 ? InventoryReservationSourceType.transfer
                 : InventoryReservationSourceType.order;
@@ -1177,6 +1180,7 @@ public class PickingService {
             }
         }
         List<PickingLineResponse.InventoryLocation> locations = balances.stream()
+                .filter(balance -> java.util.Objects.equals(balance.getLocationId(), operationalLocation))
                 .filter(balance -> availableBalanceLocation(tenantId, branchId, balance))
                 .sorted(Comparator.comparing(balance ->
                         balance.getLocationId() == null ? "" : balance.getLocationId().toString()))

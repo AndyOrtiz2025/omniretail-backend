@@ -15,7 +15,10 @@ import com.omniretail.backend.auth.service.CurrentSessionService;
 import com.omniretail.backend.auth.service.PasswordChangeService;
 import com.omniretail.backend.auth.service.SessionEntitlementsService;
 import com.omniretail.backend.shared.exception.ApiError;
+import com.omniretail.backend.shared.exception.BusinessException;
+import com.omniretail.backend.shared.security.ClientAddressResolver;
 import com.omniretail.backend.shared.security.CurrentUser;
+import com.omniretail.backend.shared.security.LoginFailureLimiter;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.ArraySchema;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -24,6 +27,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -49,6 +53,7 @@ public class AuthController {
     private final ActiveBranchService activeBranchService;
     private final SessionEntitlementsService sessionEntitlementsService;
     private final CurrentUser currentUser;
+    private final LoginFailureLimiter loginFailureLimiter;
 
     @PostMapping("/login")
     @SecurityRequirements
@@ -58,10 +63,14 @@ public class AuthController {
                     **Público.** Inicia sesión de un empleado o de un cliente con correo y contraseña y devuelve el
                     token JWT de la sesión.
 
-                    - Empleados: sesión de 8 horas; `rememberMe` se ignora.
+                    - Empleados: sesión de 8 horas; `rememberMe` se ignora. Además el servidor la cierra tras 60 minutos
+                      sin actividad (configurable con `EMPLOYEE_IDLE_TIMEOUT_MINUTES`); cada request la renueva.
                     - Clientes: requieren el `tenantSlug` de la tienda. La sesión dura 2 horas, o 30 días con `rememberMe`.
                     - Bloqueo escalonado: el 5.º fallo en 10 minutos (contraseña o código MFA) bloquea la cuenta
                       15, 30 o 60 minutos, según los bloqueos de las últimas 24 horas.
+                    - Límite por IP + correo: tras 5 fallos (`INVALID_CREDENTIALS`) en 15 minutos desde la misma IP
+                      con el mismo correo responde 429 `RATE_LIMITED` hasta que vence la ventana, exista o no la
+                      cuenta. Una sesión entregada limpia el contador; abrir el desafío MFA no.
                     - Si la cuenta tiene MFA activo, no entrega sesión: devuelve un challenge
                       `{ mfaRequired: true, challengeToken, method, expiresAt }` sin token, y la sesión se obtiene en
                       `POST /auth/mfa/verify`. Con `method: "email"` además envía el código por correo.
@@ -82,10 +91,30 @@ public class AuthController {
                 responseCode = "401",
                 description = "No fue posible iniciar sesión (`INVALID_CREDENTIALS`). Mismo mensaje para correo "
                         + "inexistente, contraseña incorrecta o cuenta bloqueada o inactiva.",
-                content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
+                content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
+        @ApiResponse(
+                responseCode = "429",
+                description = "Demasiados intentos (`RATE_LIMITED`), por IP o por IP + correo. Incluye la cabecera "
+                        + "`Retry-After` y el campo `retryAfterSeconds` con el mismo valor.",
+                content = @Content(mediaType = "application/json"))
     })
-    public LoginOutcome login(@Valid @RequestBody LoginRequest request) {
-        return authService.login(request);
+    public LoginOutcome login(@Valid @RequestBody LoginRequest request, HttpServletRequest httpRequest) {
+        String clientAddress = ClientAddressResolver.resolve(httpRequest);
+        loginFailureLimiter.checkAllowed(clientAddress, request.email());
+        LoginOutcome outcome;
+        try {
+            outcome = authService.login(request);
+        } catch (BusinessException ex) {
+            if (AuthService.INVALID_CREDENTIALS_CODE.equals(ex.getCode())) {
+                loginFailureLimiter.recordFailure(clientAddress, request.email());
+            }
+            throw ex;
+        }
+        // El desafio MFA no limpia: la racha sigue hasta que se entrega la sesion.
+        if (outcome instanceof LoginResponse) {
+            loginFailureLimiter.clear(clientAddress, request.email());
+        }
+        return outcome;
     }
 
     @PostMapping("/logout")

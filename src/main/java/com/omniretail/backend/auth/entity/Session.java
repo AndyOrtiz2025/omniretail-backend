@@ -60,4 +60,13 @@ public class Session {
 
     @Column(name = "revoked_at")
     private Instant revokedAt;
+
+    /**
+     * Ultima actividad registrada (como mucho una escritura por minuto). Con ella se expira por inactividad la
+     * sesion de un empleado; ver {@code SessionService#isActive}. Nace con la hora de creacion.
+     */
+    @NotNull
+    @Builder.Default
+    @Column(name = "last_activity_at", nullable = false)
+    private Instant lastActivityAt = Instant.now();
 }

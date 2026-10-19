@@ -12,7 +12,9 @@ import com.omniretail.backend.auth.dto.VerifyMfaEnrollmentRequest;
 import com.omniretail.backend.auth.service.MfaLoginService;
 import com.omniretail.backend.auth.service.MfaService;
 import com.omniretail.backend.shared.exception.ApiError;
+import com.omniretail.backend.shared.security.ClientAddressResolver;
 import com.omniretail.backend.shared.security.CurrentUser;
+import com.omniretail.backend.shared.security.LoginFailureLimiter;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -20,6 +22,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -47,6 +50,7 @@ public class MfaController {
     private final MfaService mfaService;
     private final MfaLoginService mfaLoginService;
     private final CurrentUser currentUser;
+    private final LoginFailureLimiter loginFailureLimiter;
 
     @PostMapping("/verify")
     @SecurityRequirements
@@ -77,8 +81,11 @@ public class MfaController {
                         + "o cuenta bloqueada; hay que volver a iniciar sesión.",
                 content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
     })
-    public LoginResponse verifyChallenge(@RequestBody VerifyMfaChallengeRequest request) {
-        return mfaLoginService.verify(request);
+    public LoginResponse verifyChallenge(@RequestBody VerifyMfaChallengeRequest request, HttpServletRequest httpRequest) {
+        LoginResponse response = mfaLoginService.verify(request);
+        // La sesion se entrega aqui: limpia el contador IP + email que el desafio dejo intacto.
+        loginFailureLimiter.clear(ClientAddressResolver.resolve(httpRequest), response.user().email());
+        return response;
     }
 
     @PostMapping("/resend")

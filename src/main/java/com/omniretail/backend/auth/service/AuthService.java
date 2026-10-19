@@ -28,6 +28,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class AuthService {
 
+    public static final String INVALID_CREDENTIALS_CODE = "INVALID_CREDENTIALS";
     static final String INVALID_CREDENTIALS_MESSAGE =
             "No fue posible iniciar sesión. Verifica tus credenciales o intenta más tarde.";
 
@@ -161,6 +162,6 @@ public class AuthService {
     }
 
     private static BusinessException invalidCredentials() {
-        return new BusinessException(HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", INVALID_CREDENTIALS_MESSAGE);
+        return new BusinessException(HttpStatus.UNAUTHORIZED, INVALID_CREDENTIALS_CODE, INVALID_CREDENTIALS_MESSAGE);
     }
 }

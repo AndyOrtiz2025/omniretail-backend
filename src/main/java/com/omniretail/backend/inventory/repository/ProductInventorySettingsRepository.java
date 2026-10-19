@@ -111,14 +111,25 @@ public interface ProductInventorySettingsRepository
                             COALESCE(SUM(b.reserved_quantity), CAST(0 AS numeric)) AS reserved_quantity,
                             COALESCE(SUM(b.quantity - b.reserved_quantity), CAST(0 AS numeric)) AS available_quantity
                         FROM products p
+                        LEFT JOIN business_capabilities_configs config
+                          ON config.tenant_id = p.tenant_id
                         LEFT JOIN product_inventory_settings s
                           ON s.tenant_id = p.tenant_id
                          AND s.product_id = p.id
                          AND s.branch_id = :branchId
+                        LEFT JOIN locations l
+                          ON l.tenant_id = s.tenant_id
+                         AND l.branch_id = s.branch_id
+                         AND l.id = s.default_location_id
                         LEFT JOIN inventory_balances b
                           ON b.tenant_id = p.tenant_id
                          AND b.product_id = p.id
                          AND b.branch_id = :branchId
+                         AND b.location_id IS NOT DISTINCT FROM
+                             CASE WHEN COALESCE(config.supports_inventory, FALSE)
+                                  THEN s.default_location_id ELSE NULL END
+                         AND (COALESCE(config.supports_inventory, FALSE) = FALSE
+                              OR s.default_location_id IS NULL OR l.status = 'active')
                         WHERE p.tenant_id = :tenantId
                           AND p.status = 'published'
                           AND p.product_type = 'physical'
@@ -175,14 +186,25 @@ public interface ProductInventorySettingsRepository
                             s.reorder_point AS reorder_point,
                             COALESCE(SUM(b.quantity - b.reserved_quantity), CAST(0 AS numeric)) AS available_quantity
                         FROM products p
+                        LEFT JOIN business_capabilities_configs config
+                          ON config.tenant_id = p.tenant_id
                         LEFT JOIN product_inventory_settings s
                           ON s.tenant_id = p.tenant_id
                          AND s.product_id = p.id
                          AND s.branch_id = :branchId
+                        LEFT JOIN locations l
+                          ON l.tenant_id = s.tenant_id
+                         AND l.branch_id = s.branch_id
+                         AND l.id = s.default_location_id
                         LEFT JOIN inventory_balances b
                           ON b.tenant_id = p.tenant_id
                          AND b.product_id = p.id
                          AND b.branch_id = :branchId
+                         AND b.location_id IS NOT DISTINCT FROM
+                             CASE WHEN COALESCE(config.supports_inventory, FALSE)
+                                  THEN s.default_location_id ELSE NULL END
+                         AND (COALESCE(config.supports_inventory, FALSE) = FALSE
+                              OR s.default_location_id IS NULL OR l.status = 'active')
                         WHERE p.tenant_id = :tenantId
                           AND p.status = 'published'
                           AND p.product_type = 'physical'
@@ -212,7 +234,7 @@ public interface ProductInventorySettingsRepository
 
     /**
      * Listado de stock del tenant/sucursal sobre un conjunto mezclado de filas:
-     * physical (stock real, alertas), service (informativo, sin stock) y kit (disponibilidad DERIVADA de sus
+     * physical (stock operativo, alertas), service (informativo, sin stock) y kit (disponibilidad DERIVADA de sus
      * componentes físicos). Solo las filas physical tienen balances y estado físico; service/kit nunca generan
      * balances ni alertas. Disponibilidad del kit = MIN(FLOOR(GREATEST(disponible_componente, 0) / quantity_per_kit));
      * un kit sin componentes, o con algún componente que ya no es physical + published + tracking_stock, vale 0.
@@ -236,6 +258,8 @@ public interface ProductInventorySettingsRepository
                                COALESCE(SUM(b.reserved_quantity), CAST(0 AS numeric)) AS reserved_quantity,
                                COALESCE(SUM(b.quantity - b.reserved_quantity), CAST(0 AS numeric)) AS available_quantity
                         FROM products p
+                        LEFT JOIN business_capabilities_configs config
+                          ON config.tenant_id = p.tenant_id
                         LEFT JOIN categories c
                           ON c.tenant_id = p.tenant_id AND c.id = p.category_id
                         LEFT JOIN product_inventory_settings s
@@ -244,6 +268,11 @@ public interface ProductInventorySettingsRepository
                           ON l.tenant_id = p.tenant_id AND l.id = s.default_location_id AND l.branch_id = :branchId
                         LEFT JOIN inventory_balances b
                           ON b.tenant_id = p.tenant_id AND b.product_id = p.id AND b.branch_id = :branchId
+                         AND b.location_id IS NOT DISTINCT FROM
+                             CASE WHEN COALESCE(config.supports_inventory, FALSE)
+                                  THEN s.default_location_id ELSE NULL END
+                         AND (COALESCE(config.supports_inventory, FALSE) = FALSE
+                              OR s.default_location_id IS NULL OR l.status = 'active')
                         WHERE p.tenant_id = :tenantId
                           AND :includePhysical = TRUE
                           AND p.status = 'published'
@@ -262,6 +291,8 @@ public interface ProductInventorySettingsRepository
                         SELECT lot.product_id,
                                MIN(lot.expiration_date) AS next_expiration_date
                         FROM inventory_lots lot
+                        LEFT JOIN business_capabilities_configs expiration_config
+                          ON expiration_config.tenant_id = lot.tenant_id
                         JOIN inventory_lot_balances balance
                           ON balance.tenant_id = lot.tenant_id
                          AND balance.lot_id = lot.id
@@ -270,7 +301,21 @@ public interface ProductInventorySettingsRepository
                         JOIN products expiration_product
                           ON expiration_product.tenant_id = lot.tenant_id
                          AND expiration_product.id = lot.product_id
+                        LEFT JOIN product_inventory_settings expiration_settings
+                          ON expiration_settings.tenant_id = lot.tenant_id
+                         AND expiration_settings.branch_id = :branchId
+                         AND expiration_settings.product_id = lot.product_id
+                        LEFT JOIN locations expiration_location
+                          ON expiration_location.tenant_id = expiration_settings.tenant_id
+                         AND expiration_location.branch_id = expiration_settings.branch_id
+                         AND expiration_location.id = expiration_settings.default_location_id
                         WHERE lot.tenant_id = :tenantId
+                          AND balance.location_id IS NOT DISTINCT FROM
+                              CASE WHEN COALESCE(expiration_config.supports_inventory, FALSE)
+                                   THEN expiration_settings.default_location_id ELSE NULL END
+                          AND (COALESCE(expiration_config.supports_inventory, FALSE) = FALSE
+                               OR expiration_settings.default_location_id IS NULL
+                               OR expiration_location.status = 'active')
                           AND lot.expiration_date >= :businessDate
                           AND expiration_product.status = 'published'
                           AND expiration_product.product_type = 'physical'
@@ -322,12 +367,27 @@ public interface ProductInventorySettingsRepository
                                    ELSE CAST(0 AS numeric)
                                END AS kits_available
                         FROM product_kit_components kc
+                        LEFT JOIN business_capabilities_configs config
+                          ON config.tenant_id = kc.tenant_id
                         LEFT JOIN products cp
                           ON cp.tenant_id = kc.tenant_id AND cp.id = kc.component_product_id
+                        LEFT JOIN product_inventory_settings cs
+                          ON cs.tenant_id = kc.tenant_id
+                         AND cs.branch_id = :branchId
+                         AND cs.product_id = kc.component_product_id
+                        LEFT JOIN locations cl
+                          ON cl.tenant_id = cs.tenant_id
+                         AND cl.branch_id = cs.branch_id
+                         AND cl.id = cs.default_location_id
                         LEFT JOIN inventory_balances b
                           ON b.tenant_id = kc.tenant_id
                          AND b.product_id = kc.component_product_id
                          AND b.branch_id = :branchId
+                         AND b.location_id IS NOT DISTINCT FROM
+                             CASE WHEN COALESCE(config.supports_inventory, FALSE)
+                                  THEN cs.default_location_id ELSE NULL END
+                         AND (COALESCE(config.supports_inventory, FALSE) = FALSE
+                              OR cs.default_location_id IS NULL OR cl.status = 'active')
                         WHERE kc.tenant_id = :tenantId
                           AND :includeKit = TRUE
                         GROUP BY kc.id, kc.kit_product_id, kc.quantity_per_kit,
@@ -448,6 +508,8 @@ public interface ProductInventorySettingsRepository
                                s.reorder_point AS reorder_point,
                                COALESCE(SUM(b.quantity - b.reserved_quantity), CAST(0 AS numeric)) AS available_quantity
                         FROM products p
+                        LEFT JOIN business_capabilities_configs config
+                          ON config.tenant_id = p.tenant_id
                         LEFT JOIN categories c ON c.tenant_id = p.tenant_id AND c.id = p.category_id
                         LEFT JOIN product_inventory_settings s
                           ON s.tenant_id = p.tenant_id AND s.product_id = p.id AND s.branch_id = :branchId
@@ -455,6 +517,11 @@ public interface ProductInventorySettingsRepository
                           ON l.tenant_id = p.tenant_id AND l.id = s.default_location_id AND l.branch_id = :branchId
                         LEFT JOIN inventory_balances b
                           ON b.tenant_id = p.tenant_id AND b.product_id = p.id AND b.branch_id = :branchId
+                         AND b.location_id IS NOT DISTINCT FROM
+                             CASE WHEN COALESCE(config.supports_inventory, FALSE)
+                                  THEN s.default_location_id ELSE NULL END
+                         AND (COALESCE(config.supports_inventory, FALSE) = FALSE
+                              OR s.default_location_id IS NULL OR l.status = 'active')
                         WHERE p.tenant_id = :tenantId AND :includePhysical = TRUE AND p.status = 'published'
                           AND p.product_type = 'physical' AND p.tracking_stock = TRUE
                           AND (:categoryId IS NULL OR p.category_id = :categoryId)
@@ -517,6 +584,8 @@ public interface ProductInventorySettingsRepository
                        s.reorder_point AS reorder_point,
                        COALESCE(SUM(b.quantity - b.reserved_quantity), CAST(0 AS numeric)) AS available_quantity
                 FROM products p
+                LEFT JOIN business_capabilities_configs config
+                  ON config.tenant_id = p.tenant_id
                 LEFT JOIN categories c ON c.tenant_id = p.tenant_id AND c.id = p.category_id
                 LEFT JOIN product_inventory_settings s
                   ON s.tenant_id = p.tenant_id AND s.product_id = p.id AND s.branch_id = :branchId
@@ -524,6 +593,11 @@ public interface ProductInventorySettingsRepository
                   ON l.tenant_id = p.tenant_id AND l.id = s.default_location_id AND l.branch_id = :branchId
                 LEFT JOIN inventory_balances b
                   ON b.tenant_id = p.tenant_id AND b.product_id = p.id AND b.branch_id = :branchId
+                 AND b.location_id IS NOT DISTINCT FROM
+                     CASE WHEN COALESCE(config.supports_inventory, FALSE)
+                          THEN s.default_location_id ELSE NULL END
+                 AND (COALESCE(config.supports_inventory, FALSE) = FALSE
+                      OR s.default_location_id IS NULL OR l.status = 'active')
                 WHERE p.tenant_id = :tenantId AND p.status = 'published'
                   AND p.product_type = 'physical' AND p.tracking_stock = TRUE
                   AND (:categoryId IS NULL OR p.category_id = :categoryId)
@@ -536,6 +610,8 @@ public interface ProductInventorySettingsRepository
             ), expiration_products AS (
                 SELECT DISTINCT lot.product_id
                 FROM inventory_lots lot
+                LEFT JOIN business_capabilities_configs expiration_config
+                  ON expiration_config.tenant_id = lot.tenant_id
                 JOIN inventory_lot_balances balance
                   ON balance.tenant_id = lot.tenant_id
                  AND balance.lot_id = lot.id
@@ -544,7 +620,21 @@ public interface ProductInventorySettingsRepository
                 JOIN products expiration_product
                   ON expiration_product.tenant_id = lot.tenant_id
                  AND expiration_product.id = lot.product_id
+                LEFT JOIN product_inventory_settings expiration_settings
+                  ON expiration_settings.tenant_id = lot.tenant_id
+                 AND expiration_settings.branch_id = :branchId
+                 AND expiration_settings.product_id = lot.product_id
+                LEFT JOIN locations expiration_location
+                  ON expiration_location.tenant_id = expiration_settings.tenant_id
+                 AND expiration_location.branch_id = expiration_settings.branch_id
+                 AND expiration_location.id = expiration_settings.default_location_id
                 WHERE lot.tenant_id = :tenantId
+                  AND balance.location_id IS NOT DISTINCT FROM
+                      CASE WHEN COALESCE(expiration_config.supports_inventory, FALSE)
+                           THEN expiration_settings.default_location_id ELSE NULL END
+                  AND (COALESCE(expiration_config.supports_inventory, FALSE) = FALSE
+                       OR expiration_settings.default_location_id IS NULL
+                       OR expiration_location.status = 'active')
                   AND lot.expiration_date BETWEEN CAST(:businessDate AS date)
                                                AND CAST(:businessDate AS date) + 30
                   AND expiration_product.status = 'published'
@@ -584,7 +674,7 @@ public interface ProductInventorySettingsRepository
             @Param("businessDate") LocalDate businessDate);
 
     /**
-     * Stock físico de varios productos de una sucursal en UNA query (sin filtros de estado de producto). Misma
+     * Stock operativo de varios productos de una sucursal en UNA query (sin filtros de estado de producto). Misma
      * clasificación y reorden sugerido que {@code findStock}; solo productos físicos con control de stock.
      */
     @Query(value = """
@@ -596,10 +686,19 @@ public interface ProductInventorySettingsRepository
                        COALESCE(SUM(b.reserved_quantity), CAST(0 AS numeric)) AS reserved_quantity,
                        COALESCE(SUM(b.quantity - b.reserved_quantity), CAST(0 AS numeric)) AS available_quantity
                 FROM products p
+                LEFT JOIN business_capabilities_configs config
+                  ON config.tenant_id = p.tenant_id
                 LEFT JOIN product_inventory_settings s
                   ON s.tenant_id = p.tenant_id AND s.product_id = p.id AND s.branch_id = :branchId
+                LEFT JOIN locations l
+                  ON l.tenant_id = s.tenant_id AND l.branch_id = s.branch_id AND l.id = s.default_location_id
                 LEFT JOIN inventory_balances b
                   ON b.tenant_id = p.tenant_id AND b.product_id = p.id AND b.branch_id = :branchId
+                 AND b.location_id IS NOT DISTINCT FROM
+                     CASE WHEN COALESCE(config.supports_inventory, FALSE)
+                          THEN s.default_location_id ELSE NULL END
+                 AND (COALESCE(config.supports_inventory, FALSE) = FALSE
+                      OR s.default_location_id IS NULL OR l.status = 'active')
                 WHERE p.tenant_id = :tenantId
                   AND p.id IN (:productIds)
                   AND p.product_type = 'physical'
@@ -662,12 +761,27 @@ public interface ProductInventorySettingsRepository
                                                 CAST(0 AS numeric)) / kc.quantity_per_kit)
                             ELSE CAST(0 AS numeric) END AS kit_capacity
                 FROM product_kit_components kc
+                LEFT JOIN business_capabilities_configs config
+                  ON config.tenant_id = kc.tenant_id
                 LEFT JOIN products cp
                   ON cp.tenant_id = kc.tenant_id AND cp.id = kc.component_product_id
+                LEFT JOIN product_inventory_settings cs
+                  ON cs.tenant_id = kc.tenant_id
+                 AND cs.branch_id = :branchId
+                 AND cs.product_id = kc.component_product_id
+                LEFT JOIN locations cl
+                  ON cl.tenant_id = cs.tenant_id
+                 AND cl.branch_id = cs.branch_id
+                 AND cl.id = cs.default_location_id
                 LEFT JOIN inventory_balances b
                   ON b.tenant_id = kc.tenant_id
                  AND b.product_id = kc.component_product_id
                  AND b.branch_id = :branchId
+                 AND b.location_id IS NOT DISTINCT FROM
+                     CASE WHEN COALESCE(config.supports_inventory, FALSE)
+                          THEN cs.default_location_id ELSE NULL END
+                 AND (COALESCE(config.supports_inventory, FALSE) = FALSE
+                      OR cs.default_location_id IS NULL OR cl.status = 'active')
                 WHERE kc.tenant_id = :tenantId
                   AND kc.kit_product_id = :kitProductId
                 GROUP BY kc.id, kc.component_product_id, kc.quantity_per_kit,

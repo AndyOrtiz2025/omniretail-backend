@@ -42,7 +42,7 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * Ubicacion operativa unica por producto y sucursal.
  *
- * <p>Con el control de ubicaciones habilitado ({@code supportsMultipleLocations}), el unico balance
+ * <p>Con el control de inventario habilitado ({@code supportsInventory}), el unico balance
  * operativo de un producto en una sucursal es el de {@code product_inventory_settings.default_location_id}.
  * Reservas, salidas y entradas nuevas se resuelven contra ese balance:
  *
@@ -63,15 +63,16 @@ import org.springframework.transaction.annotation.Transactional;
  * registra en el log.
  *
  * <p>Concurrencia: toda operacion que decide o cambia la ubicacion toma primero un bloqueo de la fila del
- * producto y luego el del balance, siempre en ese orden. Las decisiones (reservas, salidas, entradas,
+ * producto, despues la ubicacion cuando se asigna o regulariza, y luego el balance, siempre en ese orden.
+ * Las decisiones (reservas, salidas, entradas,
  * restauraciones) toman el bloqueo compartido ({@code FOR SHARE}); el cambio de ubicacion asignada toma el
  * exclusivo ({@code FOR UPDATE}). Asi un cambio de configuracion y una reserva o recepcion no pueden
  * cruzarse, pero las decisiones entre si no se serializan por producto (ni entre sucursales) y el bloqueo
  * compartido no choca con las claves foraneas de los movimientos que inserten otros flujos mientras tienen
  * un balance bloqueado. El bloqueo del producto solo se toma con ubicaciones habilitadas. Antes de ambos, las
  * decisiones toman el bloqueo compartido de la fila de configuracion del tenant y el cambio de configuracion
- * que apaga las ubicaciones ({@link #assertCanDisableLocations}) el exclusivo: configuracion -> producto ->
- * balance.
+ * que apaga el inventario ({@link #assertCanDisableLocations}) el exclusivo: configuracion -> producto ->
+ * ubicacion (cuando aplica) -> balance.
  */
 @Service
 @RequiredArgsConstructor
@@ -155,19 +156,19 @@ public class InventoryOperationalLocationService {
     }
 
     /**
-     * Guarda de la transicion habilitado -> deshabilitado de {@code supportsMultipleLocations}. Toma el bloqueo
+     * Guarda de la transicion habilitado -> deshabilitado de {@code supportsInventory}. Toma el bloqueo
      * exclusivo de la fila de configuracion del tenant (las decisiones de inventario toman el compartido, ver
      * {@link #locationsEnabledForDecision}), de modo que ninguna reserva, venta o entrada en curso puede
-     * cruzarse con el cambio, y rechaza con 409 si algun balance con ubicacion (asignada o heredada no asignada)
-     * conserva existencias o reservas: con el control apagado las ventas solo ven el balance sin ubicacion y
-     * ese inventario quedaria oculto. No mueve, borra ni fusiona nada. Si la capacidad ya estaba apagada, o el
-     * tenant no tiene configuracion, no hace nada. Debe llamarse dentro de la transaccion que guarda la
-     * configuracion, antes de aplicarla.
+     * cruzarse con el cambio, y rechaza con 409 si algun balance agregado, lote o serie con ubicacion conserva
+     * existencias o reservas: con el control apagado las ventas solo ven el balance sin ubicacion y ese
+     * inventario quedaria oculto. No mueve, borra ni fusiona nada. Si la capacidad ya estaba apagada, o el tenant
+     * no tiene configuracion, no hace nada. Debe llamarse dentro de la transaccion que guarda la configuracion,
+     * antes de aplicarla.
      */
     @Transactional
     public void assertCanDisableLocations(UUID tenantId) {
         List<?> rows = entityManager
-                .createNativeQuery("SELECT supports_multiple_locations FROM business_capabilities_configs "
+                .createNativeQuery("SELECT supports_inventory FROM business_capabilities_configs "
                         + "WHERE tenant_id = :tenantId FOR UPDATE")
                 .setParameter("tenantId", tenantId)
                 .getResultList();
@@ -175,9 +176,31 @@ public class InventoryOperationalLocationService {
             return;
         }
         Number atRisk = (Number) entityManager
-                .createNativeQuery("SELECT COUNT(*) FROM (SELECT DISTINCT branch_id, product_id "
-                        + "FROM inventory_balances WHERE tenant_id = :tenantId AND location_id IS NOT NULL "
-                        + "AND (quantity > 0 OR reserved_quantity > 0)) at_risk")
+                .createNativeQuery("""
+                        SELECT COUNT(*)
+                        FROM (
+                            SELECT branch_id, product_id
+                            FROM inventory_balances
+                            WHERE tenant_id = :tenantId
+                              AND location_id IS NOT NULL
+                              AND (quantity > 0 OR reserved_quantity > 0)
+                            UNION
+                            SELECT lot_balance.branch_id, lot.product_id
+                            FROM inventory_lot_balances lot_balance
+                            JOIN inventory_lots lot
+                              ON lot.tenant_id = lot_balance.tenant_id
+                             AND lot.id = lot_balance.lot_id
+                            WHERE lot_balance.tenant_id = :tenantId
+                              AND lot_balance.location_id IS NOT NULL
+                              AND (lot_balance.quantity > 0 OR lot_balance.reserved_quantity > 0)
+                            UNION
+                            SELECT branch_id, product_id
+                            FROM inventory_serials
+                            WHERE tenant_id = :tenantId
+                              AND location_id IS NOT NULL
+                              AND status IN ('AVAILABLE', 'RESERVED', 'IN_TRANSIT')
+                        ) at_risk
+                        """)
                 .setParameter("tenantId", tenantId)
                 .getSingleResult();
         if (atRisk.longValue() > 0) {
@@ -201,7 +224,7 @@ public class InventoryOperationalLocationService {
      */
     private boolean locationsEnabledForDecision(UUID tenantId) {
         List<?> rows = entityManager
-                .createNativeQuery("SELECT supports_multiple_locations FROM business_capabilities_configs "
+                .createNativeQuery("SELECT supports_inventory FROM business_capabilities_configs "
                         + "WHERE tenant_id = :tenantId FOR SHARE")
                 .setParameter("tenantId", tenantId)
                 .getResultList();
@@ -256,7 +279,7 @@ public class InventoryOperationalLocationService {
     public boolean locationsEnabled(UUID tenantId) {
         return capabilitiesRepository
                 .findByTenantId(tenantId)
-                .map(BusinessCapabilitiesConfig::isSupportsMultipleLocations)
+                .map(BusinessCapabilitiesConfig::isSupportsInventory)
                 .orElse(false);
     }
 
@@ -425,8 +448,9 @@ public class InventoryOperationalLocationService {
     }
 
     /**
-     * Reservas y salidas. Sin asignacion (o con el control deshabilitado) se conserva el balance NULL
-     * heredado. Una ubicacion asignada inactiva no aporta existencias vendibles.
+     * Reservas y salidas. Sin asignacion solo se conserva el balance NULL cuando este ya existe como legado;
+     * un producto nuevo sin asignacion falla de forma explicita. Una ubicacion asignada inactiva no aporta
+     * existencias vendibles.
      */
     @Transactional
     public OperationalLocation resolveForSale(UUID tenantId, UUID branchId, UUID productId) {
@@ -436,10 +460,30 @@ public class InventoryOperationalLocationService {
         lockProductShared(tenantId, productId);
         UUID assigned = assignedLocationId(tenantId, branchId, productId);
         if (assigned == null) {
+            if (!hasLegacyNullBalance(tenantId, branchId, productId)) {
+                throw locationNotAssigned();
+            }
             return new OperationalLocation(true, null);
         }
         requireUsableAssignedLocation(tenantId, branchId, assigned);
         return new OperationalLocation(true, assigned);
+    }
+
+    /**
+     * Valida una salida ordinaria que ya trae ubicacion explicita (POS trazable y ajustes negativos). Debe
+     * invocarse antes de bloquear balances, lotes o series para conservar el orden configuracion -> producto
+     * -> balance/trazas. No se usa para restauraciones historicas ni regularizaciones administrativas.
+     */
+    @Transactional
+    public OperationalLocation resolveForOrdinaryOutbound(
+            UUID tenantId, UUID branchId, UUID productId, UUID requestedLocationId) {
+        OperationalLocation operational = resolveForSale(tenantId, branchId, productId);
+        if (operational.enabled() && !Objects.equals(operational.locationId(), requestedLocationId)) {
+            throw BusinessException.conflict(
+                    LOCATION_MISMATCH_CODE,
+                    "La salida debe utilizar la ubicacion operativa asignada al producto en la sucursal.");
+        }
+        return operational;
     }
 
     /**
@@ -477,6 +521,16 @@ public class InventoryOperationalLocationService {
         }
         lockProductExclusive(tenantId, productId);
         UUID current = assignedLocationId(tenantId, branchId, productId);
+        if (newLocationId == null) {
+            if (current == null && hasLegacyNullBalance(tenantId, branchId, productId)) {
+                return;
+            }
+            throw BusinessException.conflict(
+                    LOCATION_REQUIRED_CODE,
+                    "El producto requiere una ubicacion operativa activa para gestionar inventario.");
+        }
+        // Bloqueo compartido despues del producto: evita que la ubicacion se inactive mientras se asigna.
+        requireUsableAssignedLocationForShare(tenantId, branchId, newLocationId);
         if (Objects.equals(current, newLocationId)) {
             return;
         }
@@ -838,6 +892,29 @@ public class InventoryOperationalLocationService {
         if (unusable != null) {
             throw unusable;
         }
+    }
+
+    private void requireUsableAssignedLocationForShare(UUID tenantId, UUID branchId, UUID locationId) {
+        Location location = locationRepository
+                .findForShareByTenantIdAndId(tenantId, locationId)
+                .filter(found -> branchId.equals(found.getBranchId()))
+                .orElseThrow(() -> BusinessException.conflict(
+                        ASSIGNED_LOCATION_INVALID_CODE,
+                        "La ubicacion asignada al producto no existe o no pertenece a la sucursal."));
+        // Una lectura anterior en esta transaccion puede haber dejado la entidad gestionada con estado obsoleto.
+        // El FOR SHARE ya protege la fila; refresh materializa el estado confirmado que quedo bajo ese bloqueo.
+        entityManager.refresh(location);
+        if (location.getStatus() != LocationStatus.active) {
+            throw BusinessException.conflict(
+                    ASSIGNED_LOCATION_INACTIVE_CODE,
+                    "La ubicacion asignada al producto esta inactiva. Asigne una ubicacion activa.");
+        }
+    }
+
+    private static BusinessException locationNotAssigned() {
+        return BusinessException.conflict(
+                LOCATION_NOT_ASSIGNED_CODE,
+                "El producto no tiene una ubicacion operativa asignada en la sucursal.");
     }
 
     /** null si la ubicacion asignada existe, es de la sucursal y esta activa; si no, el motivo (409). */

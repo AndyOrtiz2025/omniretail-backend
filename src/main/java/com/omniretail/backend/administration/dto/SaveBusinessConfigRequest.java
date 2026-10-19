@@ -6,6 +6,10 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import java.util.List;
 
+/**
+ * {@code supportsMultipleLocations} se conserva para clientes existentes. El backend lo normaliza a
+ * {@code supportsInventory}; no es una capacidad que pueda deshabilitarse de forma independiente.
+ */
 public record SaveBusinessConfigRequest(
         @NotNull BusinessPreset preset,
         boolean supportsInventory,

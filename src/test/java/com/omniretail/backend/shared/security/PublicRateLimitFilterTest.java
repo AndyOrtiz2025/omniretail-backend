@@ -2,6 +2,7 @@ package com.omniretail.backend.shared.security;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
@@ -28,6 +29,28 @@ class PublicRateLimitFilterTest {
     }
 
     @Test
+    void withTheDefaultLoginLimitOfFifteenTheSixteenthLoginOrGoogleRequestIsBlocked() throws Exception {
+        PublicRateLimitFilter filter = filter(15);
+        AtomicInteger forwarded = new AtomicInteger();
+
+        for (int request = 1; request <= 14; request++) {
+            assertThat(send(filter, "/api/v1/auth/login", "203.0.113.40", null, forwarded).getStatus()).isEqualTo(200);
+        }
+        // /auth/google comparte el grupo LOGIN.
+        assertThat(send(filter, "/api/v1/auth/google", "203.0.113.40", null, forwarded).getStatus()).isEqualTo(200);
+        MockHttpServletResponse blocked = send(filter, "/api/v1/auth/login", "203.0.113.40", null, forwarded);
+
+        assertThat(blocked.getStatus()).isEqualTo(429);
+        JsonNode body = new ObjectMapper().readTree(blocked.getContentAsString());
+        assertThat(body.path("status").asInt()).isEqualTo(429);
+        assertThat(body.path("error").asText()).isEqualTo("Too Many Requests");
+        assertThat(body.path("code").asText()).isEqualTo("RATE_LIMITED");
+        assertThat(body.path("message").asText()).isNotBlank();
+        assertThat(body.path("timestamp").asText()).isNotBlank();
+        assertThat(forwarded.get()).isEqualTo(15);
+    }
+
+    @Test
     void distinguishesTrustedProxyClientAddressesButIgnoresSpoofedHeadersFromPublicPeers() throws Exception {
         PublicRateLimitFilter filter = filter(1);
         AtomicInteger forwarded = new AtomicInteger();
@@ -43,6 +66,16 @@ class PublicRateLimitFilterTest {
     }
 
     @Test
+    void limitsEmailVerifyAsRecovery() throws Exception {
+        assertRecoveryLimitBlocks("/api/v1/auth/email/verify");
+    }
+
+    @Test
+    void limitsEmailResendAsRecovery() throws Exception {
+        assertRecoveryLimitBlocks("/api/v1/auth/email/resend");
+    }
+
+    @Test
     void leavesNonSensitivePublicRoutesUntouched() throws Exception {
         PublicRateLimitFilter filter = filter(1);
         AtomicInteger forwarded = new AtomicInteger();
@@ -52,6 +85,108 @@ class PublicRateLimitFilterTest {
 
         assertThat(response.getStatus()).isEqualTo(200);
         assertThat(forwarded.get()).isEqualTo(1);
+    }
+
+    /** Con el limite de recuperacion en 2 (ver {@link #filter}), la 3.a peticion POST responde 429. */
+    private static void assertRecoveryLimitBlocks(String path) throws Exception {
+        PublicRateLimitFilter filter = filter(10);
+        AtomicInteger forwarded = new AtomicInteger();
+
+        MockHttpServletResponse first = send(filter, path, "203.0.113.8", null, forwarded);
+        MockHttpServletResponse second = send(filter, path, "203.0.113.8", null, forwarded);
+        MockHttpServletResponse blocked = send(filter, path, "203.0.113.8", null, forwarded);
+
+        assertThat(first.getStatus()).isEqualTo(200);
+        assertThat(second.getStatus()).isEqualTo(200);
+        assertThat(blocked.getStatus()).isEqualTo(429);
+        assertThat(blocked.getHeader("Retry-After")).isNotBlank();
+        assertThat(blocked.getContentAsString()).contains("RATE_LIMITED");
+        assertThat(forwarded.get()).isEqualTo(2);
+    }
+
+    @Test
+    void contactRequestsHaveTheirOwnGroupAndDoNotConsumeTheLoginBudget() throws Exception {
+        PublicRateLimitFilter filter = filter(2);
+        AtomicInteger forwarded = new AtomicInteger();
+        String contact = "/api/v1/public/contact-requests";
+
+        assertThat(send(filter, contact, "203.0.113.9", null, forwarded).getStatus()).isEqualTo(200);
+        assertThat(send(filter, contact, "203.0.113.9", null, forwarded).getStatus()).isEqualTo(200);
+        MockHttpServletResponse blocked = send(filter, contact, "203.0.113.9", null, forwarded);
+        assertThat(blocked.getStatus()).isEqualTo(429);
+        assertThat(blocked.getContentAsString()).contains("RATE_LIMITED");
+        // El login de la misma IP sigue disponible.
+        assertThat(send(filter, "/api/v1/auth/login", "203.0.113.9", null, forwarded).getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    void aFloodOfContactClientsDoesNotExhaustTheLoginCapacity() throws Exception {
+        PublicRateLimitFilter filter = new PublicRateLimitFilter(new PublicRateLimitProperties(
+                true, 60, 2, 5, 5, 5, 5, 5, 5, 5), new ObjectMapper());
+        AtomicInteger forwarded = new AtomicInteger();
+        String contact = "/api/v1/public/contact-requests";
+
+        send(filter, contact, "203.0.113.1", null, forwarded);
+        send(filter, contact, "203.0.113.2", null, forwarded);
+        assertThat(send(filter, contact, "203.0.113.3", null, forwarded).getStatus()).isEqualTo(429);
+        // Cupo de clientes agotado en "contact": un cliente nuevo aun puede iniciar sesion.
+        assertThat(send(filter, "/api/v1/auth/login", "203.0.113.4", null, forwarded).getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    void forwardedForIsIgnoredWhenTheConnectionDoesNotComeFromAnInternalProxy() throws Exception {
+        PublicRateLimitFilter filter = filter(2);
+        AtomicInteger forwarded = new AtomicInteger();
+        String contact = "/api/v1/public/contact-requests";
+
+        // Un cliente publico no puede cambiar de "IP" cambiando el encabezado.
+        send(filter, contact, "203.0.113.50", "198.51.100.1", forwarded);
+        send(filter, contact, "203.0.113.50", "198.51.100.2", forwarded);
+        assertThat(send(filter, contact, "203.0.113.50", "198.51.100.3", forwarded).getStatus()).isEqualTo(429);
+    }
+
+    @Test
+    void theRateLimitedBodyCarriesNumericRetryAfterSecondsEqualToTheHeader() throws Exception {
+        PublicRateLimitFilter filter = filter(1);
+        AtomicInteger forwarded = new AtomicInteger();
+
+        send(filter, "/api/v1/auth/login", "203.0.113.20", null, forwarded);
+        MockHttpServletResponse blocked = send(filter, "/api/v1/auth/login", "203.0.113.20", null, forwarded);
+
+        assertThat(blocked.getStatus()).isEqualTo(429);
+        assertThat(blocked.getHeader("Retry-After")).matches("\\d+");
+        JsonNode body = new ObjectMapper().readTree(blocked.getContentAsString());
+        assertThat(body.path("code").asText()).isEqualTo("RATE_LIMITED");
+        assertThat(body.path("retryAfterSeconds").isNumber()).isTrue();
+        assertThat(body.path("retryAfterSeconds").asLong())
+                .isPositive()
+                .isEqualTo(Long.parseLong(blocked.getHeader("Retry-After")));
+    }
+
+    @Test
+    void loginContactAndRecoveryLimitsAreIndependentForTheSameClient() throws Exception {
+        // login 1, recovery 2, contact 2 por ventana (ver filter()).
+        PublicRateLimitFilter filter = filter(1);
+        AtomicInteger forwarded = new AtomicInteger();
+        String ip = "203.0.113.30";
+        String login = "/api/v1/auth/login";
+        String recovery = "/api/v1/auth/password/forgot";
+        String contact = "/api/v1/public/contact-requests";
+
+        assertThat(send(filter, login, ip, null, forwarded).getStatus()).isEqualTo(200);
+        assertThat(send(filter, login, ip, null, forwarded).getStatus()).isEqualTo(429);
+
+        // Agotar login no toca contact ni recovery.
+        assertThat(send(filter, contact, ip, null, forwarded).getStatus()).isEqualTo(200);
+        assertThat(send(filter, contact, ip, null, forwarded).getStatus()).isEqualTo(200);
+        assertThat(send(filter, contact, ip, null, forwarded).getStatus()).isEqualTo(429);
+
+        // Agotar contact tampoco toca recovery.
+        assertThat(send(filter, recovery, ip, null, forwarded).getStatus()).isEqualTo(200);
+        assertThat(send(filter, recovery, ip, null, forwarded).getStatus()).isEqualTo(200);
+        assertThat(send(filter, recovery, ip, null, forwarded).getStatus()).isEqualTo(429);
+
+        assertThat(forwarded.get()).isEqualTo(5);
     }
 
     @Test
@@ -69,12 +204,14 @@ class PublicRateLimitFilterTest {
         assertThat(first.getStatus()).isEqualTo(200);
         assertThat(second.getStatus()).isEqualTo(200);
         assertThat(blocked.getStatus()).isEqualTo(429);
+        assertThat(blocked.getHeader("Retry-After")).isNotBlank();
+        assertThat(blocked.getContentAsString()).contains("RATE_LIMITED");
         assertThat(forwarded.get()).isEqualTo(2);
     }
 
     private static PublicRateLimitFilter filter(int loginPerWindow) {
         return new PublicRateLimitFilter(new PublicRateLimitProperties(
-                true, 60, 100, loginPerWindow, 2, 2, 2, 2, 2), new ObjectMapper());
+                true, 60, 100, loginPerWindow, 2, 2, 2, 2, 2, 2), new ObjectMapper());
     }
 
     private static MockHttpServletResponse send(PublicRateLimitFilter filter, String path, String remoteAddress,

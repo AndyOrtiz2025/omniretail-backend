@@ -1237,11 +1237,12 @@ class LocationControllerTest {
         jdbcTemplate.update(
                 """
                 INSERT INTO business_capabilities_configs
-                    (id, tenant_id, preset, supports_multiple_locations)
-                VALUES (?, ?, 'custom', ?)
+                    (id, tenant_id, preset, supports_inventory, supports_multiple_locations)
+                VALUES (?, ?, 'custom', ?, ?)
                 """,
                 UUID.randomUUID(),
                 tenantId,
+                supportsMultipleLocations,
                 supportsMultipleLocations);
         return tenantId;
     }

@@ -69,6 +69,7 @@ public class InventoryTraceabilityAdjustmentService {
     private final InventoryMovementRepository movementRepository;
     private final InventoryMovementTraceRepository movementTraceRepository;
     private final InventoryTraceabilityMutationService mutationService;
+    private final InventoryOperationalLocationService operationalLocationService;
 
     @Transactional
     public InventoryMovementResponse adjust(InventoryAdjustmentRequest request) {
@@ -97,6 +98,9 @@ public class InventoryTraceabilityAdjustmentService {
                     request.expectedQuantity()));
             return InventoryMovementResponse.from(movement);
         }
+        // Las salidas ordinarias deben resolver la ubicacion antes de tomar balances, lotes o series.
+        operationalLocationService.resolveForOrdinaryOutbound(
+                tenantId, request.branchId(), product.getId(), request.locationId());
         Location location = requireLocation(tenantId, request.branchId(), request.locationId());
         TraceInput trace = validateTraceInput(tenantId, product, request);
 

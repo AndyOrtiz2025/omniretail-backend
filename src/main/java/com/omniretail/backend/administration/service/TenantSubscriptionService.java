@@ -8,7 +8,6 @@ import com.omniretail.backend.administration.dto.TenantSubscriptionDetailsRespon
 import com.omniretail.backend.administration.dto.TenantSubscriptionDetailsResponse.SelectablePlan;
 import com.omniretail.backend.administration.dto.TenantSubscriptionDetailsResponse.Subscription;
 import com.omniretail.backend.administration.dto.TenantSubscriptionDetailsResponse.Usage;
-import com.omniretail.backend.administration.dto.UpdateSubscriptionAddonsRequest;
 import com.omniretail.backend.administration.entity.PlanStatus;
 import com.omniretail.backend.administration.entity.SaasPlan;
 import com.omniretail.backend.administration.entity.SubscriptionInvoice;
@@ -54,17 +53,32 @@ public class TenantSubscriptionService {
     private final JsonMapper jsonMapper;
     private final Clock subscriptionClock;
 
+    /**
+     * Consulta informativa del plan y los modulos contratados. Es de solo lectura: no bloquea filas ni genera
+     * registros de facturacion simulada (el ciclo se calcula en memoria con el reloj de suscripcion). Las facturas
+     * simuladas existentes se listan tal como estan; nuevas instantaneas solo las crea
+     * {@link #configureAddons(UUID, List)} al cambiar los complementos.
+     */
+    @Transactional(readOnly = true)
     public TenantSubscriptionDetailsResponse getCurrent() {
         UUID tenantId = currentUser.require().tenantId();
-        TenantSubscription subscription = lockSubscription(tenantId);
+        TenantSubscription subscription = DefaultTenantEntitlementResolver
+                .findEffectiveSubscription(subscriptionRepository, tenantId)
+                .orElseThrow(() -> new BusinessException(HttpStatus.NOT_FOUND,
+                        "TENANT_SUBSCRIPTION_NOT_FOUND", "El negocio activo no tiene una suscripción configurada."));
         SaasPlan plan = requirePlan(subscription.getPlanId());
-        var cycle = ensureCurrentInvoice(subscription, plan);
+        var cycle = SubscriptionBillingCycle.at(subscription.getStartedAt(), subscriptionClock.instant());
         return response(subscription, plan, cycle);
     }
 
-    public TenantSubscriptionDetailsResponse updateAddons(UpdateSubscriptionAddonsRequest request) {
-        List<String> next = SubscriptionAddonCatalog.normalize(request.addonCodes());
-        UUID tenantId = currentUser.require().tenantId();
+    /**
+     * Fija los complementos de UN tenant. Operacion INTERNA: no la expone ningun controller ni la invoca una
+     * peticion del tenant; solo la usa {@link SubscriptionProvisioningService}. El administrador de un cliente
+     * no puede cambiar sus complementos (ni con {@code admin.plans.manage}, que ya no abre ninguna operacion de
+     * escritura).
+     */
+    public TenantSubscriptionDetailsResponse configureAddons(UUID tenantId, List<String> addonCodes) {
+        List<String> next = SubscriptionAddonCatalog.normalize(addonCodes);
         TenantSubscription subscription = lockSubscription(tenantId);
         SaasPlan plan = requirePlan(subscription.getPlanId());
         if (plan.getStatus() != PlanStatus.active) {

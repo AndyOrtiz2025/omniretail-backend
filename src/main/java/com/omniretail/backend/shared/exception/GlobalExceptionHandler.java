@@ -1,5 +1,7 @@
 package com.omniretail.backend.shared.exception;
 
+import com.omniretail.backend.shared.security.RateLimitedException;
+import com.omniretail.backend.shared.security.RateLimitedResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import java.sql.SQLException;
 import java.time.Instant;
@@ -9,6 +11,7 @@ import java.util.Optional;
 import lombok.extern.slf4j.Slf4j;
 import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -26,6 +29,14 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<ApiError> handleBusiness(BusinessException ex, HttpServletRequest request) {
         return build(ex.getStatus(), ex.getCode(), ex.getMessage(), request, null);
+    }
+
+    /** Mismo cuerpo y cabecera que el 429 de PublicRateLimitFilter. */
+    @ExceptionHandler(RateLimitedException.class)
+    public ResponseEntity<Map<String, Object>> handleRateLimited(RateLimitedException ex, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, Long.toString(ex.getRetryAfterSeconds()))
+                .body(RateLimitedResponse.body(request.getRequestURI(), ex.getRetryAfterSeconds()));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

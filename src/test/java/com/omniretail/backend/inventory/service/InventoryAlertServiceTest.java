@@ -71,11 +71,21 @@ class InventoryAlertServiceTest {
     }
 
     @Test
-    void aggregatesNullAndLocatedBalancesUsingAvailableQuantityAndReorderPoint() {
+    void usesAssignedOperationalBalanceAndExcludesLegacyNullBalanceFromAlerts() {
         Fixture fixture = fixture();
         UUID product = addProduct(fixture, "physical", true, "published", "Agregado");
         UUID location = addLocation(fixture);
+        jdbc.update("""
+                INSERT INTO business_capabilities_configs
+                    (id, tenant_id, preset, supports_inventory, supports_multiple_locations)
+                VALUES (?, ?, 'custom', true, true)
+                """, UUID.randomUUID(), fixture.tenant());
         addSettings(fixture, product, "10", "20");
+        jdbc.update("""
+                UPDATE product_inventory_settings
+                SET default_location_id = ?
+                WHERE tenant_id = ? AND branch_id = ? AND product_id = ?
+                """, location, fixture.tenant(), fixture.branch(), product);
         addBalance(fixture, product, null, "8", "2");
         addBalance(fixture, product, location, "3", "1");
 
@@ -84,11 +94,11 @@ class InventoryAlertServiceTest {
                 .items()
                 .getFirst();
 
-        assertThat(alert.quantity()).isEqualByComparingTo("11");
-        assertThat(alert.reservedQuantity()).isEqualByComparingTo("3");
-        assertThat(alert.availableQuantity()).isEqualByComparingTo("8");
+        assertThat(alert.quantity()).isEqualByComparingTo("3");
+        assertThat(alert.reservedQuantity()).isEqualByComparingTo("1");
+        assertThat(alert.availableQuantity()).isEqualByComparingTo("2");
         assertThat(alert.status()).isEqualTo(InventoryAlertStatus.critical);
-        assertThat(alert.suggestedReorder()).isEqualByComparingTo("12");
+        assertThat(alert.suggestedReorder()).isEqualByComparingTo("18");
     }
 
     @Test

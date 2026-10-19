@@ -30,6 +30,8 @@ public class AuthAuditService {
     public static final String EXTERNAL_IDENTITY_LINKED = "external_identity_linked";
     /** Registro con el correo de una cuenta ya verificada: se envio el aviso "ya tienes una cuenta". */
     public static final String REGISTRATION_EXISTING_ACCOUNT = "registration_existing_account";
+    /** Sesion de empleado cerrada por el servidor por inactividad (metadata: sessionId e idleTimeoutMinutes). */
+    public static final String SESSION_IDLE_EXPIRED = "session_idle_expired";
 
     private final AuthAuditLogRepository auditLogRepository;
     private final Clock authClock;

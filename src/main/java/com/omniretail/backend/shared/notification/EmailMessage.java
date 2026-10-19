@@ -22,8 +22,12 @@ public record EmailMessage(
         List<EmailAttachmentContent> attachmentContents) {
 
     public EmailMessage {
-        Objects.requireNonNull(tenantId, "tenantId");
         Objects.requireNonNull(purpose, "purpose");
+        // Solo un correo de plataforma puede carecer de tenant (solicitudes comerciales). Los correos del tenant
+        // y los que se registran en email_delivery siguen exigiendolo.
+        if (tenantId == null && !purpose.isTenantless()) {
+            throw new NullPointerException("tenantId");
+        }
         Objects.requireNonNull(to, "to");
         attachments = attachments == null ? List.of() : List.copyOf(attachments);
         attachmentContents = attachmentContents == null ? List.of() : List.copyOf(attachmentContents);
@@ -32,6 +36,11 @@ public record EmailMessage(
     /** Correo sin adjuntos (compatibilidad con todos los usos anteriores). */
     public EmailMessage(UUID tenantId, EmailPurpose purpose, String to, String subject, String body, String html) {
         this(tenantId, purpose, to, subject, body, html, List.of(), List.of());
+    }
+
+    /** Multipart de plataforma sin tenant (solo propositos {@link EmailPurpose#isTenantless()}). */
+    public static EmailMessage platformHtml(EmailPurpose purpose, String to, String subject, String body, String html) {
+        return new EmailMessage(null, purpose, to, subject, body, html);
     }
 
     public static EmailMessage text(UUID tenantId, EmailPurpose purpose, String to, String subject, String body) {

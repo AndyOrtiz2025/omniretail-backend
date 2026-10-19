@@ -1,0 +1,15 @@
+# Prometheus para desarrollo local (docker compose --profile monitoring up -d).
+# El backend corre en el host (./mvnw spring-boot:run), con actuator en el mismo puerto 8080.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: backend
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["host.docker.internal:8080"]

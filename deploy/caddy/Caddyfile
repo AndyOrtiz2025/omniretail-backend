@@ -20,9 +20,12 @@ https://{$SITE_ADDRESS} {
 		max_size 6MB
 	}
 
-	# Cabeceras de seguridad comunes. La CSP la define el frontend (depende de Next.js y Google Sign-In).
+	# Cabeceras de seguridad comunes. CSP se aplica en el borde para web, API y media.
+	# Next.js necesita scripts y estilos inline; Google Identity Services carga recursos puntuales de accounts.google.com.
+	# Las imagenes http(s) se mantienen por compatibilidad con catalogos remotos existentes.
 	# HSTS solo tiene efecto sobre HTTPS; los navegadores lo ignoran en HTTP.
 	header {
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/client; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; img-src 'self' data: blob: https: http:; font-src 'self'; connect-src 'self' https://accounts.google.com/gsi/; frame-src https://accounts.google.com/gsi/"
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
@@ -33,6 +36,9 @@ https://{$SITE_ADDRESS} {
 
 	# Todo lo demas es el frontend Next.js (incluye sus rutas /api/auth, /api/media, etc.).
 	handle {
-		reverse_proxy web:3000
+		reverse_proxy web:3000 {
+			# Next reenvia esta IP al backend. La sobrescritura explicita mantiene a Caddy como unica fuente de verdad.
+			header_up X-Forwarded-For {remote_host}
+		}
 	}
 }
