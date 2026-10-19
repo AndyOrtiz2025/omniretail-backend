@@ -6,7 +6,6 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import java.time.Instant;
 import java.util.EnumMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -70,14 +69,8 @@ final class PublicRateLimitFilter extends OncePerRequestFilter {
         long retryAfterSeconds = decision.retryAfterSeconds();
         response.setHeader("Retry-After", Long.toString(retryAfterSeconds));
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-        objectMapper.writeValue(response.getOutputStream(), Map.of(
-                "status", HttpStatus.TOO_MANY_REQUESTS.value(),
-                "error", "Too Many Requests",
-                "code", "RATE_LIMITED",
-                "message", "Demasiados intentos. Intenta de nuevo en unos momentos.",
-                "path", request.getRequestURI(),
-                "timestamp", Instant.now().toString(),
-                "retryAfterSeconds", retryAfterSeconds));
+        objectMapper.writeValue(response.getOutputStream(),
+                RateLimitedResponse.body(request.getRequestURI(), retryAfterSeconds));
     }
 
     private Decision consume(RouteGroup group, String key, int limit) {
