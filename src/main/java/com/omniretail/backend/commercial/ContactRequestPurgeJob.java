@@ -37,7 +37,6 @@ class ContactRequestPurgeJob {
     }
 
     int purge(Instant now) {
-        Integer count = transaction.execute(status -> repository.anonymizeExpired(now));
-        return count == null ? 0 : count;
+        return transaction.execute(status -> repository.anonymizeExpired(now));
     }
 }

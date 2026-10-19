@@ -2,6 +2,7 @@ package com.omniretail.backend.shared.security;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
@@ -120,6 +121,50 @@ class PublicRateLimitFilterTest {
         send(filter, contact, "203.0.113.50", "198.51.100.1", forwarded);
         send(filter, contact, "203.0.113.50", "198.51.100.2", forwarded);
         assertThat(send(filter, contact, "203.0.113.50", "198.51.100.3", forwarded).getStatus()).isEqualTo(429);
+    }
+
+    @Test
+    void theRateLimitedBodyCarriesNumericRetryAfterSecondsEqualToTheHeader() throws Exception {
+        PublicRateLimitFilter filter = filter(1);
+        AtomicInteger forwarded = new AtomicInteger();
+
+        send(filter, "/api/v1/auth/login", "203.0.113.20", null, forwarded);
+        MockHttpServletResponse blocked = send(filter, "/api/v1/auth/login", "203.0.113.20", null, forwarded);
+
+        assertThat(blocked.getStatus()).isEqualTo(429);
+        assertThat(blocked.getHeader("Retry-After")).matches("\\d+");
+        JsonNode body = new ObjectMapper().readTree(blocked.getContentAsString());
+        assertThat(body.path("code").asText()).isEqualTo("RATE_LIMITED");
+        assertThat(body.path("retryAfterSeconds").isNumber()).isTrue();
+        assertThat(body.path("retryAfterSeconds").asLong())
+                .isPositive()
+                .isEqualTo(Long.parseLong(blocked.getHeader("Retry-After")));
+    }
+
+    @Test
+    void loginContactAndRecoveryLimitsAreIndependentForTheSameClient() throws Exception {
+        // login 1, recovery 2, contact 2 por ventana (ver filter()).
+        PublicRateLimitFilter filter = filter(1);
+        AtomicInteger forwarded = new AtomicInteger();
+        String ip = "203.0.113.30";
+        String login = "/api/v1/auth/login";
+        String recovery = "/api/v1/auth/password/forgot";
+        String contact = "/api/v1/public/contact-requests";
+
+        assertThat(send(filter, login, ip, null, forwarded).getStatus()).isEqualTo(200);
+        assertThat(send(filter, login, ip, null, forwarded).getStatus()).isEqualTo(429);
+
+        // Agotar login no toca contact ni recovery.
+        assertThat(send(filter, contact, ip, null, forwarded).getStatus()).isEqualTo(200);
+        assertThat(send(filter, contact, ip, null, forwarded).getStatus()).isEqualTo(200);
+        assertThat(send(filter, contact, ip, null, forwarded).getStatus()).isEqualTo(429);
+
+        // Agotar contact tampoco toca recovery.
+        assertThat(send(filter, recovery, ip, null, forwarded).getStatus()).isEqualTo(200);
+        assertThat(send(filter, recovery, ip, null, forwarded).getStatus()).isEqualTo(200);
+        assertThat(send(filter, recovery, ip, null, forwarded).getStatus()).isEqualTo(429);
+
+        assertThat(forwarded.get()).isEqualTo(5);
     }
 
     private static PublicRateLimitFilter filter(int loginPerWindow) {

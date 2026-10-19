@@ -1,9 +1,12 @@
 databaseChangeLog:
+  # Archivo renombrado de 063 a 064 (dos archivos 063 en la rama). logicalFilePath conserva la ruta con la que
+  # estos changeSets ya se registraron en databasechangelog: id, author y ruta logica no cambian.
   # Solicitudes comerciales de la landing MARJYM. Tabla propia, sin tenant_id: el interesado aun no es cliente.
   # Existe (vacia) en todas las instalaciones; solo se usa si app.commercial.contact-requests.enabled=true.
   - changeSet:
       id: 063-commercial-contact-requests
       author: omniretail
+      logicalFilePath: db/changelog/changes/063-commercial-contact-requests.yaml
       changes:
         - createTable:
             tableName: contact_requests
@@ -184,6 +187,7 @@ databaseChangeLog:
   - changeSet:
       id: 063-subscription-provisioning-operations
       author: omniretail
+      logicalFilePath: db/changelog/changes/063-commercial-contact-requests.yaml
       changes:
         - createTable:
             tableName: subscription_provisioning_operations

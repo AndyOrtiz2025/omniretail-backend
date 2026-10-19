@@ -71,6 +71,17 @@ class ContactRequestsDisabledByDefaultTest {
                         "SELECT COUNT(*) FROM databasechangelog WHERE id = '063-commercial-contact-requests'",
                         Long.class))
                 .isOne();
+        // El archivo fisico es 064-...; la identidad registrada (id, author, filename) sigue siendo la original.
+        assertThat(jdbc.queryForList(
+                        "SELECT id || '|' || author || '|' || filename FROM databasechangelog "
+                                + "WHERE id IN ('063-commercial-contact-requests', "
+                                + "'063-subscription-provisioning-operations') ORDER BY id",
+                        String.class))
+                .containsExactly(
+                        "063-commercial-contact-requests|omniretail|"
+                                + "db/changelog/changes/063-commercial-contact-requests.yaml",
+                        "063-subscription-provisioning-operations|omniretail|"
+                                + "db/changelog/changes/063-commercial-contact-requests.yaml");
         assertThat(jdbc.queryForObject(
                         "SELECT COUNT(*) FROM pg_constraint WHERE conname IN "
                                 + "('uk_contact_requests_idempotency_key', 'uk_contact_requests_dedupe')",
