@@ -353,8 +353,8 @@ class PublicStorefrontCatalogServiceTest {
         UUID attributeId = UUID.randomUUID();
         Product product = trackedProduct(productId, unitId);
         Tenant storefrontTenant = tenant(tenantId);
-        Category productCategory = category(categoryId);
-        Unit productUnit = unit(unitId);
+        Category productCategory = mock(Category.class);
+        Unit productUnit = mock(Unit.class);
         when(productCategory.getTenantId()).thenReturn(tenantId);
         when(productCategory.getStatus()).thenReturn(CategoryStatus.active);
         when(productUnit.getTenantId()).thenReturn(tenantId);
