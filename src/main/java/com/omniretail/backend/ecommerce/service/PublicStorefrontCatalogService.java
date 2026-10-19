@@ -1,11 +1,18 @@
 package com.omniretail.backend.ecommerce.service;
 
+import com.omniretail.backend.administration.entity.Branch;
+import com.omniretail.backend.administration.entity.BranchStatus;
+import com.omniretail.backend.administration.entity.BranchType;
 import com.omniretail.backend.administration.entity.EcommerceConfig;
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.repository.EcommerceConfigRepository;
+import com.omniretail.backend.administration.repository.BranchRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.catalog.entity.Category;
+import com.omniretail.backend.catalog.entity.AttributeDefinitionStatus;
+import com.omniretail.backend.catalog.entity.AttributeDefinition;
+import com.omniretail.backend.catalog.entity.ProductAttributeValue;
 import com.omniretail.backend.catalog.entity.CategoryStatus;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductMedia;
@@ -15,6 +22,8 @@ import com.omniretail.backend.catalog.entity.ProductType;
 import com.omniretail.backend.catalog.entity.Unit;
 import com.omniretail.backend.catalog.entity.UnitConversion;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
+import com.omniretail.backend.catalog.repository.AttributeDefinitionRepository;
+import com.omniretail.backend.catalog.repository.ProductAttributeValueRepository;
 import com.omniretail.backend.catalog.repository.ProductKitComponentRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.ProductMediaRepository;
@@ -22,6 +31,8 @@ import com.omniretail.backend.catalog.repository.UnitConversionRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
 import com.omniretail.backend.catalog.service.ProductPriceResolver;
 import com.omniretail.backend.ecommerce.dto.PublicStorefrontProductResponse;
+import com.omniretail.backend.ecommerce.dto.PublicStorefrontProductAttributeResponse;
+import com.omniretail.backend.ecommerce.dto.PublicStorefrontProductAvailabilityResponse;
 import com.omniretail.backend.inventory.service.InventoryOperationalLocationService;
 import com.omniretail.backend.shared.exception.BusinessException;
 import java.math.BigDecimal;
@@ -45,9 +56,12 @@ import org.springframework.transaction.annotation.Transactional;
 public class PublicStorefrontCatalogService {
 
     private final TenantRepository tenantRepository;
+    private final BranchRepository branchRepository;
     private final ProductRepository productRepository;
     private final ProductKitComponentRepository productKitComponentRepository;
     private final ProductMediaRepository productMediaRepository;
+    private final AttributeDefinitionRepository attributeDefinitionRepository;
+    private final ProductAttributeValueRepository productAttributeValueRepository;
     private final CategoryRepository categoryRepository;
     private final UnitRepository unitRepository;
     private final UnitConversionRepository unitConversionRepository;
@@ -91,11 +105,12 @@ public class PublicStorefrontCatalogService {
                 .map(Unit::getName)
                 .orElse(null);
         Map<UUID, BigDecimal> availableByProduct = availableByProduct(tenantId);
+        Map<UUID, BigDecimal> saleUnitFactors = saleUnitFactors(tenantId, List.of(product));
         StockAvailability stock = stockAvailability(
                 product,
                 availableByProduct,
                 availableKits(tenantId, List.of(product), availableByProduct),
-                saleUnitFactors(tenantId, List.of(product)));
+                saleUnitFactors);
         ProductMedia primaryMedia = primaryMediaByProduct(tenantId, List.of(product)).get(product.getId());
         return PublicStorefrontProductResponse.from(
                 product,
@@ -107,7 +122,9 @@ public class PublicStorefrontCatalogService {
                 primaryMedia != null ? primaryMedia.getUrl() : null,
                 primaryMedia != null ? primaryMedia.getAltText() : null,
                 stock.inStock(),
-                stock.availableQuantity());
+                stock.availableQuantity(),
+                attributes(tenantId, product.getId()),
+                availability(tenantId, product, saleUnitFactors));
     }
 
     private PublicStorefrontProductResponse toResponse(
@@ -161,6 +178,51 @@ public class PublicStorefrontCatalogService {
                 .map(EcommerceConfig::getDefaultBranchId)
                 .map(branchId -> inventoryOperationalLocationService.availableByProduct(tenantId, branchId))
                 .orElse(Map.of());
+    }
+
+    private List<PublicStorefrontProductAttributeResponse> attributes(UUID tenantId, UUID productId) {
+        List<ProductAttributeValue> values = productAttributeValueRepository
+                .findByTenantIdAndProductId(tenantId, productId);
+        if (values.isEmpty()) return List.of();
+        Map<UUID, AttributeDefinition> definitions = attributeDefinitionRepository
+                .findByTenantIdAndIdIn(
+                        tenantId,
+                        values.stream().map(ProductAttributeValue::getAttributeDefinitionId).distinct().toList())
+                .stream()
+                .filter(definition -> definition.getStatus() == AttributeDefinitionStatus.active)
+                .collect(java.util.stream.Collectors.toMap(AttributeDefinition::getId, Function.identity()));
+        return values.stream()
+                .map(value -> {
+                    AttributeDefinition definition = definitions.get(value.getAttributeDefinitionId());
+                    return definition == null
+                            ? null
+                            : new PublicStorefrontProductAttributeResponse(
+                                    definition.getName(), value.getValueString());
+                })
+                .filter(java.util.Objects::nonNull)
+                .sorted(java.util.Comparator.comparing(PublicStorefrontProductAttributeResponse::name))
+                .toList();
+    }
+
+    private List<PublicStorefrontProductAvailabilityResponse> availability(
+            UUID tenantId, Product product, Map<UUID, BigDecimal> saleUnitFactors) {
+        return branchRepository.findByTenantIdAndStatus(tenantId, BranchStatus.active).stream()
+                .filter(branch -> branch.getType() != BranchType.warehouse)
+                .map(branch -> availabilityForBranch(tenantId, product, branch, saleUnitFactors))
+                .toList();
+    }
+
+    private PublicStorefrontProductAvailabilityResponse availabilityForBranch(
+            UUID tenantId, Product product, Branch branch, Map<UUID, BigDecimal> saleUnitFactors) {
+        Map<UUID, BigDecimal> availableByProduct =
+                inventoryOperationalLocationService.availableByProduct(tenantId, branch.getId());
+        StockAvailability stock = stockAvailability(
+                product,
+                availableByProduct,
+                availableKits(tenantId, List.of(product), availableByProduct),
+                saleUnitFactors);
+        return new PublicStorefrontProductAvailabilityResponse(
+                branch.getId(), branch.getName(), branch.getAddress(), stock.inStock());
     }
 
     /**
