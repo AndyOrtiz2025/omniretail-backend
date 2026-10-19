@@ -134,6 +134,9 @@ final class PublicRateLimitFilter extends OncePerRequestFilter {
         if ("GET".equalsIgnoreCase(method) && path.matches("/api/v1/public/[^/]+/tracking/[^/]+")) {
             return RouteGroup.tracking;
         }
+        if ("GET".equalsIgnoreCase(method) && path.matches("/api/v1/public/[^/]+/receipt/[^/]+")) {
+            return RouteGroup.tracking;
+        }
         return null;
     }
 

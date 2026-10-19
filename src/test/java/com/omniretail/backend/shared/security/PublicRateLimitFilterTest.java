@@ -54,6 +54,24 @@ class PublicRateLimitFilterTest {
         assertThat(forwarded.get()).isEqualTo(1);
     }
 
+    @Test
+    void limitsReceiptDownloadsWithTheTrackingQuota() throws Exception {
+        PublicRateLimitFilter filter = filter(1);
+        AtomicInteger forwarded = new AtomicInteger();
+
+        MockHttpServletResponse first = send(filter, "GET", "/api/v1/public/ferreteria/receipt/token-1",
+                "203.0.113.8", null, forwarded);
+        MockHttpServletResponse second = send(filter, "GET", "/api/v1/public/ferreteria/receipt/token-2",
+                "203.0.113.8", null, forwarded);
+        MockHttpServletResponse blocked = send(filter, "GET", "/api/v1/public/ferreteria/receipt/token-3",
+                "203.0.113.8", null, forwarded);
+
+        assertThat(first.getStatus()).isEqualTo(200);
+        assertThat(second.getStatus()).isEqualTo(200);
+        assertThat(blocked.getStatus()).isEqualTo(429);
+        assertThat(forwarded.get()).isEqualTo(2);
+    }
+
     private static PublicRateLimitFilter filter(int loginPerWindow) {
         return new PublicRateLimitFilter(new PublicRateLimitProperties(
                 true, 60, 100, loginPerWindow, 2, 2, 2, 2, 2), new ObjectMapper());

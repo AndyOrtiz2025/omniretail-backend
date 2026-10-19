@@ -70,7 +70,7 @@ public class OrderEmailNotifier {
         if (recipient == null) {
             return;
         }
-        if (!attachReceipt) {
+        if (!attachReceipt || order.getId() == null) {
             eventPublisher.publishEvent(new EmailRequestedEvent(EmailMessage.html(
                     order.getTenantId(), purpose, recipient, subject, body, html)));
             return;

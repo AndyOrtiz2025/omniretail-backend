@@ -35,7 +35,9 @@ public class StorefrontReceiptService {
 
     public byte[] render(UUID tenantId, Order order) {
         String store = tenants.findById(tenantId).map(value -> value.getLegalName() == null || value.getLegalName().isBlank() ? value.getName() : value.getLegalName()).orElse("OmniRetail");
-        Map<String, Object> address = jsonMapper.readValue(order.getDeliveryAddress(), new TypeReference<>() {});
+        Map<String, Object> address = order.getDeliveryAddress() == null || order.getDeliveryAddress().isBlank()
+                ? Map.of()
+                : jsonMapper.readValue(order.getDeliveryAddress(), new TypeReference<>() {});
         return renderer.render(store, order, items.findByOrderId(order.getId()), address);
     }
 
