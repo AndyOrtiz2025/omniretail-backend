@@ -29,6 +29,28 @@ class PublicRateLimitFilterTest {
     }
 
     @Test
+    void withTheDefaultLoginLimitOfFifteenTheSixteenthLoginOrGoogleRequestIsBlocked() throws Exception {
+        PublicRateLimitFilter filter = filter(15);
+        AtomicInteger forwarded = new AtomicInteger();
+
+        for (int request = 1; request <= 14; request++) {
+            assertThat(send(filter, "/api/v1/auth/login", "203.0.113.40", null, forwarded).getStatus()).isEqualTo(200);
+        }
+        // /auth/google comparte el grupo LOGIN.
+        assertThat(send(filter, "/api/v1/auth/google", "203.0.113.40", null, forwarded).getStatus()).isEqualTo(200);
+        MockHttpServletResponse blocked = send(filter, "/api/v1/auth/login", "203.0.113.40", null, forwarded);
+
+        assertThat(blocked.getStatus()).isEqualTo(429);
+        JsonNode body = new ObjectMapper().readTree(blocked.getContentAsString());
+        assertThat(body.path("status").asInt()).isEqualTo(429);
+        assertThat(body.path("error").asText()).isEqualTo("Too Many Requests");
+        assertThat(body.path("code").asText()).isEqualTo("RATE_LIMITED");
+        assertThat(body.path("message").asText()).isNotBlank();
+        assertThat(body.path("timestamp").asText()).isNotBlank();
+        assertThat(forwarded.get()).isEqualTo(15);
+    }
+
+    @Test
     void distinguishesTrustedProxyClientAddressesButIgnoresSpoofedHeadersFromPublicPeers() throws Exception {
         PublicRateLimitFilter filter = filter(1);
         AtomicInteger forwarded = new AtomicInteger();
