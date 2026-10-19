@@ -45,6 +45,7 @@ class InventoryTransferControllerSecurityTest {
     private static final String REQUESTS = "/api/v1/inventory/transfer-requests";
     private static final String TRANSFERS = "/api/v1/inventory/transfers";
     private static final String MANAGE = "inventory.transfers.manage";
+    private static final String RECEIVING_CONFIRM = "receiving.receipts.confirm";
 
     @Autowired private MockMvc mvc;
     @Autowired private TenantRepository tenants;
@@ -112,6 +113,39 @@ class InventoryTransferControllerSecurityTest {
                                 """.formatted(UUID.randomUUID(), UUID.randomUUID())))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("INVENTORY_TRANSFER_NOT_FOUND"));
+    }
+
+    @Test
+    void receivingConfirmPermissionCanReadAndReceiveTransfersButNotManageThem() throws Exception {
+        Actor actor = actor(List.of(RECEIVING_CONFIRM));
+        UUID transferId = UUID.randomUUID();
+
+        mvc.perform(get(TRANSFERS).header("Authorization", "Bearer " + actor.token()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items").isArray());
+        mvc.perform(get(TRANSFERS + "/{id}", transferId).header("Authorization", "Bearer " + actor.token()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("INVENTORY_TRANSFER_NOT_FOUND"));
+        mvc.perform(post(TRANSFERS + "/{id}/receipts", transferId)
+                        .header("Authorization", "Bearer " + actor.token())
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {"confirmationId":"security-receipt",
+                                 "destinationLocationId":"%s",
+                                 "items":[{"itemId":"%s","receivedQuantity":1}]}
+                                """.formatted(UUID.randomUUID(), UUID.randomUUID())))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("INVENTORY_TRANSFER_NOT_FOUND"));
+
+        mvc.perform(post(TRANSFERS + "/{id}/cancel", transferId)
+                        .header("Authorization", "Bearer " + actor.token())
+                        .contentType(APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+        mvc.perform(get(REQUESTS).header("Authorization", "Bearer " + actor.token()))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
     }
 
     private Actor actor(List<String> permissions) {

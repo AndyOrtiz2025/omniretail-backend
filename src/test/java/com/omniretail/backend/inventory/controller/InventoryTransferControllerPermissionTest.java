@@ -14,11 +14,12 @@ import java.lang.reflect.Method;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.Pageable;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 class InventoryTransferControllerPermissionTest {
 
     @Test
-    void everyTransferEndpointRequiresManagePermission() throws Exception {
+    void transferManagementEndpointsRequireManagePermission() throws Exception {
         assertManagePermission(InventoryTransferRequestController.class.getDeclaredMethod(
                 "create", CreateInventoryTransferRequest.class));
         assertManagePermission(InventoryTransferRequestController.class.getDeclaredMethod(
@@ -34,16 +35,20 @@ class InventoryTransferControllerPermissionTest {
         assertManagePermission(InventoryTransferRequestController.class.getDeclaredMethod(
                 "cancel", UUID.class, CancelInventoryTransferRequest.class));
         assertManagePermission(InventoryTransferController.class.getDeclaredMethod(
+                "cancel", UUID.class, CancelInventoryTransferRequest.class));
+    }
+
+    @Test
+    void transferReadAndReceiveEndpointsAlsoAcceptReceivingConfirmPermission() throws Exception {
+        assertManageOrReceivingPermission(InventoryTransferController.class.getDeclaredMethod(
                 "list",
                 UUID.class,
                 UUID.class,
                 InventoryTransferStatus.class,
                 Pageable.class));
-        assertManagePermission(InventoryTransferController.class.getDeclaredMethod(
+        assertManageOrReceivingPermission(InventoryTransferController.class.getDeclaredMethod(
                 "detail", UUID.class));
-        assertManagePermission(InventoryTransferController.class.getDeclaredMethod(
-                "cancel", UUID.class, CancelInventoryTransferRequest.class));
-        assertManagePermission(InventoryTransferController.class.getDeclaredMethod(
+        assertManageOrReceivingPermission(InventoryTransferController.class.getDeclaredMethod(
                 "receive", UUID.class, ReceiveInventoryTransferRequest.class));
     }
 
@@ -52,5 +57,16 @@ class InventoryTransferControllerPermissionTest {
                 .isNotNull()
                 .extracting(RequirePermission::value)
                 .isEqualTo("inventory.transfers.manage");
+    }
+
+    private static void assertManageOrReceivingPermission(Method method) {
+        assertThat(method.getAnnotation(RequirePermission.class)).isNull();
+        assertThat(method.getAnnotation(PreAuthorize.class))
+                .isNotNull()
+                .extracting(PreAuthorize::value)
+                .isEqualTo(InventoryTransferController.TRANSFER_OR_RECEIVING_ACCESS);
+        assertThat(InventoryTransferController.TRANSFER_OR_RECEIVING_ACCESS)
+                .contains("'inventory.transfers.manage'")
+                .contains("'receiving.receipts.confirm'");
     }
 }
