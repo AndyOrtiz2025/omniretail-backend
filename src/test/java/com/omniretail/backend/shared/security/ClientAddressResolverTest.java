@@ -28,10 +28,54 @@ class ClientAddressResolverTest {
         assertThat(ClientAddressResolver.resolve(request)).isEqualTo("172.18.0.3");
     }
 
+    @Test
+    void usesTheSocketAddressWhenThereIsNoForwardedHeader() {
+        MockHttpServletRequest request = request("172.18.0.3", null);
+
+        assertThat(ClientAddressResolver.resolve(request)).isEqualTo("172.18.0.3");
+    }
+
+    @Test
+    void usesTheSocketAddressForABlankForwardedHeader() {
+        MockHttpServletRequest request = request("172.18.0.3", "  ");
+
+        assertThat(ClientAddressResolver.resolve(request)).isEqualTo("172.18.0.3");
+    }
+
+    @Test
+    void ignoresTheForwardedHeaderFromAPublicIpv6Peer() {
+        MockHttpServletRequest request = request("2001:db8::1", "198.51.100.10");
+
+        assertThat(ClientAddressResolver.resolve(request)).isEqualTo("2001:db8::1");
+    }
+
+    @Test
+    void trustsTheLoopbackProxyAndNormalizesAnIpv6Client() {
+        MockHttpServletRequest request = request("127.0.0.1", "2001:DB8:0:0:0:0:0:1");
+
+        assertThat(ClientAddressResolver.resolve(request)).isEqualTo("2001:db8:0:0:0:0:0:1");
+    }
+
+    @Test
+    void rejectsHexOnlyHostnamesSoTheyAreNeverResolvedThroughDns() {
+        MockHttpServletRequest request = request("172.18.0.3", "bad.cafe");
+
+        assertThat(ClientAddressResolver.resolve(request)).isEqualTo("172.18.0.3");
+    }
+
+    @Test
+    void rejectsOutOfRangeIpv4Octets() {
+        MockHttpServletRequest request = request("172.18.0.3", "999.1.1.1");
+
+        assertThat(ClientAddressResolver.resolve(request)).isEqualTo("172.18.0.3");
+    }
+
     private static MockHttpServletRequest request(String remoteAddress, String forwardedFor) {
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.setRemoteAddr(remoteAddress);
-        request.addHeader("X-Forwarded-For", forwardedFor);
+        if (forwardedFor != null) {
+            request.addHeader("X-Forwarded-For", forwardedFor);
+        }
         return request;
     }
 }
