@@ -13,5 +13,6 @@ public record PublicRateLimitProperties(
         int recoveryPerWindow,
         int registrationPerWindow,
         int checkoutPerWindow,
-        int trackingPerWindow) {
+        int trackingPerWindow,
+        int contactPerWindow) {
 }

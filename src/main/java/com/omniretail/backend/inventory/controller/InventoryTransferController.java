@@ -15,6 +15,7 @@ import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -32,6 +33,14 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class InventoryTransferController {
 
+    /**
+     * Consultar y recibir transferencias tambien lo hace la bodega (recepciones), sin poder crearlas ni
+     * cancelarlas. El servicio restringe la recepcion a una sucursal destino asignada al usuario.
+     */
+    static final String TRANSFER_OR_RECEIVING_ACCESS =
+            "@permissionChecker.hasPermission('inventory.transfers.manage')"
+                    + " or @permissionChecker.hasPermission('receiving.receipts.confirm')";
+
     private final InventoryTransferService inventoryTransferService;
 
     @Operation(
@@ -39,12 +48,13 @@ public class InventoryTransferController {
             description = """
                     Recupera el listado paginado (`page` comenzando en 1) de órdenes de traspaso entre sucursales con filtros por almacén de origen (`sourceBranchId`), almacén de destino (`destinationBranchId`) y estado operativo (`status`: `preparing`, `inTransit`, `received`, `cancelled`).
                     
-                    **Permisos requeridos:**
+                    **Permisos requeridos (cualquiera):**
                     * `inventory.transfers.manage`
+                    * `receiving.receipts.confirm` (bodega que recibe en su sucursal destino)
                     """
     )
     @GetMapping
-    @RequirePermission("inventory.transfers.manage")
+    @PreAuthorize(TRANSFER_OR_RECEIVING_ACCESS)
     public PageResponse<InventoryTransferResponse> list(
             @RequestParam(required = false) UUID sourceBranchId,
             @RequestParam(required = false) UUID destinationBranchId,
@@ -59,12 +69,13 @@ public class InventoryTransferController {
             description = """
                     Recupera la información completa del traspaso: artículos enviados, cantidades, lotes/series asignados y estado de entrega.
                     
-                    **Permisos requeridos:**
+                    **Permisos requeridos (cualquiera):**
                     * `inventory.transfers.manage`
+                    * `receiving.receipts.confirm`
                     """
     )
     @GetMapping("/{id}")
-    @RequirePermission("inventory.transfers.manage")
+    @PreAuthorize(TRANSFER_OR_RECEIVING_ACCESS)
     public InventoryTransferResponse detail(@PathVariable UUID id) {
         return inventoryTransferService.getTransfer(id);
     }
@@ -91,12 +102,13 @@ public class InventoryTransferController {
             description = """
                     Confirma el ingreso físico de la mercancía transferida en la sucursal de destino, incorporando formalmente el stock al balance disponible y registrando posibles diferencias.
                     
-                    **Permisos requeridos:**
+                    **Permisos requeridos (cualquiera):**
                     * `inventory.transfers.manage`
+                    * `receiving.receipts.confirm` (solo en una sucursal destino asignada)
                     """
     )
     @PostMapping("/{id}/receipts")
-    @RequirePermission("inventory.transfers.manage")
+    @PreAuthorize(TRANSFER_OR_RECEIVING_ACCESS)
     public InventoryTransferReceiptResponse receive(
             @PathVariable UUID id,
             @Valid @RequestBody ReceiveInventoryTransferRequest request) {

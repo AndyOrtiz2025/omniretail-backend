@@ -2,6 +2,7 @@ package com.omniretail.backend.ecommerce.service;
 
 import com.omniretail.backend.ecommerce.entity.Order;
 import com.omniretail.backend.shared.notification.EmailLayout;
+import com.omniretail.backend.shared.notification.EmailAttachmentReference;
 import com.omniretail.backend.shared.notification.EmailMessage;
 import com.omniretail.backend.shared.notification.EmailPurpose;
 import com.omniretail.backend.shared.notification.EmailRequestedEvent;
@@ -35,7 +36,8 @@ public class OrderEmailNotifier {
                         EmailLayout.paragraph("Hola:"),
                         EmailLayout.paragraph("Recibimos tu pedido ", number,
                                 " y ya lo estamos preparando. Te avisaremos cuando salga a entrega."),
-                        EmailLayout.paragraph("Gracias por tu compra."))));
+                        EmailLayout.paragraph("Adjuntamos el comprobante de tu pedido."),
+                        EmailLayout.paragraph("Gracias por tu compra."))), true);
     }
 
     public void orderDispatched(Order order) {
@@ -47,7 +49,7 @@ public class OrderEmailNotifier {
                 EmailLayout.render(null, "Tu pedido va en camino", List.of(
                         EmailLayout.paragraph("Hola:"),
                         EmailLayout.paragraph("Tu pedido ", number, " ya fue despachado y va en camino."),
-                        EmailLayout.paragraph("Gracias por tu compra."))));
+                        EmailLayout.paragraph("Gracias por tu compra."))), false);
     }
 
     public void orderCancelled(Order order) {
@@ -60,16 +62,25 @@ public class OrderEmailNotifier {
                         EmailLayout.paragraph("Hola:"),
                         EmailLayout.paragraph("Tu pedido ", number, " fue cancelado."),
                         EmailLayout.notice("Si tienes dudas o ya realizaste un pago, comunícate con la tienda."),
-                        EmailLayout.paragraph("Gracias."))));
+                        EmailLayout.paragraph("Gracias."))), false);
     }
 
-    private void notify(Order order, EmailPurpose purpose, String subject, String body, String html) {
+    private void notify(Order order, EmailPurpose purpose, String subject, String body, String html, boolean attachReceipt) {
         String recipient = recipientOf(order);
         if (recipient == null) {
             return;
         }
-        eventPublisher.publishEvent(new EmailRequestedEvent(
-                EmailMessage.html(order.getTenantId(), purpose, recipient, subject, body, html)));
+        if (!attachReceipt || order.getId() == null) {
+            eventPublisher.publishEvent(new EmailRequestedEvent(EmailMessage.html(
+                    order.getTenantId(), purpose, recipient, subject, body, html)));
+            return;
+        }
+        EmailAttachmentReference receipt = new EmailAttachmentReference(
+                StorefrontReceiptPdfAttachmentResolver.TYPE, order.getId(),
+                order.getOrderNumber().replaceAll("[^A-Za-z0-9-]+", "-") + "-comprobante.pdf",
+                StorefrontReceiptPdfAttachmentResolver.MEDIA_TYPE);
+        eventPublisher.publishEvent(new EmailRequestedEvent(EmailMessage.withAttachments(
+                order.getTenantId(), purpose, recipient, subject, body, html, List.of(receipt))));
     }
 
     private String recipientOf(Order order) {

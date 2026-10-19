@@ -13,6 +13,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.test.util.ReflectionTestUtils;
 import tools.jackson.databind.json.JsonMapper;
 
 class OrderEmailNotifierTest {
@@ -23,7 +24,8 @@ class OrderEmailNotifierTest {
 
     @Test
     void confirmedOrderWithSendModeEmitsTenantScopedEmailWithoutSensitiveData() {
-        notifier.orderConfirmed(order("{\"emailMode\":\"send\",\"email\":\"cliente@example.com\"}"));
+        Order order = order("{\"emailMode\":\"send\",\"email\":\"cliente@example.com\"}");
+        notifier.orderConfirmed(order);
 
         EmailRequestedEvent event = captured();
         assertThat(event.message().tenantId()).isEqualTo(tenantId);
@@ -33,6 +35,12 @@ class OrderEmailNotifierTest {
         assertThat(event.message().body()).contains("WEB-123").doesNotContain("tracking-secreto");
         assertThat(event.message().html()).contains("Pedido confirmado", "<strong>WEB-123</strong>")
                 .doesNotContain("tracking-secreto");
+        assertThat(event.message().attachments()).singleElement().satisfies(attachment -> {
+            assertThat(attachment.type()).isEqualTo(StorefrontReceiptPdfAttachmentResolver.TYPE);
+            assertThat(attachment.resourceId()).isEqualTo(order.getId());
+            assertThat(attachment.filename()).isEqualTo("WEB-123-comprobante.pdf");
+            assertThat(attachment.mediaType()).isEqualTo(StorefrontReceiptPdfAttachmentResolver.MEDIA_TYPE);
+        });
     }
 
     @Test
@@ -74,6 +82,20 @@ class OrderEmailNotifierTest {
         verify(publisher, never()).publishEvent(any(Object.class));
     }
 
+    @Test
+    void confirmedOrderWithoutPersistenceIdSendsTheEmailWithoutAnAttachment() {
+        Order order = Order.builder()
+                .orderNumber("WEB-123")
+                .trackingToken("tracking-secreto")
+                .notificationContact("{\"emailMode\":\"send\",\"email\":\"cliente@example.com\"}")
+                .build();
+        order.setTenantId(tenantId);
+
+        notifier.orderConfirmed(order);
+
+        assertThat(captured().message().attachments()).isEmpty();
+    }
+
     private EmailRequestedEvent captured() {
         ArgumentCaptor<EmailRequestedEvent> captor = ArgumentCaptor.forClass(EmailRequestedEvent.class);
         verify(publisher).publishEvent(captor.capture());
@@ -87,6 +109,7 @@ class OrderEmailNotifierTest {
                 .notificationContact(notificationContact)
                 .build();
         order.setTenantId(tenantId);
+        ReflectionTestUtils.setField(order, "id", UUID.randomUUID());
         return order;
     }
 }

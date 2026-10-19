@@ -42,6 +42,10 @@ public class EmailDeliveryService {
     /** Se une a la transaccion de la operacion de negocio: si esta se deshace, el registro tambien. */
     @Transactional
     public UUID recordPending(EmailMessage message) {
+        if (message.tenantId() == null) {
+            // Los correos sin tenant (solicitudes comerciales) tienen su propio seguimiento; aqui no caben.
+            throw new IllegalArgumentException("email_delivery exige un tenant");
+        }
         Instant now = Instant.now();
         EmailDelivery.EmailDeliveryBuilder delivery = EmailDelivery.builder()
                 .tenantId(message.tenantId())

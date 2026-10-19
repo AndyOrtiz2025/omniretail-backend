@@ -36,6 +36,7 @@ class TenantSubscriptionControllerTest {
  @Autowired private SaasPlanRepository planRepository;
  @Autowired private TenantSubscriptionRepository subscriptionRepository;
  @Autowired private JwtService jwtService;
+ @Autowired private org.springframework.jdbc.core.JdbcTemplate jdbc;
 
  @Test void withoutTokenReturnsUnauthorized() throws Exception {
   mockMvc.perform(get(BASE_URL)).andExpect(status().isUnauthorized());
@@ -55,39 +56,62 @@ class TenantSubscriptionControllerTest {
     .andExpect(jsonPath("$.subscription.status").value("active"))
     .andExpect(jsonPath("$.plan.code").value("basic"))
     .andExpect(jsonPath("$.usage[0].key").value("maxEmployees"))
-    .andExpect(jsonPath("$.invoices[0].status").value("simulated"))
-    .andExpect(jsonPath("$.invoices[0].totalQuetzales").value(199.0));
+    .andExpect(jsonPath("$.invoices").isEmpty());
   mockMvc.perform(put(BASE_URL + "/addons").header("Authorization", bearer(token))
     .contentType(MediaType.APPLICATION_JSON).content("{\"addonCodes\":[\"advanced_reports\"]}"))
-    .andExpect(status().isForbidden());
+    .andExpect(status().isNotFound());
+  org.junit.jupiter.api.Assertions.assertEquals(0, invoiceCount(tenant));
  }
- @Test void addonUpdatesAreTenantIsolatedAndSnapshotPriceIsImmutable() throws Exception {
+ @Test void getNeverWritesInvoicesOrChangesTheSubscription() throws Exception {
+  Tenant tenant = persistTenant();
+  persistSubscription(tenant);
+  String token = tokenFor(tenant, List.of(READ));
+  for (int i = 0; i < 2; i++) {
+   mockMvc.perform(get(BASE_URL).header("Authorization", bearer(token))).andExpect(status().isOk());
+  }
+  org.junit.jupiter.api.Assertions.assertEquals(0, invoiceCount(tenant));
+  org.junit.jupiter.api.Assertions.assertTrue(addonCodes(tenant).isEmpty());
+ }
+ @Test void readsAreTenantIsolatedAndTheRetiredEndpointCannotChangeAddons() throws Exception {
   Tenant tenantA = persistTenant();
   Tenant tenantB = persistTenant();
   persistSubscription(tenantA);
   persistSubscription(tenantB);
+  jdbc.update("UPDATE tenant_subscriptions SET addon_codes = ARRAY['advanced_reports'] WHERE tenant_id = ?",
+    tenantA.getId());
   String tokenA = tokenFor(tenantA, List.of(READ, MANAGE));
   String tokenB = tokenFor(tenantB, List.of(READ));
+  // Ni siquiera con admin.plans.manage existe una via HTTP para cambiar complementos.
   mockMvc.perform(put(BASE_URL + "/addons").header("Authorization", bearer(tokenA))
-    .contentType(MediaType.APPLICATION_JSON).content("{\"addonCodes\":[\"ecommerce_delivery\",\"advanced_reports\"]}"))
-    .andExpect(status().isOk())
-    .andExpect(jsonPath("$.addonCodes[0]").value("advanced_reports"))
-    .andExpect(jsonPath("$.invoices[0].totalQuetzales").value(199.0))
-    .andExpect(jsonPath("$.invoices[0].addonCodes").isEmpty());
+    .contentType(MediaType.APPLICATION_JSON).content("{\"addonCodes\":[\"ecommerce_delivery\"]}"))
+    .andExpect(status().isNotFound());
   mockMvc.perform(get(BASE_URL).header("Authorization", bearer(tokenA)))
-    .andExpect(status().isOk()).andExpect(jsonPath("$.invoices.length()").value(1));
+    .andExpect(status().isOk()).andExpect(jsonPath("$.tenantId").value(tenantA.getId().toString()))
+    .andExpect(jsonPath("$.addonCodes[0]").value("advanced_reports"));
   mockMvc.perform(get(BASE_URL).header("Authorization", bearer(tokenB)))
     .andExpect(status().isOk()).andExpect(jsonPath("$.tenantId").value(tenantB.getId().toString()))
     .andExpect(jsonPath("$.addonCodes").isEmpty());
+  org.junit.jupiter.api.Assertions.assertEquals("advanced_reports", addonCodes(tenantA));
+  org.junit.jupiter.api.Assertions.assertTrue(addonCodes(tenantB).isEmpty());
  }
- @Test void invalidAddonsReturnBadRequest() throws Exception {
+ @Test void theSelfServiceAddonsEndpointNoLongerExistsForAnyPayload() throws Exception {
   Tenant tenant = persistTenant();
-  String token = tokenFor(tenant, List.of(MANAGE));
+  persistSubscription(tenant);
+  String token = tokenFor(tenant, List.of(READ, MANAGE));
   for (String body : List.of("{\"addonCodes\":null}", "{\"addonCodes\":[\"unknown\"]}",
      "{\"addonCodes\":[\"advanced_reports\",\"advanced_reports\"]}", "{\"addonCodes\":[\"\"]}")) {
    mockMvc.perform(put(BASE_URL + "/addons").header("Authorization", bearer(token))
-     .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isBadRequest());
+     .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isNotFound());
   }
+  org.junit.jupiter.api.Assertions.assertTrue(addonCodes(tenant).isEmpty());
+ }
+ private long invoiceCount(Tenant tenant) {
+  Long n = jdbc.queryForObject("SELECT COUNT(*) FROM subscription_invoices WHERE tenant_id = ?", Long.class, tenant.getId());
+  return n == null ? 0 : n;
+ }
+ private String addonCodes(Tenant tenant) {
+  return jdbc.queryForObject("SELECT array_to_string(addon_codes, ',') FROM tenant_subscriptions WHERE tenant_id = ?",
+    String.class, tenant.getId());
  }
  @Test void removedEndpointsCannotMutateSubscription() throws Exception {
   Tenant tenant = persistTenant();

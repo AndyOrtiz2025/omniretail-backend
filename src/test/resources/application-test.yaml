@@ -8,6 +8,12 @@ app:
     public-rate-limit:
       # La suite comparte una IP simulada; los límites se validan de forma unitaria.
       enabled: false
+    login-failure-limit:
+      # Igual: los tests de bloqueo (B-01) fallan mas de 5 veces con el mismo correo e IP.
+      enabled: false
+      max-failures: 5
+      window-seconds: 900
+      max-tracked-keys: 10000
   jwt:
     secret: omniretail-test-secret-only-for-tests-32b
   mfa:

@@ -36,6 +36,9 @@ https://{$SITE_ADDRESS} {
 
 	# Todo lo demas es el frontend Next.js (incluye sus rutas /api/auth, /api/media, etc.).
 	handle {
-		reverse_proxy web:3000
+		reverse_proxy web:3000 {
+			# Next reenvia esta IP al backend. La sobrescritura explicita mantiene a Caddy como unica fuente de verdad.
+			header_up X-Forwarded-For {remote_host}
+		}
 	}
 }
