@@ -355,6 +355,9 @@ class PublicStorefrontCatalogServiceTest {
         Tenant storefrontTenant = tenant(tenantId);
         Category productCategory = category(categoryId);
         Unit productUnit = unit(unitId);
+        when(productCategory.getTenantId()).thenReturn(tenantId);
+        when(productCategory.getStatus()).thenReturn(CategoryStatus.active);
+        when(productUnit.getTenantId()).thenReturn(tenantId);
         when(product.getCategoryId()).thenReturn(categoryId);
         when(tenantRepository.findBySlug("ferreteria-los-simpson"))
                 .thenReturn(Optional.of(storefrontTenant));
