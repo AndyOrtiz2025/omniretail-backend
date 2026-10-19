@@ -544,8 +544,21 @@ public class PickingService {
             throw conflict("PICKING_QUANTITY_DECREASE", "La cantidad tomada no puede disminuir.");
         }
         boolean traceable = isTraceable(product);
+        boolean autoAllocateLots = Boolean.TRUE.equals(request.autoAllocateLots());
         List<PickingTrackingSelectionRequest> requestedSelections =
                 request.trackingSelections() == null ? List.of() : request.trackingSelections();
+        if (autoAllocateLots && !requestedSelections.isEmpty()) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "AUTO_FEFO_SELECTION_CONFLICT",
+                    "La asignacion FEFO automatica no admite selecciones manuales.");
+        }
+        if (autoAllocateLots && !supportsAutoFefo(product)) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "AUTO_FEFO_NOT_SUPPORTED",
+                    "La asignacion FEFO automatica requiere lotes y vencimiento, sin numeros de serie.");
+        }
         String previousTraces = item.getPickedTraces();
         String targetTraces = null;
         if (traceable) {
@@ -555,7 +568,7 @@ public class PickingService {
                         "PICKING_LOCATION_REQUIRED",
                         "La ubicacion es requerida para Picking trazable.");
             }
-            if (target.signum() > 0 && requestedSelections.isEmpty()) {
+            if (!autoAllocateLots && target.signum() > 0 && requestedSelections.isEmpty()) {
                 throw new BusinessException(
                         HttpStatus.BAD_REQUEST,
                         "TRACKING_SELECTIONS_REQUIRED",
@@ -573,14 +586,24 @@ public class PickingService {
                     physicalSelectionCodec.decode(previousTraces);
             List<InventoryTraceabilitySelection> oldSelections =
                     physicalSelectionCodec.withoutLocation(oldPhysical, item.getLocationId());
-            List<InventoryTraceabilitySelection> desiredSelections = requestedSelections.stream()
-                    .map(selection -> new InventoryTraceabilitySelection(
-                            selection.lotId(), selection.quantity(), selection.serialNumbers()))
-                    .toList();
-            List<InventoryTraceabilitySelection> normalized =
-                    traceabilityMutationService.replacePhysicalReservation(
-                            actor.tenantId(), branchId, product, item.getLocationId(), target,
-                            oldSelections, desiredSelections);
+            List<InventoryTraceabilitySelection> normalized;
+            if (autoAllocateLots) {
+                normalized = traceabilityMutationService.autoAllocateLotsFefo(
+                        actor.tenantId(),
+                        branchId,
+                        product,
+                        item.getLocationId(),
+                        target,
+                        oldSelections);
+            } else {
+                List<InventoryTraceabilitySelection> desiredSelections = requestedSelections.stream()
+                        .map(selection -> new InventoryTraceabilitySelection(
+                                selection.lotId(), selection.quantity(), selection.serialNumbers()))
+                        .toList();
+                normalized = traceabilityMutationService.replacePhysicalReservation(
+                        actor.tenantId(), branchId, product, item.getLocationId(), target,
+                        oldSelections, desiredSelections);
+            }
             targetTraces = physicalSelectionCodec.encode(
                     physicalSelectionCodec.canonical(item.getLocationId(), normalized));
         } else {
@@ -1542,6 +1565,7 @@ public class PickingService {
                 + "|" + request.pickedQuantity().stripTrailingZeros().toPlainString()
                 + "|" + String.valueOf(request.locationId())
                 + "|" + actorUserId
+                + (Boolean.TRUE.equals(request.autoAllocateLots()) ? "|autoLots=true" : "")
                 + "|" + pickingSelectionFingerprint(request.trackingSelections());
         try {
             return HexFormat.of().formatHex(
@@ -1578,6 +1602,14 @@ public class PickingService {
                 && Boolean.TRUE.equals(product.getTrackingStock())
                 && (Boolean.TRUE.equals(product.getTrackingLot())
                         || Boolean.TRUE.equals(product.getTrackingSerial()));
+    }
+
+    private static boolean supportsAutoFefo(Product product) {
+        return product.getProductType() == ProductType.physical
+                && Boolean.TRUE.equals(product.getTrackingStock())
+                && Boolean.TRUE.equals(product.getTrackingLot())
+                && Boolean.TRUE.equals(product.getTrackingExpiration())
+                && !Boolean.TRUE.equals(product.getTrackingSerial());
     }
 
     private static BusinessException notFound(String code, String message) {

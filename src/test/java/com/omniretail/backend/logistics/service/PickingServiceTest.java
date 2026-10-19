@@ -13,6 +13,7 @@ import com.omniretail.backend.ecommerce.entity.InventoryReservationStatus;
 import com.omniretail.backend.logistics.dto.CreatePickingIncidentRequest;
 import com.omniretail.backend.logistics.dto.PickingLineResponse;
 import com.omniretail.backend.logistics.dto.PickingTrackingSelectionRequest;
+import com.omniretail.backend.logistics.dto.PhysicalTraceSelectionResponse;
 import com.omniretail.backend.logistics.dto.UpdatePickingItemRequest;
 import com.omniretail.backend.logistics.entity.PickingIncidentType;
 import com.omniretail.backend.logistics.entity.PickingItemStatus;
@@ -711,6 +712,353 @@ class PickingServiceTest {
     }
 
     @Test
+    void autoAllocatesFefoAcrossLotsAndPreservesPreviousSelectionWhenExpanded() {
+        Fixture fixture = readyFixture();
+        UUID location = traceLocation(fixture, "AUTO-FEFO");
+        assignFixtureOperationalLocation(fixture, location);
+        jdbc.update("""
+                UPDATE products
+                SET tracking_lot = true, tracking_expiration = true, tracking_serial = false
+                WHERE id = ?
+                """, fixture.productId());
+        jdbc.update("UPDATE orders SET source = 'pos' WHERE id = ?", fixture.orderId());
+        UUID firstLot = insertFefoLot(
+                fixture, location, "LOT-FIRST", businessToday().plusDays(5), "3.000", "0.000");
+        UUID secondLot = insertFefoLot(
+                fixture, location, "LOT-SECOND", businessToday().plusDays(20), "4.000", "0.000");
+        entityManager.clear();
+
+        UUID pickingId = pickingId(fixture);
+        UUID itemId = itemId(fixture, pickingId);
+        service.assign(fixture.branchId(), pickingId);
+        UpdatePickingItemRequest initialRequest = new UpdatePickingItemRequest(
+                new BigDecimal("2.000"), location, "auto-fefo-initial", List.of(), true);
+        PickingLineResponse initial = service.updateItem(
+                fixture.branchId(), pickingId, itemId, initialRequest);
+
+        assertThat(initial.trackingSelections()).singleElement().satisfies(selection -> {
+            assertThat(selection.lotId()).isEqualTo(firstLot);
+            assertThat(selection.lotNumber()).isEqualTo("LOT-FIRST");
+            assertThat(selection.quantity()).isEqualByComparingTo("2.000");
+        });
+        assertThat(lotReserved(firstLot)).isEqualByComparingTo("2.000");
+        assertThat(lotReserved(secondLot)).isZero();
+
+        PickingLineResponse replay = service.updateItem(
+                fixture.branchId(), pickingId, itemId, initialRequest);
+        assertThat(replay).isEqualTo(initial);
+        assertThat(lotReserved(firstLot)).isEqualByComparingTo("2.000");
+
+        PickingLineResponse expanded = service.updateItem(
+                fixture.branchId(),
+                pickingId,
+                itemId,
+                new UpdatePickingItemRequest(
+                        new BigDecimal("5.000"), location, "auto-fefo-expanded", List.of(), true));
+
+        assertThat(expanded.trackingSelections())
+                .extracting(
+                        PhysicalTraceSelectionResponse::lotNumber,
+                        PhysicalTraceSelectionResponse::quantity)
+                // pickedTraces se canonicaliza por UUID; FEFO se demuestra por la cantidad de cada lote.
+                .containsExactlyInAnyOrder(
+                        org.assertj.core.groups.Tuple.tuple("LOT-FIRST", new BigDecimal("3.000")),
+                        org.assertj.core.groups.Tuple.tuple("LOT-SECOND", new BigDecimal("2.000")));
+        assertThat(lotReserved(firstLot)).isEqualByComparingTo("3.000");
+        assertThat(lotReserved(secondLot)).isEqualByComparingTo("2.000");
+        assertThat(physicalQuantity(fixture)).isEqualByComparingTo("10.000");
+        assertThat(reservedQuantity(fixture)).isEqualByComparingTo("5.000");
+        assertThat(movementCount(fixture)).isZero();
+    }
+
+    @Test
+    void manualOperationIdCannotBeReusedForAutoFefo() {
+        Fixture fixture = readyFixture();
+        UUID location = traceLocation(fixture, "AUTO-FEFO-MANUAL-FIRST");
+        assignFixtureOperationalLocation(fixture, location);
+        jdbc.update("""
+                UPDATE products
+                SET tracking_lot = true, tracking_expiration = true, tracking_serial = false
+                WHERE id = ?
+                """, fixture.productId());
+        UUID lot = insertFefoLot(
+                fixture, location, "LOT-MANUAL-FIRST", businessToday().plusDays(5), "5.000", "0.000");
+        entityManager.clear();
+
+        UUID pickingId = pickingId(fixture);
+        UUID itemId = itemId(fixture, pickingId);
+        service.assign(fixture.branchId(), pickingId);
+        service.updateItem(
+                fixture.branchId(),
+                pickingId,
+                itemId,
+                new UpdatePickingItemRequest(
+                        new BigDecimal("2.000"),
+                        location,
+                        "same-operation-manual-auto",
+                        List.of(new PickingTrackingSelectionRequest(
+                                location, lot, new BigDecimal("2.000"), List.of())),
+                        false));
+        String persistedTraces = itemTraces(itemId);
+
+        assertCode(
+                () -> service.updateItem(
+                        fixture.branchId(),
+                        pickingId,
+                        itemId,
+                        new UpdatePickingItemRequest(
+                                new BigDecimal("2.000"),
+                                location,
+                                "same-operation-manual-auto",
+                                List.of(new PickingTrackingSelectionRequest(
+                                        location, lot, new BigDecimal("2.000"), List.of())),
+                                true)),
+                "PICKING_OPERATION_ID_REUSED");
+        assertThat(itemQuantity(itemId)).isEqualByComparingTo("2.000");
+        assertThat(itemTraces(itemId)).isEqualTo(persistedTraces);
+        assertThat(lotReserved(lot)).isEqualByComparingTo("2.000");
+        assertThat(reservedQuantity(fixture)).isEqualByComparingTo("5.000");
+        assertThat(operationCount(fixture)).isOne();
+    }
+
+    @Test
+    void autoFefoOperationIdCannotBeReusedForManualSelection() {
+        Fixture fixture = readyFixture();
+        UUID location = traceLocation(fixture, "AUTO-FEFO-AUTO-FIRST");
+        assignFixtureOperationalLocation(fixture, location);
+        jdbc.update("""
+                UPDATE products
+                SET tracking_lot = true, tracking_expiration = true, tracking_serial = false
+                WHERE id = ?
+                """, fixture.productId());
+        UUID lot = insertFefoLot(
+                fixture, location, "LOT-AUTO-FIRST", businessToday().plusDays(5), "5.000", "0.000");
+        entityManager.clear();
+
+        UUID pickingId = pickingId(fixture);
+        UUID itemId = itemId(fixture, pickingId);
+        service.assign(fixture.branchId(), pickingId);
+        service.updateItem(
+                fixture.branchId(),
+                pickingId,
+                itemId,
+                new UpdatePickingItemRequest(
+                        new BigDecimal("2.000"),
+                        location,
+                        "same-operation-auto-manual",
+                        List.of(),
+                        true));
+        String persistedTraces = itemTraces(itemId);
+
+        assertCode(
+                () -> service.updateItem(
+                        fixture.branchId(),
+                        pickingId,
+                        itemId,
+                        new UpdatePickingItemRequest(
+                                new BigDecimal("2.000"),
+                                location,
+                                "same-operation-auto-manual",
+                                List.of(new PickingTrackingSelectionRequest(
+                                        location, lot, new BigDecimal("2.000"), List.of())),
+                                false)),
+                "PICKING_OPERATION_ID_REUSED");
+        assertThat(itemQuantity(itemId)).isEqualByComparingTo("2.000");
+        assertThat(itemTraces(itemId)).isEqualTo(persistedTraces);
+        assertThat(lotReserved(lot)).isEqualByComparingTo("2.000");
+        assertThat(reservedQuantity(fixture)).isEqualByComparingTo("5.000");
+        assertThat(operationCount(fixture)).isOne();
+    }
+
+    @Test
+    void autoFefoExcludesInvalidLotsAndUsesDeterministicLotNumberTieBreak() {
+        Fixture fixture = readyFixture();
+        UUID location = traceLocation(fixture, "AUTO-FEFO-FILTERS");
+        assignFixtureOperationalLocation(fixture, location);
+        jdbc.update("""
+                UPDATE products
+                SET tracking_lot = true, tracking_expiration = true, tracking_serial = false
+                WHERE id = ?
+                """, fixture.productId());
+        insertFefoLot(
+                fixture, location, "LOT-EXPIRED", businessToday().minusDays(1), "5.000", "0.000");
+        insertFefoLot(fixture, location, "LOT-NO-EXPIRATION", null, "5.000", "0.000");
+        UUID unavailable = insertFefoLot(
+                fixture, location, "LOT-RESERVED", businessToday().plusDays(2), "5.000", "5.000");
+        UUID lotB = insertFefoLot(
+                fixture, location, "LOT-B", businessToday().plusDays(10), "2.000", "0.000");
+        UUID lotA = insertFefoLot(
+                fixture, location, "LOT-A", businessToday().plusDays(10), "2.000", "0.000");
+        entityManager.clear();
+
+        UUID pickingId = pickingId(fixture);
+        service.assign(fixture.branchId(), pickingId);
+        PickingLineResponse result = service.updateItem(
+                fixture.branchId(),
+                pickingId,
+                itemId(fixture, pickingId),
+                new UpdatePickingItemRequest(
+                        new BigDecimal("3.000"), location, "auto-fefo-filters", List.of(), true));
+
+        assertThat(result.trackingSelections())
+                .extracting(
+                        PhysicalTraceSelectionResponse::lotNumber,
+                        PhysicalTraceSelectionResponse::quantity)
+                // El orden serializado es canonico por UUID, no un contrato de presentacion FEFO.
+                .containsExactlyInAnyOrder(
+                        org.assertj.core.groups.Tuple.tuple("LOT-A", new BigDecimal("2.000")),
+                        org.assertj.core.groups.Tuple.tuple("LOT-B", new BigDecimal("1.000")));
+        assertThat(lotReserved(lotA)).isEqualByComparingTo("2.000");
+        assertThat(lotReserved(lotB)).isEqualByComparingTo("1.000");
+        assertThat(lotReserved(unavailable)).isEqualByComparingTo("5.000");
+    }
+
+    @Test
+    void autoFefoRejectsInsufficientPhysicalStockWithoutPartialReservation() {
+        Fixture fixture = readyFixture();
+        UUID location = traceLocation(fixture, "AUTO-FEFO-INSUFFICIENT");
+        assignFixtureOperationalLocation(fixture, location);
+        jdbc.update("""
+                UPDATE products
+                SET tracking_lot = true, tracking_expiration = true, tracking_serial = false
+                WHERE id = ?
+                """, fixture.productId());
+        UUID lot = insertFefoLot(
+                fixture, location, "LOT-ONLY", businessToday().plusDays(5), "4.000", "0.000");
+        entityManager.clear();
+
+        UUID pickingId = pickingId(fixture);
+        UUID itemId = itemId(fixture, pickingId);
+        service.assign(fixture.branchId(), pickingId);
+        assertCode(
+                () -> service.updateItem(
+                        fixture.branchId(),
+                        pickingId,
+                        itemId,
+                        new UpdatePickingItemRequest(
+                                new BigDecimal("5.000"),
+                                location,
+                                "auto-fefo-insufficient",
+                                List.of(),
+                                true)),
+                "INSUFFICIENT_TRACEABLE_STOCK");
+        assertThat(lotReserved(lot)).isZero();
+        assertThat(itemQuantity(itemId)).isZero();
+        assertThat(itemTraces(itemId)).isNull();
+        assertThat(reservedQuantity(fixture)).isEqualByComparingTo("5.000");
+        assertThat(operationCount(fixture)).isZero();
+    }
+
+    @Test
+    void autoFefoRejectsProductsWithoutTraceabilityWithoutMutation() {
+        Fixture fixture = readyFixture();
+        UUID pickingId = pickingId(fixture);
+        UUID itemId = itemId(fixture, pickingId);
+        service.assign(fixture.branchId(), pickingId);
+
+        assertCode(
+                () -> service.updateItem(
+                        fixture.branchId(),
+                        pickingId,
+                        itemId,
+                        new UpdatePickingItemRequest(
+                                BigDecimal.ONE,
+                                null,
+                                "auto-fefo-no-traceability",
+                                List.of(),
+                                true)),
+                "AUTO_FEFO_NOT_SUPPORTED");
+        assertThat(itemQuantity(itemId)).isZero();
+        assertThat(itemTraces(itemId)).isNull();
+        assertThat(reservedQuantity(fixture)).isEqualByComparingTo("5.000");
+        assertThat(operationCount(fixture)).isZero();
+    }
+
+    @Test
+    void autoFefoRejectsLotTrackingWithoutExpirationWithoutMutation() {
+        Fixture fixture = readyFixture();
+        UUID location = traceLocation(fixture, "AUTO-FEFO-NO-EXPIRATION");
+        assignFixtureOperationalLocation(fixture, location);
+        jdbc.update("""
+                UPDATE products
+                SET tracking_lot = true, tracking_expiration = false, tracking_serial = false
+                WHERE id = ?
+                """, fixture.productId());
+        UUID lot = insertFefoLot(
+                fixture, location, "LOT-WITHOUT-EXPIRATION", null, "5.000", "0.000");
+        entityManager.clear();
+
+        UUID pickingId = pickingId(fixture);
+        UUID itemId = itemId(fixture, pickingId);
+        service.assign(fixture.branchId(), pickingId);
+        assertCode(
+                () -> service.updateItem(
+                        fixture.branchId(),
+                        pickingId,
+                        itemId,
+                        new UpdatePickingItemRequest(
+                                BigDecimal.ONE,
+                                location,
+                                "auto-fefo-no-expiration",
+                                List.of(),
+                                true)),
+                "AUTO_FEFO_NOT_SUPPORTED");
+        assertThat(itemQuantity(itemId)).isZero();
+        assertThat(itemTraces(itemId)).isNull();
+        assertThat(lotReserved(lot)).isZero();
+        assertThat(reservedQuantity(fixture)).isEqualByComparingTo("5.000");
+        assertThat(operationCount(fixture)).isZero();
+    }
+
+    @Test
+    void autoFefoRejectsManualSelectionsAndSerializedProducts() {
+        Fixture fixture = readyFixture();
+        UUID location = traceLocation(fixture, "AUTO-FEFO-CONTRACT");
+        assignFixtureOperationalLocation(fixture, location);
+        UUID lot = insertFefoLot(
+                fixture, location, "LOT-CONTRACT", businessToday().plusDays(5), "5.000", "0.000");
+        jdbc.update("""
+                UPDATE products
+                SET tracking_lot = true, tracking_expiration = true, tracking_serial = false
+                WHERE id = ?
+                """, fixture.productId());
+        entityManager.clear();
+
+        UUID pickingId = pickingId(fixture);
+        UUID itemId = itemId(fixture, pickingId);
+        service.assign(fixture.branchId(), pickingId);
+        assertCode(
+                () -> service.updateItem(
+                        fixture.branchId(),
+                        pickingId,
+                        itemId,
+                        new UpdatePickingItemRequest(
+                                BigDecimal.ONE,
+                                location,
+                                "auto-fefo-ambiguous",
+                                List.of(new PickingTrackingSelectionRequest(
+                                        location, lot, BigDecimal.ONE, List.of())),
+                                true)),
+                "AUTO_FEFO_SELECTION_CONFLICT");
+
+        jdbc.update("UPDATE products SET tracking_serial = true WHERE id = ?", fixture.productId());
+        entityManager.clear();
+        assertCode(
+                () -> service.updateItem(
+                        fixture.branchId(),
+                        pickingId,
+                        itemId,
+                        new UpdatePickingItemRequest(
+                                BigDecimal.ONE,
+                                location,
+                                "auto-fefo-serial",
+                                List.of(),
+                                true)),
+                "AUTO_FEFO_NOT_SUPPORTED");
+        assertThat(lotReserved(lot)).isZero();
+    }
+
+    @Test
     void twoPickingsCannotSelectTheSameCanonicalSerial() {
         Fixture fixture = readyFixture();
         UUID location = traceLocation(fixture, "SHARED-SERIAL");
@@ -1138,6 +1486,28 @@ class PickingServiceTest {
         return location;
     }
 
+    private UUID insertFefoLot(
+            Fixture fixture,
+            UUID locationId,
+            String lotNumber,
+            LocalDate expirationDate,
+            String quantity,
+            String reservedQuantity) {
+        UUID lotId = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO inventory_lots
+                    (id, tenant_id, product_id, lot_number, expiration_date)
+                VALUES (?, ?, ?, ?, ?)
+                """, lotId, fixture.tenantId(), fixture.productId(), lotNumber, expirationDate);
+        jdbc.update("""
+                INSERT INTO inventory_lot_balances
+                    (id, tenant_id, branch_id, location_id, lot_id, quantity, reserved_quantity)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, UUID.randomUUID(), fixture.tenantId(), fixture.branchId(), locationId, lotId,
+                new BigDecimal(quantity), new BigDecimal(reservedQuantity));
+        return lotId;
+    }
+
     private void assignFixtureOperationalLocation(Fixture fixture, UUID locationId) {
         // ensureForOrder guarda el PickingItem mediante JPA. Debe existir en PostgreSQL antes de
         // sincronizar por JDBC la ubicacion que heredo de la reserva del fixture.
@@ -1254,6 +1624,11 @@ class PickingServiceTest {
     private BigDecimal itemQuantity(UUID itemId) {
         return jdbc.queryForObject(
                 "SELECT picked_quantity FROM picking_items WHERE id = ?", BigDecimal.class, itemId);
+    }
+
+    private String itemTraces(UUID itemId) {
+        return jdbc.queryForObject(
+                "SELECT picked_traces::text FROM picking_items WHERE id = ?", String.class, itemId);
     }
 
     private String pickingStatus(UUID pickingId) {
