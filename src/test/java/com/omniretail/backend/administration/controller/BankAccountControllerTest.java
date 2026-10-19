@@ -442,6 +442,33 @@ class BankAccountControllerTest {
     }
 
     @Test
+    void cashierCanListActiveBankAccountsButNotManageThem() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant, List.of("pos.sales.create"));
+
+        persistBankAccount(tenant, "Cuenta Activa Uno", "11112222", BankAccountStatus.active);
+        persistBankAccount(tenant, "Cuenta Archivada", "33334444", BankAccountStatus.archived);
+
+        mockMvc.perform(get(BASE_URL + "/active").header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].alias").value("Cuenta Activa Uno"));
+        mockMvc.perform(get(BASE_URL).header("Authorization", bearer(token)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+    }
+
+    @Test
+    void listActiveBankAccountsWithoutPermissionReturnsForbidden() throws Exception {
+        Tenant tenant = persistTenant();
+        String token = tokenFor(tenant, List.of());
+
+        mockMvc.perform(get(BASE_URL + "/active").header("Authorization", bearer(token)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+    }
+
+    @Test
     void createBankAccountValidationBadRequest() throws Exception {
         Tenant tenant = persistTenant();
         String token = tokenFor(tenant);

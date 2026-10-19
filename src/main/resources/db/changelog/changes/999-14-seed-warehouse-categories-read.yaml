@@ -1,0 +1,26 @@
+databaseChangeLog:
+  - changeSet:
+      id: 999-14-seed-warehouse-categories-read
+      author: joga17000
+      context: dev
+      comment: Otorga al rol de sistema Bodeguero la lectura de categorias que necesita /inventario/alertas para cargar.
+      changes:
+        # /inventario/alertas carga GET /catalog/categories junto con el stock; sin catalog.categories.read el
+        # Bodeguero recibe 403 y la pantalla muestra "No se pudo cargar el inventario".
+        # 999-01 y 999-13 ya estan aplicadas y no se editan (regla del master). Solo lectura.
+        - sql:
+            sql: |
+              UPDATE roles
+              SET permissions = (
+                SELECT ARRAY(
+                  SELECT DISTINCT permission
+                  FROM unnest(COALESCE(permissions, ARRAY[]::text[])
+                              || ARRAY['catalog.categories.read']::text[]) AS permission
+                  ORDER BY permission
+                )
+              )
+              WHERE name = 'Bodeguero' AND is_system = TRUE;
+      rollback:
+        # Mismo criterio que 999-13: union de conjuntos sin estado historico, quitarlo seria destructivo.
+        - sql:
+            sql: SELECT 1
