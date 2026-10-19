@@ -23,17 +23,25 @@ import com.omniretail.backend.ecommerce.repository.InventoryReservationRepositor
 import com.omniretail.backend.ecommerce.repository.OrderItemRepository;
 import com.omniretail.backend.ecommerce.repository.OrderRepository;
 import com.omniretail.backend.ecommerce.service.OrderCustomerNameResolver;
-import com.omniretail.backend.inventory.entity.InventoryBalance;
 import com.omniretail.backend.inventory.dto.InventoryPhysicalSelection;
 import com.omniretail.backend.inventory.dto.InventoryTraceabilitySelection;
+import com.omniretail.backend.inventory.entity.InventoryBalance;
+import com.omniretail.backend.inventory.entity.InventoryLot;
+import com.omniretail.backend.inventory.entity.InventoryLotBalance;
+import com.omniretail.backend.inventory.entity.InventorySerial;
+import com.omniretail.backend.inventory.entity.InventorySerialStatus;
 import com.omniretail.backend.inventory.entity.InventoryTransfer;
 import com.omniretail.backend.inventory.entity.InventoryTransferItem;
 import com.omniretail.backend.inventory.entity.InventoryTransferStatus;
 import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
+import com.omniretail.backend.inventory.repository.InventoryLotBalanceRepository;
+import com.omniretail.backend.inventory.repository.InventoryLotRepository;
+import com.omniretail.backend.inventory.repository.InventorySerialRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferItemRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferRepository;
 import com.omniretail.backend.inventory.service.InventoryPhysicalSelectionCodec;
 import com.omniretail.backend.inventory.service.InventoryTraceabilityMutationService;
+import com.omniretail.backend.inventory.service.TenantBusinessDateService;
 import com.omniretail.backend.logistics.dto.CreatePickingIncidentRequest;
 import com.omniretail.backend.logistics.dto.PickingActionResponse;
 import com.omniretail.backend.logistics.dto.PickingDetailResponse;
@@ -73,6 +81,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -119,11 +129,15 @@ public class PickingService {
     private final OrderCustomerNameResolver customerNameResolver;
     private final InventoryReservationRepository reservationRepository;
     private final InventoryBalanceRepository inventoryBalanceRepository;
+    private final InventoryLotBalanceRepository inventoryLotBalanceRepository;
+    private final InventoryLotRepository inventoryLotRepository;
+    private final InventorySerialRepository inventorySerialRepository;
     private final InventoryTransferRepository transferRepository;
     private final InventoryTransferItemRepository transferItemRepository;
     private final LocationRepository locationRepository;
     private final InventoryTraceabilityMutationService traceabilityMutationService;
     private final InventoryPhysicalSelectionCodec physicalSelectionCodec;
+    private final TenantBusinessDateService tenantBusinessDateService;
     private final PickingTraceProjectionService traceProjectionService;
     private final BranchAccessResolver branchAccessResolver;
     private final CurrentUser currentUser;
@@ -1108,7 +1122,7 @@ public class PickingService {
                                 found.getId(), found.getCode(), found.getName()))
                         .orElse(null);
         PickingLineResponse.InventoryAvailability inventory =
-                inventoryAvailability(tenantId, branchId, orderId, item);
+                inventoryAvailability(tenantId, branchId, orderId, item, product);
         List<PickingLineResponse.AvailableLocation> availableLocations = inventory.locations().stream()
                 .map(value -> new PickingLineResponse.AvailableLocation(
                         value.locationId(),
@@ -1116,6 +1130,12 @@ public class PickingService {
                         value.locationName(),
                         value.ownReservedQuantity(),
                         value.usableQuantity()))
+                .toList();
+        List<PickingLineResponse.AvailableLot> availableLots = availableLots(inventory.locations());
+        List<String> availableSerialNumbers = inventory.locations().stream()
+                .flatMap(value -> value.serialNumbers().stream())
+                .map(PickingLineResponse.InventorySerial::serialNumber)
+                .distinct()
                 .toList();
         return new PickingLineResponse(
                 item.getId(),
@@ -1131,8 +1151,8 @@ public class PickingService {
                 null,
                 List.of(),
                 availableLocations,
-                List.of(),
-                List.of(),
+                availableLots,
+                availableSerialNumbers,
                 new PickingLineResponse.Tracking(
                         Boolean.TRUE.equals(product.getTrackingStock()),
                         Boolean.TRUE.equals(product.getTrackingLot()),
@@ -1144,7 +1164,7 @@ public class PickingService {
     }
 
     private PickingLineResponse.InventoryAvailability inventoryAvailability(
-            UUID tenantId, UUID branchId, UUID orderId, PickingItem item) {
+            UUID tenantId, UUID branchId, UUID orderId, PickingItem item, Product product) {
         List<InventoryBalance> balances = inventoryBalanceRepository
                 .findByTenantIdAndBranchIdAndProductId(tenantId, branchId, item.getProductId());
         // El item hereda la ubicacion de la asignacion persistida de la reserva. Mostrar otra ubicacion
@@ -1179,13 +1199,19 @@ public class PickingService {
                 ownReservationByBalance.merge(allocation.balanceId(), remaining, BigDecimal::add);
             }
         }
+        PhysicalAvailability physicalAvailability = physicalAvailability(
+                tenantId, branchId, product, item, balances, ownReservationByBalance);
         List<PickingLineResponse.InventoryLocation> locations = balances.stream()
                 .filter(balance -> java.util.Objects.equals(balance.getLocationId(), operationalLocation))
                 .filter(balance -> availableBalanceLocation(tenantId, branchId, balance))
                 .sorted(Comparator.comparing(balance ->
                         balance.getLocationId() == null ? "" : balance.getLocationId().toString()))
                 .map(balance -> inventoryLocation(
-                        tenantId, branchId, balance, ownReservationByBalance.get(balance.getId())))
+                        tenantId,
+                        branchId,
+                        balance,
+                        ownReservationByBalance.get(balance.getId()),
+                        physicalAvailability))
                 .toList();
         BigDecimal physical = sum(locations, PickingLineResponse.InventoryLocation::physicalQuantity);
         BigDecimal ownReserved = sum(
@@ -1212,14 +1238,15 @@ public class PickingService {
             UUID tenantId,
             UUID branchId,
             InventoryBalance balance,
-            BigDecimal ownReservation) {
+            BigDecimal ownReservation,
+            PhysicalAvailability physicalAvailability) {
         BigDecimal physical = balance.getQuantity().max(BigDecimal.ZERO);
         BigDecimal ownReserved = ownReservation == null ? BigDecimal.ZERO : ownReservation;
         BigDecimal otherReserved = balance.getReservedQuantity()
                 .subtract(ownReserved)
                 .max(BigDecimal.ZERO);
         BigDecimal free = physical.subtract(balance.getReservedQuantity()).max(BigDecimal.ZERO);
-        BigDecimal usable = physical.min(ownReserved.add(free));
+        BigDecimal usable = usableQuantity(balance, ownReservation);
         Location location = balance.getLocationId() == null
                 ? null
                 : locationRepository.findByTenantIdAndId(tenantId, balance.getLocationId())
@@ -1236,8 +1263,202 @@ public class PickingService {
                 otherReserved,
                 free,
                 usable,
-                List.of(),
-                List.of());
+                physicalAvailability.lotsAt(balance.getLocationId()),
+                physicalAvailability.serialsAt(balance.getLocationId()));
+    }
+
+    private PhysicalAvailability physicalAvailability(
+            UUID tenantId,
+            UUID branchId,
+            Product product,
+            PickingItem item,
+            List<InventoryBalance> balances,
+            Map<UUID, BigDecimal> ownReservationByBalance) {
+        if (!isTraceable(product)) return PhysicalAvailability.empty();
+
+        Set<UUID> availableLocationIds = balances.stream()
+                .filter(balance -> balance.getLocationId() != null)
+                .filter(balance -> usableQuantity(
+                                        balance,
+                                        ownReservationByBalance.get(balance.getId()))
+                                .signum()
+                        > 0)
+                .map(InventoryBalance::getLocationId)
+                .collect(Collectors.toSet());
+        List<InventoryPhysicalSelection> ownSelections =
+                physicalSelectionCodec.decode(item.getPickedTraces());
+        Map<LocationLotKey, BigDecimal> ownLotQuantities = new HashMap<>();
+        Set<String> ownSerialNumbers = new HashSet<>();
+        for (InventoryPhysicalSelection selection : ownSelections) {
+            if (selection.lotId() != null && selection.quantity() != null) {
+                ownLotQuantities.merge(
+                        new LocationLotKey(selection.locationId(), selection.lotId()),
+                        selection.quantity(),
+                        BigDecimal::add);
+            }
+            if (selection.serialNumbers() != null) {
+                ownSerialNumbers.addAll(selection.serialNumbers());
+            }
+        }
+
+        List<InventoryLotBalance> lotBalances = inventoryLotBalanceRepository
+                .findByTenantBranchAndProduct(tenantId, branchId, product.getId());
+        List<UUID> lotIds = lotBalances.stream()
+                .map(InventoryLotBalance::getLotId)
+                .distinct()
+                .toList();
+        Map<UUID, InventoryLot> lots = new HashMap<>();
+        if (!lotIds.isEmpty()) {
+            inventoryLotRepository.findByTenantIdAndIdIn(tenantId, lotIds).stream()
+                    .filter(lot -> product.getId().equals(lot.getProductId()))
+                    .forEach(lot -> lots.put(lot.getId(), lot));
+        }
+        LocalDate businessDate = tenantBusinessDateService.currentDate(tenantId);
+        Comparator<PickingLineResponse.InventoryLot> fefo = Comparator
+                .comparing(
+                        PickingLineResponse.InventoryLot::expirationDate,
+                        Comparator.nullsLast(Comparator.naturalOrder()))
+                .thenComparing(PickingLineResponse.InventoryLot::lotNumber)
+                .thenComparing(PickingLineResponse.InventoryLot::lotId);
+        Map<UUID, List<PickingLineResponse.InventoryLot>> lotsByLocation = new HashMap<>();
+        for (InventoryLotBalance lotBalance : lotBalances) {
+            if (!availableLocationIds.contains(lotBalance.getLocationId())) continue;
+            InventoryLot lot = lots.get(lotBalance.getLotId());
+            if (lot == null || expired(product, lot, businessDate)) continue;
+            BigDecimal ownSelected = ownLotQuantities.getOrDefault(
+                    new LocationLotKey(lotBalance.getLocationId(), lot.getId()),
+                    BigDecimal.ZERO);
+            BigDecimal usable = lotBalance.getQuantity()
+                    .subtract(lotBalance.getReservedQuantity())
+                    .add(ownSelected)
+                    .min(lotBalance.getQuantity())
+                    .max(BigDecimal.ZERO);
+            if (usable.signum() <= 0) continue;
+            lotsByLocation.computeIfAbsent(lotBalance.getLocationId(), ignored -> new ArrayList<>())
+                    .add(new PickingLineResponse.InventoryLot(
+                            lot.getId(),
+                            lot.getLotNumber(),
+                            lot.getExpirationDate() == null
+                                    ? null
+                                    : lot.getExpirationDate().toString(),
+                            lotBalance.getQuantity().max(BigDecimal.ZERO),
+                            List.of()));
+        }
+        lotsByLocation.values().forEach(values -> values.sort(fefo));
+
+        Map<UUID, Set<UUID>> eligibleLotsByLocation = new HashMap<>();
+        lotsByLocation.forEach((locationId, values) -> eligibleLotsByLocation.put(
+                locationId,
+                values.stream().map(PickingLineResponse.InventoryLot::lotId).collect(Collectors.toSet())));
+        Map<UUID, List<PickingLineResponse.InventorySerial>> serialsByLocation = new HashMap<>();
+        if (Boolean.TRUE.equals(product.getTrackingSerial())) {
+            Map<UUID, InventorySerial> serialCandidates = inventorySerialRepository
+                    .findByTenantIdAndBranchIdAndProductIdAndStatusOrderBySerialNumberAsc(
+                            tenantId,
+                            branchId,
+                            product.getId(),
+                            InventorySerialStatus.AVAILABLE)
+                    .stream()
+                    .collect(Collectors.toMap(InventorySerial::getId, Function.identity()));
+            if (!ownSerialNumbers.isEmpty()) {
+                inventorySerialRepository
+                        .findByTenantIdAndProductIdAndSerialNumberIn(
+                                tenantId, product.getId(), new ArrayList<>(ownSerialNumbers))
+                        .stream()
+                        .filter(serial -> serial.getStatus() == InventorySerialStatus.RESERVED)
+                        .forEach(serial -> serialCandidates.put(serial.getId(), serial));
+            }
+            serialCandidates.values().stream()
+                    .filter(serial -> availableLocationIds.contains(serial.getLocationId()))
+                    .filter(serial -> serial.getStatus() == InventorySerialStatus.AVAILABLE
+                            || (serial.getStatus() == InventorySerialStatus.RESERVED
+                                    && ownSerialNumbers.contains(serial.getSerialNumber())))
+                    .filter(serial -> eligibleSerialLot(serial, product, eligibleLotsByLocation))
+                    .forEach(serial -> serialsByLocation
+                            .computeIfAbsent(serial.getLocationId(), ignored -> new ArrayList<>())
+                            .add(new PickingLineResponse.InventorySerial(
+                                    serial.getId(), serial.getSerialNumber(), serial.getLotId())));
+        }
+        Comparator<PickingLineResponse.InventorySerial> serialFefo = Comparator
+                .comparing(
+                        (PickingLineResponse.InventorySerial serial) -> Optional
+                                .ofNullable(lots.get(serial.lotId()))
+                                .map(InventoryLot::getExpirationDate)
+                                .orElse(null),
+                        Comparator.nullsLast(Comparator.naturalOrder()))
+                .thenComparing(
+                        serial -> Optional.ofNullable(lots.get(serial.lotId()))
+                                .map(InventoryLot::getLotNumber)
+                                .orElse(""))
+                .thenComparing(PickingLineResponse.InventorySerial::serialNumber)
+                .thenComparing(PickingLineResponse.InventorySerial::id);
+        serialsByLocation.values().forEach(values -> values.sort(serialFefo));
+        lotsByLocation.replaceAll((locationId, locationLots) -> {
+            List<PickingLineResponse.InventorySerial> locationSerials =
+                    serialsByLocation.getOrDefault(locationId, List.of());
+            return locationLots.stream()
+                    .map(lot -> new PickingLineResponse.InventoryLot(
+                            lot.lotId(),
+                            lot.lotNumber(),
+                            lot.expirationDate(),
+                            lot.physicalQuantity(),
+                            locationSerials.stream()
+                                    .filter(serial -> lot.lotId().equals(serial.lotId()))
+                                    .map(serial -> new PickingLineResponse.InventoryLotSerial(
+                                            serial.id(), serial.serialNumber()))
+                                    .toList()))
+                    .toList();
+        });
+        return new PhysicalAvailability(lotsByLocation, serialsByLocation);
+    }
+
+    private static boolean eligibleSerialLot(
+            InventorySerial serial,
+            Product product,
+            Map<UUID, Set<UUID>> eligibleLotsByLocation) {
+        if (serial.getLotId() == null) {
+            return !Boolean.TRUE.equals(product.getTrackingLot())
+                    && !Boolean.TRUE.equals(product.getTrackingExpiration());
+        }
+        return eligibleLotsByLocation
+                .getOrDefault(serial.getLocationId(), Set.of())
+                .contains(serial.getLotId());
+    }
+
+    private static boolean expired(Product product, InventoryLot lot, LocalDate businessDate) {
+        return Boolean.TRUE.equals(product.getTrackingExpiration())
+                && (lot.getExpirationDate() == null
+                        || lot.getExpirationDate().isBefore(businessDate));
+    }
+
+    private static BigDecimal usableQuantity(
+            InventoryBalance balance, BigDecimal ownReservation) {
+        BigDecimal physical = balance.getQuantity().max(BigDecimal.ZERO);
+        BigDecimal ownReserved = ownReservation == null ? BigDecimal.ZERO : ownReservation;
+        BigDecimal free = physical.subtract(balance.getReservedQuantity()).max(BigDecimal.ZERO);
+        return physical.min(ownReserved.add(free));
+    }
+
+    private static List<PickingLineResponse.AvailableLot> availableLots(
+            List<PickingLineResponse.InventoryLocation> locations) {
+        Map<UUID, PickingLineResponse.AvailableLot> values = new HashMap<>();
+        locations.stream().flatMap(location -> location.lots().stream()).forEach(lot ->
+                values.merge(
+                        lot.lotId(),
+                        new PickingLineResponse.AvailableLot(
+                                lot.lotId(), lot.lotNumber(), lot.expirationDate(), lot.physicalQuantity()),
+                        (first, second) -> new PickingLineResponse.AvailableLot(
+                                first.id(),
+                                first.number(),
+                                first.expirationDate(),
+                                first.physicalQuantity().add(second.physicalQuantity()))));
+        return values.values().stream()
+                .sorted(Comparator.comparing(
+                                PickingLineResponse.AvailableLot::expirationDate,
+                                Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparing(PickingLineResponse.AvailableLot::number)
+                        .thenComparing(PickingLineResponse.AvailableLot::id))
+                .toList();
     }
 
     private boolean availableBalanceLocation(
@@ -1378,4 +1599,23 @@ public class PickingService {
             UUID locationId,
             BigDecimal reservedQuantity,
             BigDecimal consumedQuantity) {}
+
+    private record LocationLotKey(UUID locationId, UUID lotId) {}
+
+    private record PhysicalAvailability(
+            Map<UUID, List<PickingLineResponse.InventoryLot>> lotsByLocation,
+            Map<UUID, List<PickingLineResponse.InventorySerial>> serialsByLocation) {
+
+        private static PhysicalAvailability empty() {
+            return new PhysicalAvailability(new HashMap<>(), new HashMap<>());
+        }
+
+        private List<PickingLineResponse.InventoryLot> lotsAt(UUID locationId) {
+            return lotsByLocation.getOrDefault(locationId, List.of());
+        }
+
+        private List<PickingLineResponse.InventorySerial> serialsAt(UUID locationId) {
+            return serialsByLocation.getOrDefault(locationId, List.of());
+        }
+    }
 }
