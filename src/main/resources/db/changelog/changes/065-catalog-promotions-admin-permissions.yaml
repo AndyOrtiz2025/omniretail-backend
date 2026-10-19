@@ -1,0 +1,27 @@
+databaseChangeLog:
+  - changeSet:
+      id: 065-catalog-promotions-admin-permissions
+      author: joga17000
+      changes:
+        - sql:
+            # 026-catalog-promotions-admin-role-permissions es context dev y apunta al id del Administrador
+            # demo: en una BD nueva corre antes de 999-01 (0 filas) y fuera de dev nunca corre, asi que el
+            # Administrador queda sin promociones. Mismo criterio que 048: rol de sistema "Administrador" de
+            # cada tenant, union de conjuntos idempotente y sin duplicados.
+            sql: |
+              UPDATE roles
+              SET permissions = (
+                SELECT ARRAY(
+                  SELECT DISTINCT permission
+                  FROM unnest(permissions || ARRAY['catalog.promotions.read', 'catalog.promotions.manage']::text[]) AS permission
+                  ORDER BY permission
+                )
+              )
+              WHERE name = 'Administrador' AND is_system = TRUE;
+      # Limite: solo cubre roles Administrador que YA existen al migrar. En una BD nueva de dev corre
+      # antes de 999-01 (0 filas) y lo cubre 999-15.
+      rollback:
+        # Intencionalmente sin efecto: sin estado adicional no se puede saber si el permiso ya estaba
+        # concedido antes de esta migracion (p. ej. por 026 o manualmente), y quitarlo seria destructivo.
+        - sql:
+            sql: SELECT 1
