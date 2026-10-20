@@ -3,6 +3,7 @@ package com.omniretail.backend.ecommerce.dto;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.UUID;
 
 /** Contrato seguro de un producto que puede mostrarse en la tienda pública. */
@@ -25,7 +26,9 @@ public record PublicStorefrontProductResponse(
         UUID saleUnitId,
         String saleUnitName,
         boolean inStock,
-        BigDecimal availableQuantity) {
+        BigDecimal availableQuantity,
+        List<PublicStorefrontProductAttributeResponse> attributes,
+        List<PublicStorefrontProductAvailabilityResponse> availability) {
 
     public static PublicStorefrontProductResponse from(
             Product product,
@@ -38,6 +41,34 @@ public record PublicStorefrontProductResponse(
             String primaryImageAlt,
             boolean inStock,
             BigDecimal availableQuantity) {
+        return from(
+                product,
+                categoryName,
+                categoryImageUrl,
+                saleUnitId,
+                saleUnitName,
+                price,
+                primaryImageUrl,
+                primaryImageAlt,
+                inStock,
+                availableQuantity,
+                List.of(),
+                null);
+    }
+
+    public static PublicStorefrontProductResponse from(
+            Product product,
+            String categoryName,
+            String categoryImageUrl,
+            UUID saleUnitId,
+            String saleUnitName,
+            ResolvedProductPrice price,
+            String primaryImageUrl,
+            String primaryImageAlt,
+            boolean inStock,
+            BigDecimal availableQuantity,
+            List<PublicStorefrontProductAttributeResponse> attributes,
+            List<PublicStorefrontProductAvailabilityResponse> availability) {
         return new PublicStorefrontProductResponse(
                 product.getId(),
                 product.getSku(),
@@ -57,6 +88,8 @@ public record PublicStorefrontProductResponse(
                 saleUnitId,
                 saleUnitName,
                 inStock,
-                availableQuantity);
+                availableQuantity,
+                attributes,
+                availability);
     }
 }
