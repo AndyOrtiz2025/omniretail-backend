@@ -61,6 +61,7 @@ public class InventoryTraceabilityMutationService {
     private final InventoryMovementRepository movementRepository;
     private final InventoryMovementTraceRepository movementTraceRepository;
     private final InventoryOperationalLocationService operationalLocations;
+    private final InventoryFefoAllocationPlanner fefoAllocationPlanner;
     private final EntityManager entityManager;
 
     public List<InventoryInboundTraceDetail> validateAndNormalize(
@@ -494,52 +495,28 @@ public class InventoryTraceabilityMutationService {
                         .filter(lot -> traceableProduct.getId().equals(lot.getProductId()))
                         .collect(java.util.stream.Collectors.toMap(InventoryLot::getId, lot -> lot));
 
-        LocalDate businessDate = businessDate(tenantId);
-        Map<UUID, BigDecimal> desiredByLot = quantitiesByLot(oldNormalized);
-        for (Map.Entry<UUID, BigDecimal> previous : desiredByLot.entrySet()) {
-            InventoryLot lot = lots.get(previous.getKey());
-            InventoryLotBalance balance = lockedBalances.get(previous.getKey());
-            if (lot == null
-                    || lot.getExpirationDate() == null
-                    || lot.getExpirationDate().isBefore(businessDate)) {
-                throw BusinessException.conflict(
-                        "LOT_EXPIRED", "Una seleccion FEFO existente ya no corresponde a un lote vigente.");
-            }
-            if (balance == null
-                    || balance.getQuantity().compareTo(previous.getValue()) < 0
-                    || balance.getReservedQuantity().compareTo(previous.getValue()) < 0) {
-                throw insufficientTraceableStock();
-            }
-        }
-
-        List<InventoryLot> fefoLots = lots.values().stream()
-                .filter(lot -> lot.getExpirationDate() != null)
-                .filter(lot -> !lot.getExpirationDate().isBefore(businessDate))
-                .sorted(Comparator.comparing(InventoryLot::getExpirationDate)
-                        .thenComparing(InventoryLot::getLotNumber)
-                        .thenComparing(InventoryLot::getId))
-                .toList();
-        BigDecimal remaining = targetQuantity.subtract(oldTotal);
-        for (InventoryLot lot : fefoLots) {
-            if (remaining.signum() == 0) break;
-            InventoryLotBalance balance = lockedBalances.get(lot.getId());
-            BigDecimal available = balance.getQuantity()
-                    .subtract(balance.getReservedQuantity())
-                    .max(BigDecimal.ZERO);
-            BigDecimal assigned = available.min(remaining);
-            if (assigned.signum() > 0) {
-                desiredByLot.merge(lot.getId(), assigned, BigDecimal::add);
-                remaining = remaining.subtract(assigned);
-            }
-        }
-        if (remaining.signum() > 0) {
-            throw insufficientTraceableStock();
-        }
-
-        List<InventoryTraceabilitySelection> desired = fefoLots.stream()
-                .filter(lot -> desiredByLot.containsKey(lot.getId()))
-                .map(lot -> new InventoryTraceabilitySelection(
-                        lot.getId(), desiredByLot.get(lot.getId()), List.of()))
+        InventoryFefoAllocationPlanner.Plan plan = fefoAllocationPlanner.plan(
+                businessDate(tenantId),
+                targetQuantity,
+                oldNormalized.stream()
+                        .map(selection -> new InventoryFefoAllocationPlanner.Allocation(
+                                selection.lotId(), selection.quantity()))
+                        .toList(),
+                lockedBalances.values().stream()
+                        .filter(balance -> lots.containsKey(balance.getLotId()))
+                        .map(balance -> {
+                            InventoryLot lot = lots.get(balance.getLotId());
+                            return new InventoryFefoAllocationPlanner.Candidate(
+                                    lot.getId(),
+                                    lot.getLotNumber(),
+                                    lot.getExpirationDate(),
+                                    balance.getQuantity(),
+                                    balance.getReservedQuantity());
+                        })
+                        .toList());
+        List<InventoryTraceabilitySelection> desired = plan.resultingAllocations().stream()
+                .map(allocation -> new InventoryTraceabilitySelection(
+                        allocation.lotId(), allocation.quantity(), List.of()))
                 .toList();
         return replacePhysicalReservation(
                 tenantId,

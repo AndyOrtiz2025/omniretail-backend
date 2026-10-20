@@ -11,6 +11,7 @@ import com.omniretail.backend.administration.service.BranchAccessResolver;
 import com.omniretail.backend.administration.service.BranchAccessResolver.BranchAccess;
 import com.omniretail.backend.ecommerce.entity.InventoryReservationStatus;
 import com.omniretail.backend.logistics.dto.CreatePickingIncidentRequest;
+import com.omniretail.backend.logistics.dto.PickingFefoPreviewResponse;
 import com.omniretail.backend.logistics.dto.PickingLineResponse;
 import com.omniretail.backend.logistics.dto.PickingTrackingSelectionRequest;
 import com.omniretail.backend.logistics.dto.PhysicalTraceSelectionResponse;
@@ -769,6 +770,167 @@ class PickingServiceTest {
         assertThat(physicalQuantity(fixture)).isEqualByComparingTo("10.000");
         assertThat(reservedQuantity(fixture)).isEqualByComparingTo("5.000");
         assertThat(movementCount(fixture)).isZero();
+    }
+
+    @Test
+    void previewsFefoAcrossLotsWithoutWritesAndMatchesTheAuthoritativePatch() {
+        Fixture fixture = readyFixture();
+        UUID location = traceLocation(fixture, "FEFO-PREVIEW");
+        assignFixtureOperationalLocation(fixture, location);
+        jdbc.update("""
+                UPDATE products
+                SET tracking_lot = true, tracking_expiration = true, tracking_serial = false
+                WHERE id = ?
+                """, fixture.productId());
+        UUID firstLot = insertFefoLot(
+                fixture, location, "LOT-PREVIEW-FIRST", businessToday().plusDays(5), "3.000", "0.000");
+        UUID secondLot = insertFefoLot(
+                fixture, location, "LOT-PREVIEW-SECOND", businessToday().plusDays(20), "4.000", "0.000");
+        entityManager.clear();
+
+        UUID pickingId = pickingId(fixture);
+        UUID itemId = itemId(fixture, pickingId);
+        service.assign(fixture.branchId(), pickingId);
+        PickingFefoPreviewResponse preview = service.previewFefo(
+                fixture.branchId(), pickingId, itemId, location, new BigDecimal("5.000"));
+
+        assertThat(preview.currentPickedQuantity()).isZero();
+        assertThat(preview.incrementalQuantity()).isEqualByComparingTo("5.000");
+        assertThat(preview.existingSelections()).isEmpty();
+        assertThat(preview.incrementalAllocations())
+                .extracting(
+                        PickingFefoPreviewResponse.Allocation::lotNumber,
+                        PickingFefoPreviewResponse.Allocation::quantity)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple(
+                                "LOT-PREVIEW-FIRST", new BigDecimal("3.000")),
+                        org.assertj.core.groups.Tuple.tuple(
+                                "LOT-PREVIEW-SECOND", new BigDecimal("2.000")));
+        assertThat(preview.resultingSelections()).isEqualTo(preview.incrementalAllocations());
+        assertThat(preview.provisional()).isTrue();
+        assertThat(itemQuantity(itemId)).isZero();
+        assertThat(itemTraces(itemId)).isNull();
+        assertThat(lotReserved(firstLot)).isZero();
+        assertThat(lotReserved(secondLot)).isZero();
+        assertThat(operationCount(fixture)).isZero();
+        assertThat(movementCount(fixture)).isZero();
+
+        PickingLineResponse updated = service.updateItem(
+                fixture.branchId(),
+                pickingId,
+                itemId,
+                new UpdatePickingItemRequest(
+                        new BigDecimal("5.000"), location, "preview-authoritative-patch", List.of(), true));
+        assertThat(updated.trackingSelections())
+                .extracting(
+                        PhysicalTraceSelectionResponse::lotId,
+                        PhysicalTraceSelectionResponse::quantity)
+                .containsExactlyInAnyOrderElementsOf(preview.resultingSelections().stream()
+                        .map(selection -> org.assertj.core.groups.Tuple.tuple(
+                                selection.lotId(), selection.quantity()))
+                        .toList());
+    }
+
+    @Test
+    void previewPreservesOwnSelectionAndReturnsOnlyTheCumulativeIncrement() {
+        Fixture fixture = readyFixture();
+        UUID location = traceLocation(fixture, "FEFO-PREVIEW-INCREMENT");
+        assignFixtureOperationalLocation(fixture, location);
+        jdbc.update("""
+                UPDATE products
+                SET tracking_lot = true, tracking_expiration = true, tracking_serial = false
+                WHERE id = ?
+                """, fixture.productId());
+        UUID firstLot = insertFefoLot(
+                fixture, location, "LOT-OWN", businessToday().plusDays(5), "3.000", "0.000");
+        UUID secondLot = insertFefoLot(
+                fixture, location, "LOT-NEXT", businessToday().plusDays(20), "4.000", "0.000");
+        entityManager.clear();
+
+        UUID pickingId = pickingId(fixture);
+        UUID itemId = itemId(fixture, pickingId);
+        service.assign(fixture.branchId(), pickingId);
+        service.updateItem(
+                fixture.branchId(),
+                pickingId,
+                itemId,
+                new UpdatePickingItemRequest(
+                        new BigDecimal("2.000"), location, "preview-existing", List.of(), true));
+        long operationsBeforePreview = operationCount(fixture);
+
+        PickingFefoPreviewResponse preview = service.previewFefo(
+                fixture.branchId(), pickingId, itemId, location, new BigDecimal("5.000"));
+
+        assertThat(preview.currentPickedQuantity()).isEqualByComparingTo("2.000");
+        assertThat(preview.incrementalQuantity()).isEqualByComparingTo("3.000");
+        assertThat(preview.existingSelections())
+                .singleElement()
+                .satisfies(selection -> {
+                    assertThat(selection.lotId()).isEqualTo(firstLot);
+                    assertThat(selection.quantity()).isEqualByComparingTo("2.000");
+                });
+        assertThat(preview.incrementalAllocations())
+                .extracting(
+                        PickingFefoPreviewResponse.Allocation::lotId,
+                        PickingFefoPreviewResponse.Allocation::quantity)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple(firstLot, new BigDecimal("1.000")),
+                        org.assertj.core.groups.Tuple.tuple(secondLot, new BigDecimal("2.000")));
+        assertThat(itemQuantity(itemId)).isEqualByComparingTo("2.000");
+        assertThat(lotReserved(firstLot)).isEqualByComparingTo("2.000");
+        assertThat(lotReserved(secondLot)).isZero();
+        assertThat(operationCount(fixture)).isEqualTo(operationsBeforePreview);
+        assertThat(movementCount(fixture)).isZero();
+    }
+
+    @Test
+    void previewRejectsUnassignedPickingAndUnsupportedProductsWithoutWrites() {
+        Fixture fixture = readyFixture();
+        UUID location = traceLocation(fixture, "FEFO-PREVIEW-REJECT");
+        assignFixtureOperationalLocation(fixture, location);
+        UUID pickingId = pickingId(fixture);
+        UUID itemId = itemId(fixture, pickingId);
+
+        assertCode(
+                () -> service.previewFefo(
+                        fixture.branchId(), pickingId, itemId, location, BigDecimal.ONE),
+                "PICKING_NOT_ASSIGNED_TO_ACTOR");
+
+        service.assign(fixture.branchId(), pickingId);
+        assertCode(
+                () -> service.previewFefo(
+                        fixture.branchId(), pickingId, itemId, location, BigDecimal.ONE),
+                "AUTO_FEFO_NOT_SUPPORTED");
+        assertThat(itemQuantity(itemId)).isZero();
+        assertThat(operationCount(fixture)).isZero();
+    }
+
+    @Test
+    void previewIsScopedToTheAuthenticatedTenantAndRequestedBranch() {
+        Fixture fixture = readyFixture();
+        UUID location = traceLocation(fixture, "FEFO-PREVIEW-SCOPE");
+        assignFixtureOperationalLocation(fixture, location);
+        jdbc.update("""
+                UPDATE products
+                SET tracking_lot = true, tracking_expiration = true, tracking_serial = false
+                WHERE id = ?
+                """, fixture.productId());
+        entityManager.clear();
+        UUID pickingId = pickingId(fixture);
+        UUID itemId = itemId(fixture, pickingId);
+        service.assign(fixture.branchId(), pickingId);
+
+        assertCode(
+                () -> service.previewFefo(
+                        UUID.randomUUID(), pickingId, itemId, location, BigDecimal.ONE),
+                "PICKING_NOT_FOUND");
+
+        Fixture otherTenant = fixture("home_delivery", false);
+        actor(otherTenant);
+        assertCode(
+                () -> service.previewFefo(
+                        fixture.branchId(), pickingId, itemId, location, BigDecimal.ONE),
+                "PICKING_NOT_FOUND");
     }
 
     @Test

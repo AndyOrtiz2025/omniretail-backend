@@ -39,12 +39,14 @@ import com.omniretail.backend.inventory.repository.InventoryLotRepository;
 import com.omniretail.backend.inventory.repository.InventorySerialRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferItemRepository;
 import com.omniretail.backend.inventory.repository.InventoryTransferRepository;
+import com.omniretail.backend.inventory.service.InventoryFefoAllocationPlanner;
 import com.omniretail.backend.inventory.service.InventoryPhysicalSelectionCodec;
 import com.omniretail.backend.inventory.service.InventoryTraceabilityMutationService;
 import com.omniretail.backend.inventory.service.TenantBusinessDateService;
 import com.omniretail.backend.logistics.dto.CreatePickingIncidentRequest;
 import com.omniretail.backend.logistics.dto.PickingActionResponse;
 import com.omniretail.backend.logistics.dto.PickingDetailResponse;
+import com.omniretail.backend.logistics.dto.PickingFefoPreviewResponse;
 import com.omniretail.backend.logistics.dto.PickingIncidentResponse;
 import com.omniretail.backend.logistics.dto.PickingLineResponse;
 import com.omniretail.backend.logistics.dto.PickingProgressResponse;
@@ -136,6 +138,7 @@ public class PickingService {
     private final InventoryTransferItemRepository transferItemRepository;
     private final LocationRepository locationRepository;
     private final InventoryTraceabilityMutationService traceabilityMutationService;
+    private final InventoryFefoAllocationPlanner fefoAllocationPlanner;
     private final InventoryPhysicalSelectionCodec physicalSelectionCodec;
     private final TenantBusinessDateService tenantBusinessDateService;
     private final PickingTraceProjectionService traceProjectionService;
@@ -441,6 +444,89 @@ public class PickingService {
         AuthenticatedUser actor = actorForBranch(branchId);
         PickingOrder picking = findScoped(actor.tenantId(), branchId, pickingOrderId);
         return detail(actor.tenantId(), picking);
+    }
+
+    public PickingFefoPreviewResponse previewFefo(
+            UUID branchId,
+            UUID pickingOrderId,
+            UUID pickingItemId,
+            UUID locationId,
+            BigDecimal targetQuantity) {
+        AuthenticatedUser actor = actorForBranch(branchId);
+        PickingOrder picking = findScoped(actor.tenantId(), branchId, pickingOrderId);
+        requireNonTerminal(picking);
+        requireAssignedActor(picking, actor);
+        SourceContext source = readSource(picking);
+        requireOperationalOrder(source);
+        PickingItem item = pickingItemRepository
+                .findByScopeAndPickingOrderIdAndId(
+                        actor.tenantId(), branchId, pickingOrderId, pickingItemId)
+                .orElseThrow(() -> notFound("PICKING_ITEM_NOT_FOUND", "Linea de Picking no encontrada."));
+        Product product = requireProduct(actor.tenantId(), item.getProductId());
+        if (!supportsAutoFefo(product)) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "AUTO_FEFO_NOT_SUPPORTED",
+                    "La asignacion FEFO automatica requiere lotes y vencimiento, sin numeros de serie.");
+        }
+        if (targetQuantity == null || targetQuantity.signum() < 0) {
+            throw BusinessException.badRequest("La cantidad objetivo FEFO no es valida.");
+        }
+        if (targetQuantity.compareTo(item.getRequestedQuantity()) > 0) {
+            throw conflict("PICKING_QUANTITY_EXCEEDED", "La cantidad tomada excede la requerida.");
+        }
+        if (targetQuantity.compareTo(item.getPickedQuantity()) < 0) {
+            throw conflict("PICKING_QUANTITY_DECREASE", "La cantidad tomada no puede disminuir.");
+        }
+        Location location = requirePreviewLocation(
+                actor.tenantId(), branchId, item, locationId);
+        List<InventoryTraceabilitySelection> existing = physicalSelectionCodec.withoutLocation(
+                physicalSelectionCodec.decode(item.getPickedTraces()), location.getId());
+        List<InventoryLotBalance> balances = inventoryLotBalanceRepository.findAllAtLocation(
+                actor.tenantId(), branchId, product.getId(), location.getId());
+        List<UUID> lotIds = balances.stream()
+                .map(InventoryLotBalance::getLotId)
+                .distinct()
+                .toList();
+        Map<UUID, InventoryLot> lots = lotIds.isEmpty()
+                ? Map.of()
+                : inventoryLotRepository.findByTenantIdAndIdIn(actor.tenantId(), lotIds).stream()
+                        .filter(lot -> product.getId().equals(lot.getProductId()))
+                        .collect(Collectors.toMap(InventoryLot::getId, Function.identity()));
+        InventoryFefoAllocationPlanner.Plan plan = fefoAllocationPlanner.plan(
+                tenantBusinessDateService.currentDate(actor.tenantId()),
+                targetQuantity,
+                existing.stream()
+                        .map(selection -> new InventoryFefoAllocationPlanner.Allocation(
+                                selection.lotId(), selection.quantity()))
+                        .toList(),
+                balances.stream()
+                        .filter(balance -> lots.containsKey(balance.getLotId()))
+                        .map(balance -> {
+                            InventoryLot lot = lots.get(balance.getLotId());
+                            return new InventoryFefoAllocationPlanner.Candidate(
+                                    lot.getId(),
+                                    lot.getLotNumber(),
+                                    lot.getExpirationDate(),
+                                    balance.getQuantity(),
+                                    balance.getReservedQuantity());
+                        })
+                        .toList());
+        return new PickingFefoPreviewResponse(
+                picking.getId(),
+                item.getId(),
+                product.getId(),
+                branchId,
+                new PickingFefoPreviewResponse.Location(
+                        location.getId(), location.getCode(), location.getName()),
+                item.getPickedQuantity(),
+                targetQuantity,
+                targetQuantity.subtract(item.getPickedQuantity()),
+                previewAllocations(plan.existingAllocations(), lots, location),
+                previewAllocations(plan.incrementalAllocations(), lots, location),
+                previewAllocations(plan.resultingAllocations(), lots, location),
+                Instant.now(),
+                true);
     }
 
     @Transactional
@@ -852,6 +938,30 @@ public class PickingService {
         throw conflict("PICKING_SOURCE_NOT_SUPPORTED", "La fuente de Picking no es valida.");
     }
 
+    private SourceContext readSource(PickingOrder picking) {
+        if (picking.getSourceType() == PickingSourceType.order) {
+            requireOrderSource(picking);
+            Order order = orderRepository.findByTenantIdAndId(
+                            picking.getTenantId(), picking.getOrderId())
+                    .orElseThrow(() -> notFound("ORDER_NOT_FOUND", "Pedido no encontrado."));
+            requireMatchingOrder(picking, order);
+            requireEligibleOrderSource(order);
+            return new SourceContext(order, null, order.getOrderNumber());
+        }
+        if (picking.getSourceType() == PickingSourceType.transfer && picking.getOrderId() == null) {
+            tenantCapabilityGuard.ensureTenantCapability(
+                    picking.getTenantId(), SaasCapability.inventory);
+            InventoryTransfer transfer = transferRepository
+                    .findByTenantIdAndId(picking.getTenantId(), picking.getSourceId())
+                    .orElseThrow(() -> notFound(
+                            "INVENTORY_TRANSFER_NOT_FOUND", "Transferencia no encontrada."));
+            requireMatchingTransfer(picking, transfer);
+            requireCompatibleTransferState(picking, transfer);
+            return new SourceContext(null, transfer, transfer.getNumber());
+        }
+        throw conflict("PICKING_SOURCE_NOT_SUPPORTED", "La fuente de Picking no es valida.");
+    }
+
     private static void requireMatchingOrder(PickingOrder picking, Order order) {
         if (!order.getId().equals(picking.getOrderId())
                 || !order.getBranchId().equals(picking.getBranchId())) {
@@ -994,6 +1104,49 @@ public class PickingService {
                 .filter(found -> found.getStatus() == LocationStatus.active)
                 .orElseThrow(() -> notFound("PICKING_LOCATION_NOT_FOUND", "Ubicación no encontrada."));
         item.setLocationId(location.getId());
+    }
+
+    private Location requirePreviewLocation(
+            UUID tenantId, UUID branchId, PickingItem item, UUID requestedLocationId) {
+        if (requestedLocationId == null) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "PICKING_LOCATION_REQUIRED",
+                    "La ubicacion es requerida para Picking trazable.");
+        }
+        if (item.getLocationId() != null && !item.getLocationId().equals(requestedLocationId)) {
+            throw conflict(
+                    "PICKING_LOCATION_CHANGE_NOT_SUPPORTED",
+                    "No se permite cambiar la ubicacion reservada de la linea.");
+        }
+        return locationRepository.findByTenantIdAndId(tenantId, requestedLocationId)
+                .filter(found -> branchId.equals(found.getBranchId()))
+                .filter(found -> found.getStatus() == LocationStatus.active)
+                .orElseThrow(() -> notFound("PICKING_LOCATION_NOT_FOUND", "Ubicacion no encontrada."));
+    }
+
+    private static List<PickingFefoPreviewResponse.Allocation> previewAllocations(
+            List<InventoryFefoAllocationPlanner.Allocation> allocations,
+            Map<UUID, InventoryLot> lots,
+            Location location) {
+        return allocations.stream()
+                .map(allocation -> {
+                    InventoryLot lot = lots.get(allocation.lotId());
+                    if (lot == null) {
+                        throw conflict(
+                                "PICKING_TRACE_HISTORY_INCONSISTENT",
+                                "La seleccion fisica persistida del Picking es inconsistente.");
+                    }
+                    return new PickingFefoPreviewResponse.Allocation(
+                            location.getId(),
+                            location.getCode(),
+                            location.getName(),
+                            lot.getId(),
+                            lot.getLotNumber(),
+                            lot.getExpirationDate(),
+                            allocation.quantity());
+                })
+                .toList();
     }
 
     private boolean hasProgress(UUID tenantId, UUID branchId, UUID pickingOrderId) {
