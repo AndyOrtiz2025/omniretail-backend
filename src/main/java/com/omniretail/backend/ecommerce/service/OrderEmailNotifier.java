@@ -16,8 +16,9 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * Correos del pedido al contacto de {@code Order.notificationContact} (solo con {@code emailMode = "send"}).
  * Propositos TENANT: salen con la cuenta Gmail del negocio y, si no esta configurada, quedan FAILED sin
- * usar el remitente de plataforma. Se llama dentro de la transaccion del pedido; el cuerpo solo lleva el
- * numero de pedido, en texto plano y HTML (ni tokens de seguimiento ni datos de pago o direccion).
+ * usar el remitente de plataforma. Se llama dentro de la transaccion del pedido; el cuerpo lleva el
+ * numero de pedido y, en el despacho, el transportista y numero de guia capturados, en texto plano y HTML
+ * (ni el token de seguimiento de la tienda ni datos de pago o direccion).
  */
 @Component
 @RequiredArgsConstructor
@@ -40,15 +41,18 @@ public class OrderEmailNotifier {
                         EmailLayout.paragraph("Gracias por tu compra."))), true);
     }
 
-    public void orderDispatched(Order order) {
+    public void orderDispatched(Order order, String carrierName, String trackingNumber) {
         String number = order.getOrderNumber();
         notify(order, EmailPurpose.DISPATCH_NOTIFICATION,
                 "Tu pedido " + number + " va en camino",
-                "Hola:\n\nTu pedido %s ya fue despachado y va en camino.\n\nGracias por tu compra."
-                        .formatted(number),
+                "Hola:\n\nTu pedido %s ya fue despachado y va en camino.\n%s\nGracias por tu compra."
+                        .formatted(number, shipmentText(carrierName, trackingNumber)),
                 EmailLayout.render(null, "Tu pedido va en camino", List.of(
                         EmailLayout.paragraph("Hola:"),
                         EmailLayout.paragraph("Tu pedido ", number, " ya fue despachado y va en camino."),
+                        EmailLayout.details(List.of(
+                                new String[] {"Transportista", carrierName},
+                                new String[] {"Número de guía", trackingNumber})),
                         EmailLayout.paragraph("Gracias por tu compra."))), false);
     }
 
@@ -81,6 +85,17 @@ public class OrderEmailNotifier {
                 StorefrontReceiptPdfAttachmentResolver.MEDIA_TYPE);
         eventPublisher.publishEvent(new EmailRequestedEvent(EmailMessage.withAttachments(
                 order.getTenantId(), purpose, recipient, subject, body, html, List.of(receipt))));
+    }
+
+    private static String shipmentText(String carrierName, String trackingNumber) {
+        StringBuilder text = new StringBuilder();
+        if (carrierName != null && !carrierName.isBlank()) {
+            text.append("Transportista: ").append(carrierName.trim()).append('\n');
+        }
+        if (trackingNumber != null && !trackingNumber.isBlank()) {
+            text.append("Número de guía: ").append(trackingNumber.trim()).append('\n');
+        }
+        return text.isEmpty() ? "" : "\n" + text;
     }
 
     private String recipientOf(Order order) {

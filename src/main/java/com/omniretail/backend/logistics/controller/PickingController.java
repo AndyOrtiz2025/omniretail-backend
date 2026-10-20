@@ -3,6 +3,7 @@ package com.omniretail.backend.logistics.controller;
 import com.omniretail.backend.logistics.dto.CreatePickingIncidentRequest;
 import com.omniretail.backend.logistics.dto.PickingActionResponse;
 import com.omniretail.backend.logistics.dto.PickingDetailResponse;
+import com.omniretail.backend.logistics.dto.PickingFefoPreviewResponse;
 import com.omniretail.backend.logistics.dto.PickingIncidentResponse;
 import com.omniretail.backend.logistics.dto.PickingLineResponse;
 import com.omniretail.backend.logistics.dto.PickingQueueResponse;
@@ -14,6 +15,7 @@ import com.omniretail.backend.shared.security.RequirePermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -121,6 +123,27 @@ public class PickingController {
             @PathVariable UUID pickingItemId,
             @Valid @RequestBody UpdatePickingItemRequest request) {
         return pickingService.updateItem(branchId, pickingOrderId, pickingItemId, request);
+    }
+
+    @Operation(
+            summary = "Preview automatic FEFO allocation",
+            description = """
+                    Calcula de forma provisional los lotes y cantidades que usaría la asignación FEFO,
+                    sin reservar ni modificar inventario o progreso de Picking.
+
+                    **Permisos requeridos:**
+                    * `logistics.picking.start`
+                    """)
+    @GetMapping("/{pickingOrderId}/items/{pickingItemId}/fefo-preview")
+    @RequirePermission("logistics.picking.start")
+    public PickingFefoPreviewResponse previewFefo(
+            @RequestParam UUID branchId,
+            @PathVariable UUID pickingOrderId,
+            @PathVariable UUID pickingItemId,
+            @RequestParam UUID locationId,
+            @RequestParam BigDecimal pickedQuantity) {
+        return pickingService.previewFefo(
+                branchId, pickingOrderId, pickingItemId, locationId, pickedQuantity);
     }
 
     @Operation(

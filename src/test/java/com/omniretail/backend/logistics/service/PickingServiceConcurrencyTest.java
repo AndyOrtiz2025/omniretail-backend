@@ -22,6 +22,7 @@ import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -102,6 +103,75 @@ class PickingServiceConcurrencyTest {
         } finally {
             executor.shutdownNow();
         }
+    }
+
+    @Test
+    void concurrentAutoFefoAllocationsCannotOverReserveSharedLots() throws Exception {
+        AutoFefoConcurrencyFixture trace = autoFefoConcurrencyFixture();
+        allow(trace.fixture());
+        service.assign(trace.fixture().branchId(), trace.firstPickingId());
+        service.assign(trace.fixture().branchId(), trace.secondPickingId());
+
+        runConcurrently(
+                () -> service.updateItem(
+                        trace.fixture().branchId(),
+                        trace.firstPickingId(),
+                        trace.firstPickingItemId(),
+                        new UpdatePickingItemRequest(
+                                new BigDecimal("4.000"),
+                                trace.locationId(),
+                                "auto-fefo-concurrent-first",
+                                List.of(),
+                                true)),
+                () -> service.updateItem(
+                        trace.fixture().branchId(),
+                        trace.secondPickingId(),
+                        trace.secondPickingItemId(),
+                        new UpdatePickingItemRequest(
+                                new BigDecimal("4.000"),
+                                trace.locationId(),
+                                "auto-fefo-concurrent-second",
+                                List.of(),
+                                true)));
+
+        assertThat(jdbc.queryForObject(
+                        "SELECT sum(reserved_quantity) FROM inventory_lot_balances "
+                                + "WHERE lot_id IN (?, ?)",
+                        BigDecimal.class,
+                        trace.firstLotId(),
+                        trace.secondLotId()))
+                .isEqualByComparingTo("4.000");
+        assertThat(jdbc.queryForObject(
+                        "SELECT sum(quantity) FROM inventory_lot_balances "
+                                + "WHERE lot_id IN (?, ?)",
+                        BigDecimal.class,
+                        trace.firstLotId(),
+                        trace.secondLotId()))
+                .isEqualByComparingTo("6.000");
+        assertThat(jdbc.queryForList(
+                        "SELECT picked_quantity FROM picking_items WHERE id IN (?, ?) ORDER BY id",
+                        BigDecimal.class,
+                        trace.firstPickingItemId(),
+                        trace.secondPickingItemId()))
+                .extracting(BigDecimal::stripTrailingZeros)
+                .containsExactlyInAnyOrder(new BigDecimal("4"), BigDecimal.ZERO);
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM picking_item_update_operations "
+                                + "WHERE operation_id IN (?, ?)",
+                        Long.class,
+                        "auto-fefo-concurrent-first",
+                        "auto-fefo-concurrent-second"))
+                .isOne();
+        assertThat(jdbc.queryForObject(
+                        "SELECT reserved_quantity FROM inventory_balances WHERE id = ?",
+                        BigDecimal.class,
+                        trace.fixture().balanceId()))
+                .isEqualByComparingTo("8.000");
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM inventory_movements WHERE tenant_id = ?",
+                        Long.class,
+                        trace.fixture().tenantId()))
+                .isZero();
     }
 
     @Test
@@ -516,6 +586,128 @@ class PickingServiceConcurrencyTest {
         return new Fixture(tenant, branch, user, product, order, orderItem, balance);
     }
 
+    private AutoFefoConcurrencyFixture autoFefoConcurrencyFixture() {
+        Fixture fixture = fixture();
+        UUID location = UUID.randomUUID();
+        UUID secondOrder = UUID.randomUUID();
+        UUID secondOrderItem = UUID.randomUUID();
+        UUID firstLot = UUID.randomUUID();
+        UUID secondLot = UUID.randomUUID();
+
+        jdbc.update("""
+                INSERT INTO locations (id, tenant_id, branch_id, code, name, type, status)
+                VALUES (?, ?, ?, ?, 'FEFO concurrente', 'warehouse', 'active')
+                """, location, fixture.tenantId(), fixture.branchId(),
+                "FEFO-" + fixture.tenantId().toString().substring(0, 8));
+        jdbc.update("""
+                INSERT INTO product_inventory_settings
+                    (tenant_id, branch_id, product_id, default_location_id)
+                VALUES (?, ?, ?, ?)
+                """, fixture.tenantId(), fixture.branchId(), fixture.productId(), location);
+        jdbc.update("""
+                UPDATE products
+                SET tracking_lot = true, tracking_expiration = true, tracking_serial = false
+                WHERE id = ?
+                """, fixture.productId());
+        jdbc.update("""
+                UPDATE order_items
+                SET quantity = 4, inventory_quantity = 4, subtotal = 40
+                WHERE id = ?
+                """, fixture.orderItemId());
+        jdbc.update("UPDATE orders SET subtotal = 40, total = 40 WHERE id = ?", fixture.orderId());
+        jdbc.update("""
+                UPDATE inventory_balances
+                SET location_id = ?, quantity = 10, reserved_quantity = 8
+                WHERE id = ?
+                """, location, fixture.balanceId());
+        String firstAllocations = allocationJson(fixture.balanceId(), location, "4");
+        jdbc.update("""
+                UPDATE inventory_reservations
+                SET quantity = 4, allocations = ?::jsonb
+                WHERE source_id = ? AND source_line_id = ?
+                """, firstAllocations, fixture.orderId(), fixture.orderItemId());
+
+        jdbc.update("""
+                INSERT INTO orders
+                    (id, tenant_id, branch_id, order_number, source, guest_customer, status,
+                     delivery_method, transport_mode, subtotal, discount_total, shipping_total,
+                     total, tracking_token)
+                VALUES (?, ?, ?, ?, 'ecommerce', '{"name":"Cliente FEFO B"}'::jsonb,
+                        'confirmed', 'home_delivery', 'third_party', 40, 0, 0, 40, ?)
+                """, secondOrder, fixture.tenantId(), fixture.branchId(),
+                "WEB-" + secondOrder, UUID.randomUUID().toString());
+        jdbc.update("""
+                INSERT INTO order_items
+                    (id, order_id, product_id, sku_snapshot, name_snapshot, quantity,
+                     inventory_quantity, unit_price, discount, subtotal)
+                VALUES (?, ?, ?, 'SKU', 'Producto', 4, 4, 10, 0, 40)
+                """, secondOrderItem, secondOrder, fixture.productId());
+        jdbc.update("""
+                INSERT INTO inventory_reservations
+                    (tenant_id, branch_id, source_type, source_id, source_line_id,
+                     order_id, order_item_id, product_id, quantity, status, allocations)
+                VALUES (?, ?, 'order', ?, ?, ?, ?, ?, 4, 'active', ?::jsonb)
+                """, fixture.tenantId(), fixture.branchId(), secondOrder, secondOrderItem,
+                secondOrder, secondOrderItem, fixture.productId(),
+                allocationJson(fixture.balanceId(), location, "4"));
+
+        insertFefoLotBalance(
+                fixture, location, firstLot, "LOT-EARLY", LocalDate.now().plusDays(5), "2");
+        insertFefoLotBalance(
+                fixture, location, secondLot, "LOT-LATE", LocalDate.now().plusDays(10), "4");
+
+        UUID firstPicking = service.ensureForOrder(fixture.tenantId(), fixture.orderId())
+                .orElseThrow()
+                .getId();
+        UUID secondPicking = service.ensureForOrder(fixture.tenantId(), secondOrder)
+                .orElseThrow()
+                .getId();
+        UUID firstPickingItem = pickingItems
+                .findByTenantIdAndPickingOrderId(fixture.tenantId(), firstPicking)
+                .getFirst()
+                .getId();
+        UUID secondPickingItem = pickingItems
+                .findByTenantIdAndPickingOrderId(fixture.tenantId(), secondPicking)
+                .getFirst()
+                .getId();
+        return new AutoFefoConcurrencyFixture(
+                fixture,
+                firstPicking,
+                firstPickingItem,
+                secondPicking,
+                secondPickingItem,
+                location,
+                firstLot,
+                secondLot);
+    }
+
+    private static String allocationJson(UUID balanceId, UUID locationId, String quantity) {
+        return """
+                [{"id":"%s","balanceId":"%s","locationId":"%s",
+                  "reservedQuantity":%s,"consumedQuantity":0}]
+                """.formatted(UUID.randomUUID(), balanceId, locationId, quantity);
+    }
+
+    private void insertFefoLotBalance(
+            Fixture fixture,
+            UUID locationId,
+            UUID lotId,
+            String lotNumber,
+            LocalDate expirationDate,
+            String quantity) {
+        jdbc.update("""
+                INSERT INTO inventory_lots
+                    (id, tenant_id, product_id, lot_number, expiration_date)
+                VALUES (?, ?, ?, ?, ?)
+                """, lotId, fixture.tenantId(), fixture.productId(), lotNumber, expirationDate);
+        jdbc.update("""
+                INSERT INTO inventory_lot_balances
+                    (id, tenant_id, branch_id, location_id, lot_id, quantity, reserved_quantity)
+                VALUES (?, ?, ?, ?, ?, ?, 0)
+                """, UUID.randomUUID(), fixture.tenantId(), fixture.branchId(), locationId, lotId,
+                new BigDecimal(quantity));
+    }
+
     private TraceCancellationFixture traceCancellationFixture() {
         Fixture fixture = fixture();
         UUID secondProduct = UUID.randomUUID();
@@ -686,6 +878,16 @@ class PickingServiceConcurrencyTest {
             UUID firstPickingId,
             UUID secondPickingId,
             UUID secondBalanceId,
+            UUID firstLotId,
+            UUID secondLotId) {}
+
+    private record AutoFefoConcurrencyFixture(
+            Fixture fixture,
+            UUID firstPickingId,
+            UUID firstPickingItemId,
+            UUID secondPickingId,
+            UUID secondPickingItemId,
+            UUID locationId,
             UUID firstLotId,
             UUID secondLotId) {}
 

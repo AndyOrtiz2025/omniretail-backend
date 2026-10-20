@@ -13,10 +13,19 @@ public record UpdatePickingItemRequest(
         @NotNull @DecimalMin("0.000") BigDecimal pickedQuantity,
         UUID locationId,
         @NotBlank @Size(max = 128) String operationId,
-        List<@Valid PickingTrackingSelectionRequest> trackingSelections) {
+        List<@Valid PickingTrackingSelectionRequest> trackingSelections,
+        Boolean autoAllocateLots) {
+
+    public UpdatePickingItemRequest(
+            BigDecimal pickedQuantity,
+            UUID locationId,
+            String operationId,
+            List<PickingTrackingSelectionRequest> trackingSelections) {
+        this(pickedQuantity, locationId, operationId, trackingSelections, false);
+    }
 
     public UpdatePickingItemRequest(
             BigDecimal pickedQuantity, UUID locationId, String operationId) {
-        this(pickedQuantity, locationId, operationId, List.of());
+        this(pickedQuantity, locationId, operationId, List.of(), false);
     }
 }

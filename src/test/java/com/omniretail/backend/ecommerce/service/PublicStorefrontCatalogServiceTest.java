@@ -8,11 +8,18 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.lenient;
 
 import com.omniretail.backend.administration.entity.EcommerceConfig;
+import com.omniretail.backend.administration.entity.Branch;
+import com.omniretail.backend.administration.entity.BranchStatus;
+import com.omniretail.backend.administration.entity.BranchType;
+import com.omniretail.backend.administration.repository.BranchRepository;
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.repository.EcommerceConfigRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.catalog.entity.Category;
+import com.omniretail.backend.catalog.entity.AttributeDefinition;
+import com.omniretail.backend.catalog.entity.AttributeDefinitionStatus;
+import com.omniretail.backend.catalog.entity.ProductAttributeValue;
 import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
 import com.omniretail.backend.catalog.entity.CategoryStatus;
 import com.omniretail.backend.catalog.entity.Product;
@@ -24,6 +31,8 @@ import com.omniretail.backend.catalog.entity.ProductKitComponent;
 import com.omniretail.backend.catalog.entity.Unit;
 import com.omniretail.backend.catalog.entity.UnitConversion;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
+import com.omniretail.backend.catalog.repository.AttributeDefinitionRepository;
+import com.omniretail.backend.catalog.repository.ProductAttributeValueRepository;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.ProductMediaRepository;
 import com.omniretail.backend.catalog.repository.ProductKitComponentRepository;
@@ -48,9 +57,12 @@ import org.mockito.junit.jupiter.MockitoExtension;
 class PublicStorefrontCatalogServiceTest {
 
     @Mock private TenantRepository tenantRepository;
+    @Mock private BranchRepository branchRepository;
     @Mock private ProductRepository productRepository;
     @Mock private ProductKitComponentRepository productKitComponentRepository;
     @Mock private ProductMediaRepository productMediaRepository;
+    @Mock private AttributeDefinitionRepository attributeDefinitionRepository;
+    @Mock private ProductAttributeValueRepository productAttributeValueRepository;
     @Mock private CategoryRepository categoryRepository;
     @Mock private UnitRepository unitRepository;
     @Mock private UnitConversionRepository unitConversionRepository;
@@ -329,6 +341,63 @@ class PublicStorefrontCatalogServiceTest {
         assertThatThrownBy(() -> service.listProducts("cerrada"))
                 .isInstanceOf(BusinessException.class)
                 .satisfies(error -> assertThat(((BusinessException) error).getCode()).isEqualTo("STOREFRONT_NOT_FOUND"));
+    }
+
+    @Test
+    void exposesActiveAttributesAndAvailabilityForEachPublicBranchOnProductDetail() {
+        UUID tenantId = UUID.randomUUID();
+        UUID productId = UUID.randomUUID();
+        UUID categoryId = UUID.randomUUID();
+        UUID unitId = UUID.randomUUID();
+        UUID branchId = UUID.randomUUID();
+        UUID attributeId = UUID.randomUUID();
+        Product product = trackedProduct(productId, unitId);
+        Tenant storefrontTenant = tenant(tenantId);
+        Category productCategory = mock(Category.class);
+        Unit productUnit = mock(Unit.class);
+        when(productCategory.getTenantId()).thenReturn(tenantId);
+        when(productCategory.getStatus()).thenReturn(CategoryStatus.active);
+        when(productUnit.getTenantId()).thenReturn(tenantId);
+        when(product.getCategoryId()).thenReturn(categoryId);
+        when(tenantRepository.findBySlug("ferreteria-los-simpson"))
+                .thenReturn(Optional.of(storefrontTenant));
+        when(productRepository.findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
+                tenantId, productId, ProductStatus.published)).thenReturn(Optional.of(product));
+        when(categoryRepository.findById(categoryId)).thenReturn(Optional.of(productCategory));
+        when(unitRepository.findById(unitId)).thenReturn(Optional.of(productUnit));
+        when(productAttributeValueRepository.findByTenantIdAndProductId(tenantId, productId))
+                .thenReturn(List.of(ProductAttributeValue.builder()
+                        .productId(productId)
+                        .attributeDefinitionId(attributeId)
+                        .valueString("16 oz")
+                        .build()));
+        AttributeDefinition definition = mock(AttributeDefinition.class);
+        when(definition.getId()).thenReturn(attributeId);
+        when(definition.getName()).thenReturn("Peso");
+        when(definition.getStatus()).thenReturn(AttributeDefinitionStatus.active);
+        when(attributeDefinitionRepository.findByTenantIdAndIdIn(tenantId, List.of(attributeId)))
+                .thenReturn(List.of(definition));
+        Branch branch = mock(Branch.class);
+        when(branch.getId()).thenReturn(branchId);
+        when(branch.getName()).thenReturn("Sucursal Centro");
+        when(branch.getAddress()).thenReturn("Zona 1, Guatemala");
+        when(branch.getType()).thenReturn(BranchType.main);
+        when(branchRepository.findByTenantIdAndStatus(tenantId, BranchStatus.active))
+                .thenReturn(List.of(branch));
+        when(inventoryOperationalLocationService.availableByProduct(tenantId, branchId))
+                .thenReturn(java.util.Map.of(productId, new BigDecimal("4")));
+
+        var response = service.getProduct("ferreteria-los-simpson", productId);
+
+        assertThat(response.attributes())
+                .containsExactly(new com.omniretail.backend.ecommerce.dto.PublicStorefrontProductAttributeResponse(
+                        "Peso", "16 oz"));
+        assertThat(response.availability()).singleElement().satisfies(item -> {
+            assertThat(item.branchId()).isEqualTo(branchId);
+            assertThat(item.branchName()).isEqualTo("Sucursal Centro");
+            assertThat(item.address()).isEqualTo("Zona 1, Guatemala");
+            assertThat(item.available()).isTrue();
+        });
     }
 
     private Tenant tenant(UUID tenantId) {

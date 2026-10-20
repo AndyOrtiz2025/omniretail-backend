@@ -61,6 +61,7 @@ public class InventoryTraceabilityMutationService {
     private final InventoryMovementRepository movementRepository;
     private final InventoryMovementTraceRepository movementTraceRepository;
     private final InventoryOperationalLocationService operationalLocations;
+    private final InventoryFefoAllocationPlanner fefoAllocationPlanner;
     private final EntityManager entityManager;
 
     public List<InventoryInboundTraceDetail> validateAndNormalize(
@@ -427,6 +428,104 @@ public class InventoryTraceabilityMutationService {
                 .map(selection -> new InventoryTraceabilitySelection(
                         selection.lotId(), selection.quantity(), selection.serialNumbers()))
                 .toList();
+    }
+
+    /**
+     * Conserva la seleccion fisica ya confirmada y asigna solamente el incremento pendiente
+     * entre lotes elegibles por FEFO. La identificacion de candidatos no toma locks; los balances
+     * se bloquean despues, uno por uno y por lotId, antes de calcular cualquier cantidad.
+     */
+    @Transactional
+    public List<InventoryTraceabilitySelection> autoAllocateLotsFefo(
+            UUID tenantId,
+            UUID branchId,
+            Product product,
+            UUID locationId,
+            BigDecimal targetQuantity,
+            List<InventoryTraceabilitySelection> oldSelections) {
+        Product traceableProduct = requireTraceableProduct(tenantId, product);
+        if (!Boolean.TRUE.equals(traceableProduct.getTrackingLot())
+                || !Boolean.TRUE.equals(traceableProduct.getTrackingExpiration())
+                || Boolean.TRUE.equals(traceableProduct.getTrackingSerial())) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "AUTO_FEFO_NOT_SUPPORTED",
+                    "La asignacion FEFO automatica requiere lotes y vencimiento, sin numeros de serie.");
+        }
+        requireLocation(tenantId, branchId, locationId);
+        if (targetQuantity == null || targetQuantity.signum() < 0) {
+            throw BusinessException.badRequest("La cantidad objetivo FEFO no es valida.");
+        }
+
+        List<NormalizedSelection> oldNormalized = normalizeExistingSelections(
+                traceableProduct, oldSelections);
+        BigDecimal oldTotal = oldNormalized.stream()
+                .map(NormalizedSelection::quantity)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (targetQuantity.compareTo(oldTotal) < 0) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "TRACKING_QUANTITY_MISMATCH",
+                    "La cantidad FEFO no puede ser menor que la seleccion fisica existente.");
+        }
+        if (targetQuantity.signum() == 0) {
+            return replacePhysicalReservation(
+                    tenantId,
+                    branchId,
+                    traceableProduct,
+                    locationId,
+                    BigDecimal.ZERO,
+                    oldSelections,
+                    List.of());
+        }
+
+        List<UUID> lotIds = lotBalanceRepository.findLotIdsAtLocation(
+                tenantId, branchId, traceableProduct.getId(), locationId);
+        List<UUID> lockOrder = lotIds.stream().distinct().sorted().toList();
+        Map<UUID, InventoryLotBalance> lockedBalances = new HashMap<>();
+        for (UUID lotId : lockOrder) {
+            InventoryLotBalance balance = lotBalanceRepository.findForUpdateAtLocation(
+                            tenantId, branchId, traceableProduct.getId(), lotId, locationId)
+                    .orElseThrow(InventoryTraceabilityMutationService::insufficientTraceableStock);
+            lockedBalances.put(lotId, balance);
+        }
+        Map<UUID, InventoryLot> lots = lockOrder.isEmpty()
+                ? Map.of()
+                : lotRepository.findByTenantIdAndIdIn(tenantId, lockOrder).stream()
+                        .filter(lot -> traceableProduct.getId().equals(lot.getProductId()))
+                        .collect(java.util.stream.Collectors.toMap(InventoryLot::getId, lot -> lot));
+
+        InventoryFefoAllocationPlanner.Plan plan = fefoAllocationPlanner.plan(
+                businessDate(tenantId),
+                targetQuantity,
+                oldNormalized.stream()
+                        .map(selection -> new InventoryFefoAllocationPlanner.Allocation(
+                                selection.lotId(), selection.quantity()))
+                        .toList(),
+                lockedBalances.values().stream()
+                        .filter(balance -> lots.containsKey(balance.getLotId()))
+                        .map(balance -> {
+                            InventoryLot lot = lots.get(balance.getLotId());
+                            return new InventoryFefoAllocationPlanner.Candidate(
+                                    lot.getId(),
+                                    lot.getLotNumber(),
+                                    lot.getExpirationDate(),
+                                    balance.getQuantity(),
+                                    balance.getReservedQuantity());
+                        })
+                        .toList());
+        List<InventoryTraceabilitySelection> desired = plan.resultingAllocations().stream()
+                .map(allocation -> new InventoryTraceabilitySelection(
+                        allocation.lotId(), allocation.quantity(), List.of()))
+                .toList();
+        return replacePhysicalReservation(
+                tenantId,
+                branchId,
+                traceableProduct,
+                locationId,
+                targetQuantity,
+                oldSelections,
+                desired);
     }
 
     @Transactional
