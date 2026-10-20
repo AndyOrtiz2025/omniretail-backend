@@ -3,11 +3,13 @@ package com.omniretail.backend.ecommerce.service;
 import com.omniretail.backend.administration.entity.Branch;
 import com.omniretail.backend.administration.entity.BranchStatus;
 import com.omniretail.backend.administration.entity.EcommerceConfig;
+import com.omniretail.backend.administration.entity.ShippingChannel;
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.repository.BranchRepository;
 import com.omniretail.backend.administration.repository.EcommerceConfigRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
+import com.omniretail.backend.administration.service.ShippingConfigService;
 import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductStatus;
@@ -85,6 +87,7 @@ public class StorefrontCheckoutService {
     private final ProductKitService productKitService;
     private final JsonMapper jsonMapper;
     private final OrderEmailNotifier orderEmailNotifier;
+    private final ShippingConfigService shippingConfigService;
 
     @Transactional
     public StorefrontCheckoutResponse checkout(
@@ -177,7 +180,7 @@ public class StorefrontCheckoutService {
                     .build());
         }
 
-        BigDecimal shippingTotal = StorefrontShippingPolicy.calculate(subtotal);
+        BigDecimal shippingTotal = shippingConfigService.calculate(tenantId, ShippingChannel.ecommerce, subtotal);
         BigDecimal total = subtotal.add(shippingTotal);
         UUID orderSeed = UUID.randomUUID();
         Order order = Order.builder()

@@ -14,12 +14,14 @@ import static org.mockito.Mockito.when;
 import com.omniretail.backend.administration.entity.Branch;
 import com.omniretail.backend.administration.entity.BranchStatus;
 import com.omniretail.backend.administration.entity.EcommerceConfig;
+import com.omniretail.backend.administration.entity.ShippingChannel;
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.administration.repository.BranchRepository;
 import com.omniretail.backend.administration.repository.EcommerceConfigRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
+import com.omniretail.backend.administration.service.ShippingConfigService;
 import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductStatus;
@@ -82,6 +84,7 @@ class StorefrontCheckoutServiceTest {
     @Mock private ProductPriceResolver productPriceResolver;
     @Mock private ProductKitService productKitService;
     @Mock private OrderEmailNotifier orderEmailNotifier;
+    @Mock private ShippingConfigService shippingConfigService;
 
     private StorefrontCheckoutService service;
     private UUID tenantId;
@@ -98,7 +101,12 @@ class StorefrontCheckoutServiceTest {
                 productPriceResolver,
                 productKitService,
                 JsonMapper.builder().build(),
-                orderEmailNotifier);
+                orderEmailNotifier,
+                shippingConfigService);
+        // Sin configuración guardada: tarifa por defecto del canal (Q25, gratis desde Q300).
+        lenient().when(shippingConfigService.calculate(any(), eq(ShippingChannel.ecommerce), any()))
+                .thenAnswer(invocation -> ShippingConfigService.calculate(
+                        ShippingConfigService.ECOMMERCE_DEFAULT, invocation.getArgument(2)));
         tenantId = UUID.randomUUID();
         branchId = UUID.randomUUID();
         productId = UUID.randomUUID();

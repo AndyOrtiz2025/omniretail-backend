@@ -1,6 +1,7 @@
 package com.omniretail.backend.ecommerce.dto;
 
 import com.omniretail.backend.administration.dto.HeroBannerSlideDto;
+import com.omniretail.backend.administration.dto.ShippingChannelConfigDto;
 import com.omniretail.backend.administration.entity.Branch;
 import com.omniretail.backend.administration.entity.EcommerceConfig;
 import java.util.List;
@@ -17,10 +18,14 @@ public record PublicStorefrontConfigResponse(
         boolean requireAccountForCheckout,
         boolean guestTrackingEnabled,
         List<HeroBannerSlideDto> slides,
-        List<PublicStorefrontBranchResponse> branches) {
+        List<PublicStorefrontBranchResponse> branches,
+        ShippingChannelConfigDto shipping) {
 
     public static PublicStorefrontConfigResponse from(
-            EcommerceConfig config, List<HeroBannerSlideDto> slides, List<Branch> branches) {
+            EcommerceConfig config,
+            List<HeroBannerSlideDto> slides,
+            List<Branch> branches,
+            ShippingChannelConfigDto shipping) {
         return new PublicStorefrontConfigResponse(
                 config.getTenantId(),
                 config.isEnabled(),
@@ -31,6 +36,7 @@ public record PublicStorefrontConfigResponse(
                 config.isRequireAccountForCheckout(),
                 config.isGuestTrackingEnabled(),
                 slides,
-                branches.stream().map(PublicStorefrontBranchResponse::from).toList());
+                branches.stream().map(PublicStorefrontBranchResponse::from).toList(),
+                shipping);
     }
 }
