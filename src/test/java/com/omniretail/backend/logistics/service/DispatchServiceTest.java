@@ -17,6 +17,8 @@ import com.omniretail.backend.logistics.dto.ConfirmDispatchRequest;
 import com.omniretail.backend.logistics.dto.DispatchResponse;
 import com.omniretail.backend.logistics.dto.PreparedDispatchResponse;
 import com.omniretail.backend.shared.exception.BusinessException;
+import com.omniretail.backend.shared.notification.EmailPurpose;
+import com.omniretail.backend.shared.notification.EmailRequestedEvent;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
 import java.math.BigDecimal;
@@ -31,14 +33,18 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.test.context.event.ApplicationEvents;
+import org.springframework.test.context.event.RecordApplicationEvents;
 
 @SpringBootTest
 @ActiveProfiles("test")
 @Import(TestcontainersConfiguration.class)
+@RecordApplicationEvents
 class DispatchServiceTest {
 
     @Autowired private DispatchService service;
     @Autowired private JdbcTemplate jdbc;
+    @Autowired private ApplicationEvents events;
     @MockitoBean private CurrentUser currentUser;
     @MockitoBean private BranchAccessResolver branchAccessResolver;
     @MockitoSpyBean private InventoryMovementRepository movements;
@@ -87,6 +93,34 @@ class DispatchServiceTest {
         assertThat(movement.referenceType()).isEqualTo("dispatch");
         assertThat(movement.referenceId()).isEqualTo(result.dispatchId());
         assertThat(movement.performedByUserId()).isEqualTo(fixture.userId());
+    }
+
+    @Test
+    void confirmQueuesASingleDispatchEmailWithCarrierAndTrackingNumber() {
+        DispatchTestFixture.Data fixture = fixture(2);
+
+        service.confirm(fixture.branchId(), fixture.orderId(), request("confirm-email", explicitPackages()));
+        service.confirm(fixture.branchId(), fixture.orderId(), request("confirm-email", explicitPackages()));
+
+        String trackingToken = text("orders", "tracking_token", "id", fixture.orderId());
+        assertThat(events.stream(EmailRequestedEvent.class).map(EmailRequestedEvent::message))
+                .singleElement()
+                .satisfies(message -> {
+                    assertThat(message.tenantId()).isEqualTo(fixture.tenantId());
+                    assertThat(message.purpose()).isEqualTo(EmailPurpose.DISPATCH_NOTIFICATION);
+                    assertThat(message.to()).isEqualTo("ana@example.com");
+                    assertThat(message.subject()).contains("va en camino");
+                    assertThat(message.body()).contains(
+                            "Transportista: Cargo Express", "Número de guía: GUIA-001")
+                            .doesNotContain(trackingToken);
+                    assertThat(message.html()).contains(
+                            "Transportista", "Cargo Express", "Número de guía", "GUIA-001")
+                            .doesNotContain(trackingToken);
+                });
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM email_delivery WHERE tenant_id = ? AND purpose = ? AND recipient = ?",
+                Long.class, fixture.tenantId(), EmailPurpose.DISPATCH_NOTIFICATION.name(), "ana@example.com"))
+                .isOne();
     }
 
     @Test

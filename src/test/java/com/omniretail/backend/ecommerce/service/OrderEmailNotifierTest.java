@@ -44,14 +44,29 @@ class OrderEmailNotifierTest {
     }
 
     @Test
-    void dispatchedOrderEmitsDispatchNotification() {
-        notifier.orderDispatched(order("{\"emailMode\":\"send\",\"email\":\" cliente@example.com \"}"));
+    void dispatchedOrderEmitsDispatchNotificationWithCarrierAndTrackingNumber() {
+        notifier.orderDispatched(order("{\"emailMode\":\"send\",\"email\":\" cliente@example.com \"}"),
+                "Servientrega", "GUIA-987");
 
         EmailRequestedEvent event = captured();
         assertThat(event.message().purpose()).isEqualTo(EmailPurpose.DISPATCH_NOTIFICATION);
         assertThat(event.message().to()).isEqualTo("cliente@example.com");
-        assertThat(event.message().body()).contains("WEB-123", "va en camino");
-        assertThat(event.message().html()).contains("<strong>WEB-123</strong>", "va en camino");
+        assertThat(event.message().body()).contains("WEB-123", "va en camino",
+                "Transportista: Servientrega", "Número de guía: GUIA-987").doesNotContain("tracking-secreto");
+        assertThat(event.message().html()).contains("<strong>WEB-123</strong>", "va en camino",
+                "Transportista", "Servientrega", "Número de guía", "GUIA-987")
+                .doesNotContain("tracking-secreto");
+    }
+
+    @Test
+    void dispatchedOrderWithoutShipmentDataOmitsCarrierAndTrackingNumber() {
+        notifier.orderDispatched(order("{\"emailMode\":\"send\",\"email\":\"cliente@example.com\"}"), null, " ");
+
+        EmailRequestedEvent event = captured();
+        assertThat(event.message().body()).contains("va en camino")
+                .doesNotContain("Transportista").doesNotContain("Número de guía");
+        assertThat(event.message().html()).contains("va en camino")
+                .doesNotContain("Transportista").doesNotContain("Número de guía");
     }
 
     @Test
@@ -75,7 +90,7 @@ class OrderEmailNotifierTest {
         notifier.orderConfirmed(order(null));
         notifier.orderConfirmed(order("{\"emailMode\":\"not_applicable\"}"));
         notifier.orderConfirmed(order("{\"emailMode\":\"send\"}"));
-        notifier.orderDispatched(order("no es json"));
+        notifier.orderDispatched(order("no es json"), "Servientrega", "GUIA-987");
         notifier.orderCancelled(order(null));
         notifier.orderCancelled(order("{\"emailMode\":\"not_applicable\"}"));
 
