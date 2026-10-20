@@ -31,6 +31,21 @@ public interface PickingItemRepository extends JpaRepository<PickingItem, UUID> 
             @Param("branchId") UUID branchId,
             @Param("id") UUID id);
 
+    @Query("""
+            select item from PickingItem item, PickingOrder picking
+            where item.id = :id
+              and item.pickingOrderId = :pickingOrderId
+              and item.tenantId = :tenantId
+              and picking.id = item.pickingOrderId
+              and picking.tenantId = :tenantId
+              and picking.branchId = :branchId
+            """)
+    Optional<PickingItem> findByScopeAndPickingOrderIdAndId(
+            @Param("tenantId") UUID tenantId,
+            @Param("branchId") UUID branchId,
+            @Param("pickingOrderId") UUID pickingOrderId,
+            @Param("id") UUID id);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("""
             select item from PickingItem item, PickingOrder picking

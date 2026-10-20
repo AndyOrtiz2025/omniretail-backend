@@ -64,6 +64,27 @@ class PickingControllerSecurityTest {
     }
 
     @Test
+    void fefoPreviewRequiresAuthentication() throws Exception {
+        mvc.perform(get(BASE + "/{picking}/items/{item}/fefo-preview", UUID.randomUUID(), UUID.randomUUID())
+                        .param("branchId", UUID.randomUUID().toString())
+                        .param("locationId", UUID.randomUUID().toString())
+                        .param("pickedQuantity", "1.000"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void fefoPreviewRequiresStartPermission() throws Exception {
+        Actor actor = actor(List.of("logistics.picking.read"));
+        mvc.perform(get(BASE + "/{picking}/items/{item}/fefo-preview", UUID.randomUUID(), UUID.randomUUID())
+                        .param("branchId", actor.branchId().toString())
+                        .param("locationId", UUID.randomUUID().toString())
+                        .param("pickedQuantity", "1.000")
+                        .header("Authorization", "Bearer " + actor.token()))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+    }
+
+    @Test
     void authorizedQueueIsTenantAndBranchScoped() throws Exception {
         Actor actor = actor(List.of("logistics.picking.read"));
         mvc.perform(get(BASE)
