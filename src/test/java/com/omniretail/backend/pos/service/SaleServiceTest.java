@@ -5,7 +5,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
+import com.omniretail.backend.administration.dto.ShippingChannelConfigDto;
+import com.omniretail.backend.administration.entity.ShippingChannel;
 import com.omniretail.backend.administration.service.BranchAccessResolver;
+import com.omniretail.backend.administration.service.ShippingConfigService;
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.repository.TenantRepository;
@@ -124,6 +127,7 @@ class SaleServiceTest {
     @Mock PickingOrderRepository pickingOrders;
     @Mock JsonMapper jsonMapper;
     @Mock com.omniretail.backend.ecommerce.service.OrderEmailNotifier orderEmailNotifier;
+    @Mock ShippingConfigService shippingConfig;
     @InjectMocks SaleService service;
 
     private final UUID tenant = UUID.randomUUID();
@@ -137,13 +141,17 @@ class SaleServiceTest {
     void setUp() {
         actor = new AuthenticatedUser(user, tenant, UserType.employee, UUID.randomUUID(), branch, UUID.randomUUID());
         when(currentUser.require()).thenReturn(actor);
-        when(branchAccess.resolve(actor)).thenReturn(new BranchAccessResolver.BranchAccess(false, Set.of(branch)));
+        // Lenient: la cotización de envío no depende de la sucursal.
+        lenient().when(branchAccess.resolve(actor)).thenReturn(new BranchAccessResolver.BranchAccess(false, Set.of(branch)));
         lenient().when(shifts.findOwnedByIdForUpdate(tenant, user, shiftId)).thenReturn(Optional.of(shift()));
         lenient().when(counter.nextPosSaleNumber(tenant)).thenReturn("POS-001");
         lenient().when(tenants.findById(tenant)).thenReturn(Optional.of(Tenant.builder()
                 .name("Tenant").slug("tenant").status(TenantStatus.active).defaultCurrency("GTQ")
                 .timezone("America/Guatemala").build()));
         lenient().when(businessConfig.findByTenantId(tenant)).thenReturn(Optional.empty());
+        // Por defecto el canal POS no cobra envío (configuración sin guardar).
+        lenient().when(shippingConfig.calculate(any(), any(), any()))
+                .thenReturn(BigDecimal.ZERO.setScale(2));
         lenient().when(productPriceResolver.resolveEffectivePrice(
                         eq(tenant), any(Product.class), any(Instant.class), eq("pos"), eq(branch), any(BigDecimal.class)))
                 .thenReturn(new ResolvedProductPrice(
@@ -906,6 +914,87 @@ class SaleServiceTest {
     }
 
     @Test
+    void deferredHomeDeliveryAddsConfiguredPosShippingToSaleAndOrderTotals() {
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+        when(shippingConfig.calculate(tenant, ShippingChannel.pos, new BigDecimal("40.00")))
+                .thenReturn(new BigDecimal("15.00"));
+        stubSalePersistence();
+        Order order = stubDeferredOrderPersistence();
+        when(pickingService.ensureForOrder(tenant, order.getId())).thenReturn(Optional.of(picking(order)));
+
+        service.create(deferredRequest(new BigDecimal("55.00"), new BigDecimal("2"), UUID.randomUUID()));
+
+        ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
+        verify(orders).saveAndFlush(orderCaptor.capture());
+        assertThat(orderCaptor.getValue().getSubtotal()).isEqualByComparingTo("40.00");
+        assertThat(orderCaptor.getValue().getShippingTotal()).isEqualByComparingTo("15.00");
+        assertThat(orderCaptor.getValue().getTotal()).isEqualByComparingTo("55.00");
+        ArgumentCaptor<Sale> saleCaptor = ArgumentCaptor.forClass(Sale.class);
+        verify(sales).saveAndFlush(saleCaptor.capture());
+        assertThat(saleCaptor.getValue().getSubtotal()).isEqualByComparingTo("40.00");
+        assertThat(saleCaptor.getValue().getShippingTotal()).isEqualByComparingTo("15.00");
+        assertThat(saleCaptor.getValue().getTotal()).isEqualByComparingTo("55.00");
+    }
+
+    @Test
+    void deferredHomeDeliveryRejectsPaymentsThatOmitShipping() {
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+        when(shippingConfig.calculate(tenant, ShippingChannel.pos, new BigDecimal("40.00")))
+                .thenReturn(new BigDecimal("15.00"));
+
+        assertThatThrownBy(() -> service.create(deferredRequest(
+                        new BigDecimal("40.00"), new BigDecimal("2"), UUID.randomUUID())))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.getCode()).isEqualTo("PAYMENT_TOTAL_MISMATCH"));
+        verify(sales, never()).saveAndFlush(any());
+        verifyNoInteractions(orders, payments);
+    }
+
+    @Test
+    void immediateSaleDoesNotChargeShipping() {
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+        stubSalePersistence();
+
+        service.create(request(new BigDecimal("20.00"), BigDecimal.ONE));
+
+        verify(shippingConfig, never()).calculate(any(), any(), any());
+        ArgumentCaptor<Sale> saleCaptor = ArgumentCaptor.forClass(Sale.class);
+        verify(sales).saveAndFlush(saleCaptor.capture());
+        assertThat(saleCaptor.getValue().getShippingTotal()).isEqualByComparingTo("0.00");
+    }
+
+    @Test
+    void shippingQuoteAppliesPosFeeBelowThreshold() {
+        when(shippingConfig.channelConfig(tenant, ShippingChannel.pos)).thenReturn(
+                new ShippingChannelConfigDto(true, new BigDecimal("15.00"), new BigDecimal("200.00")));
+
+        var quote = service.shippingQuote(new BigDecimal("40"));
+
+        assertThat(quote.subtotal()).isEqualByComparingTo("40.00");
+        assertThat(quote.shippingTotal()).isEqualByComparingTo("15.00");
+        assertThat(quote.total()).isEqualByComparingTo("55.00");
+        assertThat(quote.freeShippingThreshold()).isEqualByComparingTo("200.00");
+    }
+
+    @Test
+    void shippingQuoteIsFreeWhenPosShippingDisabled() {
+        when(shippingConfig.channelConfig(tenant, ShippingChannel.pos)).thenReturn(
+                new ShippingChannelConfigDto(false, new BigDecimal("15.00"), new BigDecimal("200.00")));
+
+        var quote = service.shippingQuote(new BigDecimal("40.00"));
+
+        assertThat(quote.shippingTotal()).isEqualByComparingTo("0.00");
+        assertThat(quote.total()).isEqualByComparingTo("40.00");
+        assertThat(quote.freeShippingThreshold()).isNull();
+    }
+
+    @Test
+    void shippingQuoteRejectsNegativeSubtotal() {
+        assertThatThrownBy(() -> service.shippingQuote(new BigDecimal("-1")))
+                .isInstanceOf(BusinessException.class);
+    }
+
+    @Test
     void createsTraceableDeferredStorePickupWithoutAddressOrStockOut() {
         Product product = product();
         product.setTrackingSerial(true);
@@ -944,6 +1033,7 @@ class SaleServiceTest {
         verify(reservationLifecycle).reserve(any());
         verifyNoInteractions(inventory, traceabilityMutation);
         verifyNoInteractions(inventoryMovements);
+        verify(shippingConfig, never()).calculate(any(), any(), any());
     }
 
     @Test
@@ -1269,6 +1359,39 @@ class SaleServiceTest {
         verify(orders).save(argThat(value -> value.getStatus() == OrderStatus.cancelled));
         verifyNoInteractions(inventory, traceabilityMutation);
         verifyNoInteractions(inventoryMovements);
+        assertThat(sale.getStatus()).isEqualTo(SaleStatus.cancelled);
+    }
+
+    @Test
+    void voidDeferredHomeDeliveryRefundsShippingInCash() {
+        Sale sale = Sale.builder().branchId(branch).cashShiftId(shiftId).number("POS-002")
+                .subtotal(new BigDecimal("40.00")).discountTotal(BigDecimal.ZERO).taxTotal(BigDecimal.ZERO)
+                .shippingTotal(new BigDecimal("15.00")).total(new BigDecimal("55.00"))
+                .createdByUserId(user).status(SaleStatus.completed).build();
+        sale.setTenantId(tenant);
+        ReflectionTestUtils.setField(sale, "id", UUID.randomUUID());
+        UUID orderId = UUID.randomUUID();
+        sale.setSourceOrderId(orderId);
+        Order order = deferredOrder(orderId);
+        UUID key = UUID.randomUUID();
+        when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
+        when(reversalOperations.findByTenantIdAndIdempotencyKey(tenant, key))
+                .thenReturn(Optional.empty());
+        when(orders.findByTenantIdAndIdForUpdate(tenant, orderId)).thenReturn(Optional.of(order));
+        when(reservations.findByTenantIdAndOrderId(tenant, orderId)).thenReturn(List.of());
+        when(shifts.findByTenantIdAndId(tenant, shiftId)).thenReturn(Optional.of(shift()));
+        when(payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(tenant, sale.getId()))
+                .thenReturn(List.of(Payment.builder().method(PaymentMethod.cash)
+                        .amount(new BigDecimal("55.00")).build()));
+        when(sales.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(reversalOperations.saveAndFlush(any()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.voidSale(sale.getId(), key, new VoidSaleRequest("Cliente cancela la entrega"));
+
+        // La anulación total sí devuelve el envío: sale todo lo cobrado (Q40 + Q15).
+        verify(cashMovements).save(argThat(movement -> movement.getType() == CashMovementType.out
+                && movement.getAmount().compareTo(new BigDecimal("55.00")) == 0));
         assertThat(sale.getStatus()).isEqualTo(SaleStatus.cancelled);
     }
 
