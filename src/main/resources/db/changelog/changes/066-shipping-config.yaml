@@ -1,0 +1,99 @@
+databaseChangeLog:
+  - changeSet:
+      id: 066-shipping-config
+      author: joga17000
+      changes:
+        # Costo de envio configurable por canal (ecommerce, pos). Sin fila para un canal se aplican los
+        # valores por defecto de ShippingConfigService (ecommerce Q25 / gratis desde Q300; pos sin cobro).
+        - createTable:
+            tableName: shipping_configs
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  defaultValueComputed: gen_random_uuid()
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: tenant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+                    referencedTableName: tenants
+                    referencedColumnNames: id
+                    foreignKeyName: fk_shipping_config_tenant
+              - column:
+                  name: channel
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: enabled
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: delivery_fee
+                  type: NUMERIC(12,2)
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: free_shipping_threshold
+                  type: NUMERIC(12,2)
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - addUniqueConstraint:
+            tableName: shipping_configs
+            columnNames: tenant_id, channel
+            constraintName: uk_shipping_config_tenant_channel
+        - sql:
+            sql: "ALTER TABLE shipping_configs ADD CONSTRAINT ck_shipping_configs_channel CHECK (channel IN ('ecommerce', 'pos'))"
+        - sql:
+            sql: "ALTER TABLE shipping_configs ADD CONSTRAINT ck_shipping_configs_amounts CHECK (delivery_fee >= 0 AND (free_shipping_threshold IS NULL OR free_shipping_threshold >= 0))"
+        # La venta POS diferida a domicilio puede cobrar envio: total = subtotal + tax_total + shipping_total.
+        - addColumn:
+            tableName: sales
+            columns:
+              - column:
+                  name: shipping_total
+                  type: NUMERIC(12,2)
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+        - sql:
+            sql: "ALTER TABLE sales ADD CONSTRAINT ck_sales_shipping_total CHECK (shipping_total >= 0)"
+        # Mismo criterio que 065: rol de sistema "Administrador" de cada tenant, union idempotente.
+        - sql:
+            sql: |
+              UPDATE roles
+              SET permissions = (
+                SELECT ARRAY(
+                  SELECT DISTINCT permission
+                  FROM unnest(COALESCE(permissions, ARRAY[]::text[])
+                              || ARRAY['admin.shipping_config.manage']::text[]) AS permission
+                  ORDER BY permission
+                )
+              )
+              WHERE name = 'Administrador' AND is_system = TRUE;
+      rollback:
+        - sql:
+            sql: "ALTER TABLE sales DROP CONSTRAINT IF EXISTS ck_sales_shipping_total"
+        - dropColumn:
+            tableName: sales
+            columnName: shipping_total
+        - dropTable:
+            tableName: shipping_configs
+        # El permiso no se retira: no se sabe si ya estaba concedido antes (mismo criterio que 065).
