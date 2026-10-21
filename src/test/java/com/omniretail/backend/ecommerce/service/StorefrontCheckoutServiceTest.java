@@ -112,7 +112,7 @@ class StorefrontCheckoutServiceTest {
         branchId = UUID.randomUUID();
         productId = UUID.randomUUID();
         lenient().when(productPriceResolver.resolveEffectivePrice(
-                        eq(tenantId), any(Product.class), any(), eq("ecommerce"), eq(branchId)))
+                        eq(tenantId), any(Product.class), any(), eq("ecommerce"), eq(branchId), any()))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("20.00"),
                         new BigDecimal("20.00"),
@@ -203,7 +203,7 @@ class StorefrontCheckoutServiceTest {
         Product product = product(false, ProductType.service);
         when(productRepository.findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
                 tenantId, productId, ProductStatus.published)).thenReturn(Optional.of(product));
-        when(productPriceResolver.resolveEffectivePrice(eq(tenantId), any(Product.class), any(), eq("ecommerce"), eq(branchId)))
+        when(productPriceResolver.resolveEffectivePrice(eq(tenantId), any(Product.class), any(), eq("ecommerce"), eq(branchId), any()))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("20.00"), new BigDecimal("12.00"),
                         new BigDecimal("8.00"), promotionId));
@@ -280,6 +280,30 @@ class StorefrontCheckoutServiceTest {
         ArgumentCaptor<Payment> paymentCaptor = ArgumentCaptor.forClass(Payment.class);
         verify(paymentRepository).save(paymentCaptor.capture());
         assertThat(paymentCaptor.getValue().getAmount()).isEqualByComparingTo("300.00");
+    }
+
+    @Test
+    void checkoutAppliesTheQuantityPriceTierLikeThePos() {
+        // 3 unidades caen en el escalón de Q15 (precio normal Q20).
+        when(productPriceResolver.resolveEffectivePrice(
+                        eq(tenantId), any(Product.class), any(), eq("ecommerce"), eq(branchId),
+                        eq(new BigDecimal("3"))))
+                .thenReturn(new ResolvedProductPrice(
+                        new BigDecimal("15.00"), new BigDecimal("15.00"),
+                        BigDecimal.ZERO.setScale(2), null));
+        stubCustomShippingCheckout("WEB-TIER", "70.00");
+
+        service.checkout("ferreteria", "checkout-1", request(new BigDecimal("3")));
+
+        ArgumentCaptor<com.omniretail.backend.ecommerce.entity.OrderItem> itemCaptor =
+                ArgumentCaptor.forClass(com.omniretail.backend.ecommerce.entity.OrderItem.class);
+        verify(orderItemRepository).save(itemCaptor.capture());
+        assertThat(itemCaptor.getValue().getUnitPrice()).isEqualByComparingTo("15.00");
+        assertThat(itemCaptor.getValue().getSubtotal()).isEqualByComparingTo("45.00");
+        ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
+        verify(orderRepository).save(orderCaptor.capture());
+        assertThat(orderCaptor.getValue().getSubtotal()).isEqualByComparingTo("45.00");
+        assertThat(orderCaptor.getValue().getTotal()).isEqualByComparingTo("70.00");
     }
 
     @Test
@@ -507,7 +531,7 @@ class StorefrontCheckoutServiceTest {
         when(product.getId()).thenReturn(productId);
         when(product.getSku()).thenReturn("SKU-1");
         when(product.getName()).thenReturn("Martillo");
-        when(product.getSalePrice()).thenReturn(new BigDecimal("20.00"));
+        lenient().when(product.getSalePrice()).thenReturn(new BigDecimal("20.00"));
         when(product.getTrackingStock()).thenReturn(trackingStock);
         lenient().when(product.getProductType()).thenReturn(type);
         if (trackingStock) {

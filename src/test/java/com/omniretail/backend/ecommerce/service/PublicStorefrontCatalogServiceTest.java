@@ -21,6 +21,7 @@ import com.omniretail.backend.catalog.entity.AttributeDefinition;
 import com.omniretail.backend.catalog.entity.AttributeDefinitionStatus;
 import com.omniretail.backend.catalog.entity.ProductAttributeValue;
 import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
+import com.omniretail.backend.catalog.dto.ResolvedTierPrice;
 import com.omniretail.backend.catalog.entity.CategoryStatus;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductMedia;
@@ -247,6 +248,37 @@ class PublicStorefrontCatalogServiceTest {
 
         assertThat(response.inStock()).isFalse();
         assertThat(response.availableQuantity()).isEqualByComparingTo("0");
+    }
+
+    @Test
+    void productDetailPublishesTheResolvedQuantityPrices() {
+        UUID tenantId = UUID.randomUUID();
+        Product product = trackedProduct(UUID.randomUUID(), UUID.randomUUID());
+        Tenant tenant = tenant(tenantId);
+        UUID promotionId = UUID.randomUUID();
+        when(tenantRepository.findBySlug("ferreteria-los-simpson")).thenReturn(Optional.of(tenant));
+        when(productRepository.findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
+                tenantId, product.getId(), ProductStatus.published)).thenReturn(Optional.of(product));
+        when(ecommerceConfigRepository.findByTenantId(tenantId)).thenReturn(Optional.empty());
+        when(productPriceResolver.resolveTierPrices(
+                org.mockito.ArgumentMatchers.eq(tenantId),
+                org.mockito.ArgumentMatchers.eq(product),
+                any(Instant.class),
+                org.mockito.ArgumentMatchers.eq("ecommerce"),
+                org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(List.of(new ResolvedTierPrice(2, new ResolvedProductPrice(
+                        new BigDecimal("80.00"), new BigDecimal("72.00"),
+                        new BigDecimal("8.00"), promotionId))));
+
+        var response = service.getProduct("ferreteria-los-simpson", product.getId());
+
+        assertThat(response.priceTiers()).singleElement().satisfies(tier -> {
+            assertThat(tier.minQuantity()).isEqualTo(2);
+            assertThat(tier.unitPrice()).isEqualByComparingTo("80.00");
+            assertThat(tier.effectivePrice()).isEqualByComparingTo("72.00");
+            assertThat(tier.discountAmount()).isEqualByComparingTo("8.00");
+            assertThat(tier.promotionId()).isEqualTo(promotionId);
+        });
     }
 
     @Test

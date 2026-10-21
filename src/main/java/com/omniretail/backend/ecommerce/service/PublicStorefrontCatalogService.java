@@ -30,6 +30,7 @@ import com.omniretail.backend.catalog.repository.ProductMediaRepository;
 import com.omniretail.backend.catalog.repository.UnitConversionRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
 import com.omniretail.backend.catalog.service.ProductPriceResolver;
+import com.omniretail.backend.ecommerce.dto.PublicStorefrontPriceTierResponse;
 import com.omniretail.backend.ecommerce.dto.PublicStorefrontProductResponse;
 import com.omniretail.backend.ecommerce.dto.PublicStorefrontProductAttributeResponse;
 import com.omniretail.backend.ecommerce.dto.PublicStorefrontProductAvailabilityResponse;
@@ -112,19 +113,24 @@ public class PublicStorefrontCatalogService {
                 availableKits(tenantId, List.of(product), availableByProduct),
                 saleUnitFactors);
         ProductMedia primaryMedia = primaryMediaByProduct(tenantId, List.of(product)).get(product.getId());
+        Instant pricingAt = Instant.now();
         return PublicStorefrontProductResponse.from(
                 product,
                 category != null ? category.getName() : null,
                 category != null ? category.getImageUrl() : null,
                 saleUnitId,
                 saleUnitName,
-                productPriceResolver.resolveEffectivePrice(tenantId, product, Instant.now(), "ecommerce", null),
+                productPriceResolver.resolveEffectivePrice(tenantId, product, pricingAt, "ecommerce", null),
                 primaryMedia != null ? primaryMedia.getUrl() : null,
                 primaryMedia != null ? primaryMedia.getAltText() : null,
                 stock.inStock(),
                 stock.availableQuantity(),
                 attributes(tenantId, product.getId()),
-                availability(tenantId, product, saleUnitFactors));
+                availability(tenantId, product, saleUnitFactors),
+                productPriceResolver.resolveTierPrices(tenantId, product, pricingAt, "ecommerce", null)
+                        .stream()
+                        .map(PublicStorefrontPriceTierResponse::from)
+                        .toList());
     }
 
     private PublicStorefrontProductResponse toResponse(
