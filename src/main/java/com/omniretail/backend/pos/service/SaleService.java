@@ -2,10 +2,12 @@ package com.omniretail.backend.pos.service;
 
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.BankAccountStatus;
+import com.omniretail.backend.administration.entity.ShippingChannel;
 import com.omniretail.backend.administration.repository.BankAccountRepository;
 import com.omniretail.backend.administration.repository.BusinessCapabilitiesConfigRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
 import com.omniretail.backend.administration.service.BranchAccessResolver;
+import com.omniretail.backend.administration.service.ShippingConfigService;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.entity.ProductType;
@@ -49,6 +51,7 @@ import com.omniretail.backend.pos.dto.InventoryTrackingSelectionRequest;
 import com.omniretail.backend.pos.dto.PaymentResponse;
 import com.omniretail.backend.pos.dto.PosDeferredOrderResponse;
 import com.omniretail.backend.pos.dto.PosPickingOrderResponse;
+import com.omniretail.backend.pos.dto.PosShippingQuoteResponse;
 import com.omniretail.backend.pos.dto.SaleConfirmationResponse;
 import com.omniretail.backend.pos.dto.SaleDetailResponse;
 import com.omniretail.backend.pos.dto.SaleItemResponse;
@@ -139,6 +142,25 @@ public class SaleService {
     private final PickingOrderRepository pickingOrders;
     private final JsonMapper jsonMapper;
     private final OrderEmailNotifier orderEmailNotifier;
+    private final ShippingConfigService shippingConfig;
+
+    /** Cotiza el envío a domicilio de una venta diferida con el subtotal ya descontado. */
+    @Transactional(readOnly = true)
+    public PosShippingQuoteResponse shippingQuote(BigDecimal subtotal) {
+        AuthenticatedUser actor = currentUser.require();
+        capability.ensureTenantCapability(actor.tenantId(), SaasCapability.pos);
+        if (subtotal == null || subtotal.signum() < 0) {
+            throw BusinessException.badRequest("El subtotal debe ser mayor o igual a cero.");
+        }
+        BigDecimal normalizedSubtotal = money(subtotal);
+        var policy = shippingConfig.channelConfig(actor.tenantId(), ShippingChannel.pos);
+        BigDecimal shipping = ShippingConfigService.calculate(policy, normalizedSubtotal);
+        return new PosShippingQuoteResponse(
+                normalizedSubtotal,
+                shipping,
+                normalizedSubtotal.add(shipping).setScale(2, RoundingMode.HALF_UP),
+                policy.enabled() ? policy.freeShippingThreshold() : null);
+    }
 
     public SaleConfirmationResponse create(CreateSaleRequest request) {
         AuthenticatedUser actor = currentUser.require();
@@ -234,7 +256,11 @@ public class SaleService {
             discount = discount.add(lineDiscount).setScale(2, RoundingMode.HALF_UP);
         }
         BigDecimal tax = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
-        BigDecimal total = subtotal.add(tax).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal shipping = deferredOrder != null
+                        && deferredOrder.deliveryMethod() == DeliveryMethod.home_delivery
+                ? shippingConfig.calculate(actor.tenantId(), ShippingChannel.pos, subtotal)
+                : BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        BigDecimal total = subtotal.add(tax).add(shipping).setScale(2, RoundingMode.HALF_UP);
         validatePayments(actor, request);
         BigDecimal paid = request.payments().stream().map(CreateSaleRequest.PaymentLine::amount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(2, RoundingMode.HALF_UP);
@@ -246,7 +272,7 @@ public class SaleService {
                 ? null
                 : createDeferredFulfillment(
                         actor, request, deferredOrder, catalog, saleNumber,
-                        subtotal, discount, total, fingerprint(request, document));
+                        subtotal, discount, shipping, total, fingerprint(request, document));
         Sale newSale = Sale.builder().branchId(request.branchId()).cashShiftId(shift.getId())
                 .createdByUserId(actor.userId()).number(saleNumber)
                 .customerId(request.customerId()).confirmationId(request.confirmationId())
@@ -256,7 +282,7 @@ public class SaleService {
                 .documentType(document.type()).documentTaxId(document.taxId())
                 .documentLegalName(document.legalName()).documentFiscalAddress(document.fiscalAddress())
                 .subtotal(subtotal)
-                .discountTotal(discount).taxTotal(tax).total(total).build();
+                .discountTotal(discount).taxTotal(tax).shippingTotal(shipping).total(total).build();
         newSale.setTenantId(actor.tenantId());
         Sale sale = sales.saveAndFlush(newSale);
         List<SaleItem> savedItems = new ArrayList<>();
@@ -334,6 +360,7 @@ public class SaleService {
             String saleNumber,
             BigDecimal subtotal,
             BigDecimal discount,
+            BigDecimal shipping,
             BigDecimal total,
             String confirmationFingerprint) {
         if (orders.findByTenantIdAndSourceAndIdempotencyKey(
@@ -358,7 +385,7 @@ public class SaleService {
                 .storePickupContact(json(deferred.storePickupContact()))
                 .subtotal(subtotal)
                 .discountTotal(discount)
-                .shippingTotal(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP))
+                .shippingTotal(shipping)
                 .total(total)
                 .trackingToken("pos-" + deferred.idempotencyKey())
                 .idempotencyKey(deferred.idempotencyKey())

@@ -4,12 +4,14 @@ import com.omniretail.backend.administration.dto.HeroBannerSlideDto;
 import com.omniretail.backend.administration.entity.Branch;
 import com.omniretail.backend.administration.entity.BranchStatus;
 import com.omniretail.backend.administration.entity.BranchType;
+import com.omniretail.backend.administration.entity.ShippingChannel;
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.repository.BranchRepository;
 import com.omniretail.backend.administration.repository.EcommerceConfigRepository;
 import com.omniretail.backend.administration.repository.HeroBannerConfigRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
+import com.omniretail.backend.administration.service.ShippingConfigService;
 import com.omniretail.backend.ecommerce.dto.PublicStorefrontConfigResponse;
 import com.omniretail.backend.shared.exception.BusinessException;
 import java.util.List;
@@ -32,6 +34,7 @@ public class PublicStorefrontConfigService {
     private final BranchRepository branchRepository;
     private final EcommerceConfigRepository ecommerceConfigRepository;
     private final HeroBannerConfigRepository heroBannerConfigRepository;
+    private final ShippingConfigService shippingConfigService;
     private final JsonMapper jsonMapper;
 
     public PublicStorefrontConfigResponse getConfig(String slug) {
@@ -46,7 +49,9 @@ public class PublicStorefrontConfigService {
         List<Branch> branches = branchRepository.findByTenantIdAndStatus(tenant.getId(), BranchStatus.active).stream()
                 .filter(branch -> branch.getType() == BranchType.store)
                 .toList();
-        return PublicStorefrontConfigResponse.from(config, slides, branches);
+        return PublicStorefrontConfigResponse.from(
+                config, slides, branches,
+                shippingConfigService.channelConfig(tenant.getId(), ShippingChannel.ecommerce));
     }
 
     private BusinessException storefrontNotFound() {

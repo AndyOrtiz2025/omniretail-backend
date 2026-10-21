@@ -105,6 +105,41 @@ class SaleReturnServiceTest {
     }
 
     @Test
+    void partialReturnNeverRefundsShipping() {
+        Sale sale = saleWithShipping();
+        when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
+        when(saleItems.findByTenantIdAndSaleId(tenant, sale.getId())).thenReturn(List.of(item(new BigDecimal("2.000"))));
+        when(shifts.findByTenantIdAndBranchIdAndUserIdAndStatus(tenant, branch, user, CashShiftStatus.open))
+                .thenReturn(Optional.of(shift(CashShiftStatus.open)));
+        when(payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(tenant, sale.getId()))
+                .thenReturn(List.of(Payment.builder().method(PaymentMethod.cash).amount(new BigDecimal("35.00")).build()));
+
+        var result = service.create(sale.getId(), request(BigDecimal.ONE));
+
+        assertThat(result.refundAmount()).isEqualByComparingTo("10.00");
+        verify(movements).save(argThat(m -> m.getType() == CashMovementType.out
+                && m.getAmount().compareTo(new BigDecimal("10.00")) == 0));
+    }
+
+    @Test
+    void returningEveryItemStillKeepsShipping() {
+        Sale sale = saleWithShipping();
+        when(sales.findByTenantIdAndIdForUpdate(tenant, sale.getId())).thenReturn(Optional.of(sale));
+        when(saleItems.findByTenantIdAndSaleId(tenant, sale.getId())).thenReturn(List.of(item(new BigDecimal("2.000"))));
+        when(shifts.findByTenantIdAndBranchIdAndUserIdAndStatus(tenant, branch, user, CashShiftStatus.open))
+                .thenReturn(Optional.of(shift(CashShiftStatus.open)));
+        when(payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(tenant, sale.getId()))
+                .thenReturn(List.of(Payment.builder().method(PaymentMethod.cash).amount(new BigDecimal("35.00")).build()));
+
+        var result = service.create(sale.getId(), request(new BigDecimal("2.000")));
+
+        // Se devuelven Q20 de productos; los Q15 de envío no se reembolsan.
+        assertThat(result.refundAmount()).isEqualByComparingTo("20.00");
+        verify(movements).save(argThat(m -> m.getType() == CashMovementType.out
+                && m.getAmount().compareTo(new BigDecimal("20.00")) == 0));
+    }
+
+    @Test
     void rejectsDeferredSaleReturnBeforeAnyPersistentEffect() {
         Sale sale = sale(SaleStatus.completed);
         sale.setSourceOrderId(UUID.randomUUID());
@@ -542,6 +577,14 @@ class SaleReturnServiceTest {
         Sale sale = Sale.builder().branchId(branch).cashShiftId(shiftId).number("POS-1").status(status)
                 .subtotal(new BigDecimal("20.00")).discountTotal(BigDecimal.ZERO).taxTotal(BigDecimal.ZERO)
                 .total(new BigDecimal("20.00")).createdByUserId(user).build();
+        sale.setTenantId(tenant); ReflectionTestUtils.setField(sale, "id", UUID.randomUUID()); return sale;
+    }
+    // Q20 de productos + Q15 de envío. Hoy solo las ventas diferidas cobran envío y esas no admiten
+    // devolución; este fixture fija la regla para cuando se habiliten.
+    private Sale saleWithShipping() {
+        Sale sale = Sale.builder().branchId(branch).cashShiftId(shiftId).number("POS-2").status(SaleStatus.completed)
+                .subtotal(new BigDecimal("20.00")).discountTotal(BigDecimal.ZERO).taxTotal(BigDecimal.ZERO)
+                .shippingTotal(new BigDecimal("15.00")).total(new BigDecimal("35.00")).createdByUserId(user).build();
         sale.setTenantId(tenant); ReflectionTestUtils.setField(sale, "id", UUID.randomUUID()); return sale;
     }
     private SaleItem item(BigDecimal quantity) { SaleItem i = SaleItem.builder().saleId(UUID.randomUUID()).productId(productId).skuSnapshot("SKU").nameSnapshot("Producto").quantity(quantity).unitPrice(new BigDecimal("10.00")).discount(BigDecimal.ZERO).subtotal(new BigDecimal("20.00")).build(); ReflectionTestUtils.setField(i,"id",itemId); return i; }
