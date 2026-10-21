@@ -11,6 +11,7 @@ import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.omniretail.backend.administration.dto.ShippingChannelConfigDto;
 import com.omniretail.backend.administration.entity.Branch;
 import com.omniretail.backend.administration.entity.BranchStatus;
 import com.omniretail.backend.administration.entity.EcommerceConfig;
@@ -279,6 +280,69 @@ class StorefrontCheckoutServiceTest {
         ArgumentCaptor<Payment> paymentCaptor = ArgumentCaptor.forClass(Payment.class);
         verify(paymentRepository).save(paymentCaptor.capture());
         assertThat(paymentCaptor.getValue().getAmount()).isEqualByComparingTo("300.00");
+    }
+
+    @Test
+    void checkoutChargesTheConfiguredFeeAboveTheOldDefaultThreshold() {
+        useCustomEcommerceShipping();
+        stubCustomShippingCheckout("WEB-CUSTOM", "340.00");
+
+        service.checkout("ferreteria", "checkout-1", request(new BigDecimal("15")));
+
+        // Con la tarifa por defecto Q300 ya sería gratis; la configurada cobra Q40 hasta Q500.
+        ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
+        verify(orderRepository).save(orderCaptor.capture());
+        assertThat(orderCaptor.getValue().getSubtotal()).isEqualByComparingTo("300.00");
+        assertThat(orderCaptor.getValue().getShippingTotal()).isEqualByComparingTo("40.00");
+        assertThat(orderCaptor.getValue().getTotal()).isEqualByComparingTo("340.00");
+        ArgumentCaptor<Payment> paymentCaptor = ArgumentCaptor.forClass(Payment.class);
+        verify(paymentRepository).save(paymentCaptor.capture());
+        assertThat(paymentCaptor.getValue().getAmount()).isEqualByComparingTo("340.00");
+    }
+
+    @Test
+    void checkoutOffersFreeShippingAtTheConfiguredThreshold() {
+        useCustomEcommerceShipping();
+        stubCustomShippingCheckout("WEB-CUSTOM-FREE", "500.00");
+
+        service.checkout("ferreteria", "checkout-1", request(new BigDecimal("25")));
+
+        ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
+        verify(orderRepository).save(orderCaptor.capture());
+        assertThat(orderCaptor.getValue().getSubtotal()).isEqualByComparingTo("500.00");
+        assertThat(orderCaptor.getValue().getShippingTotal()).isEqualByComparingTo("0.00");
+        assertThat(orderCaptor.getValue().getTotal()).isEqualByComparingTo("500.00");
+    }
+
+    /** Tarifa del tenant distinta de la de por defecto: Q40, gratis desde Q500. */
+    private void useCustomEcommerceShipping() {
+        ShippingChannelConfigDto custom =
+                new ShippingChannelConfigDto(true, new BigDecimal("40.00"), new BigDecimal("500.00"));
+        when(shippingConfigService.calculate(eq(tenantId), eq(ShippingChannel.ecommerce), any()))
+                .thenAnswer(invocation -> ShippingConfigService.calculate(custom, invocation.getArgument(2)));
+    }
+
+    private void stubCustomShippingCheckout(String orderNumber, String total) {
+        Product product = product(false, ProductType.service);
+        when(productRepository.findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
+                tenantId, productId, ProductStatus.published)).thenReturn(Optional.of(product));
+        Order savedOrder = mock(Order.class);
+        UUID orderId = UUID.randomUUID();
+        when(savedOrder.getId()).thenReturn(orderId);
+        when(savedOrder.getOrderNumber()).thenReturn(orderNumber);
+        when(savedOrder.getTrackingToken()).thenReturn("custom-tracking");
+        when(savedOrder.getTotal()).thenReturn(new BigDecimal(total));
+        when(savedOrder.getStatus()).thenReturn(OrderStatus.confirmed);
+        when(savedOrder.getDeliveryAddress()).thenReturn(
+                "{\"recipientName\":\"Maria\",\"line1\":\"7a Avenida\","
+                        + "\"line2\":null,\"city\":\"Guatemala\","
+                        + "\"stateOrDepartment\":null,\"recipientPhone\":\"55551234\"}");
+        when(savedOrder.getTenantId()).thenReturn(tenantId);
+        when(orderRepository.save(any(Order.class))).thenReturn(savedOrder);
+        Payment payment = mock(Payment.class);
+        when(payment.getStatus()).thenReturn(PaymentStatus.approved);
+        when(paymentRepository.save(any(Payment.class))).thenReturn(payment);
+        when(reservationRepository.findByTenantIdAndOrderId(tenantId, orderId)).thenReturn(List.of());
     }
 
     @Test
