@@ -137,6 +137,7 @@ class SaleControllerValidationTest {
                 new BigDecimal("20.00"),
                 BigDecimal.ZERO.setScale(2),
                 BigDecimal.ZERO.setScale(2),
+                BigDecimal.ZERO.setScale(2),
                 new BigDecimal("20.00"),
                 Instant.parse("2026-10-08T12:00:00Z"),
                 SaleStatus.cancelled,

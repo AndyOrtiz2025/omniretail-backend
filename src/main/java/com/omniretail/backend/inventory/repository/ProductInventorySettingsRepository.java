@@ -40,6 +40,22 @@ public interface ProductInventorySettingsRepository
     /** true si alguna configuracion de producto usa la ubicacion como su ubicacion asignada. */
     boolean existsByTenantIdAndDefaultLocationId(UUID tenantId, UUID defaultLocationId);
 
+    @Query(value = """
+            SELECT settings.default_location_id AS "locationId",
+                   COUNT(DISTINCT settings.product_id) AS "assignedProductCount"
+            FROM product_inventory_settings settings
+            JOIN locations location
+              ON location.tenant_id = settings.tenant_id
+             AND location.branch_id = settings.branch_id
+             AND location.id = settings.default_location_id
+            WHERE settings.tenant_id = :tenantId
+              AND settings.default_location_id IN (:locationIds)
+            GROUP BY settings.default_location_id
+            """, nativeQuery = true)
+    List<AssignedProductCountProjection> countAssignedProductsByLocation(
+            @Param("tenantId") UUID tenantId,
+            @Param("locationIds") java.util.Collection<UUID> locationIds);
+
     @Query("""
             select settings from ProductInventorySettings settings
             where settings.tenantId = :tenantId
@@ -833,6 +849,11 @@ public interface ProductInventorySettingsRepository
         String getAlertStatus();
 
         BigDecimal getSuggestedReorder();
+    }
+
+    interface AssignedProductCountProjection {
+        UUID getLocationId();
+        long getAssignedProductCount();
     }
 
     interface InventoryStockProjection {

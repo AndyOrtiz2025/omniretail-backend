@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.lenient;
 
 import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
+import com.omniretail.backend.catalog.dto.ResolvedTierPrice;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductSalesPriceTier;
 import com.omniretail.backend.catalog.entity.Promotion;
@@ -70,6 +71,31 @@ class ProductPriceResolverTest {
 
         assertThat(result.basePrice()).isEqualByComparingTo("80.00");
         assertThat(result.effectivePrice()).isEqualByComparingTo("80.00");
+    }
+
+    @Test
+    void resolvesEachActiveTierWithThePromotionAppliedOnTheTierPrice() {
+        when(priceTierRepository.findByTenantIdAndProductIdOrderByMinQuantityAsc(
+                tenantId, productId)).thenReturn(List.of(
+                        ProductSalesPriceTier.builder().minQuantity(2)
+                                .unitPrice(new BigDecimal("80.00")).active(true).build(),
+                        ProductSalesPriceTier.builder().minQuantity(5)
+                                .unitPrice(new BigDecimal("70.00")).active(false).build(),
+                        ProductSalesPriceTier.builder().minQuantity(10)
+                                .unitPrice(new BigDecimal("60.00")).active(true).build()));
+        Promotion tenPercent = promotion(PromotionDiscountType.percentage, "10", at.minusSeconds(60));
+        when(promotionRepository.findApplicable(tenantId, productId, PromotionStatus.active, at))
+                .thenReturn(List.of(tenPercent));
+
+        List<ResolvedTierPrice> tiers = resolver.resolveTierPrices(tenantId, product, at, null, null);
+
+        // El escalón inactivo no se publica; la promoción se aplica sobre el precio del escalón.
+        assertThat(tiers).extracting(ResolvedTierPrice::minQuantity).containsExactly(2, 10);
+        assertThat(tiers.get(0).price().basePrice()).isEqualByComparingTo("80.00");
+        assertThat(tiers.get(0).price().effectivePrice()).isEqualByComparingTo("72.00");
+        assertThat(tiers.get(1).price().basePrice()).isEqualByComparingTo("60.00");
+        assertThat(tiers.get(1).price().effectivePrice()).isEqualByComparingTo("54.00");
+        assertThat(tiers.get(1).price().promotionId()).isEqualTo(tenPercent.getId());
     }
 
     @Test

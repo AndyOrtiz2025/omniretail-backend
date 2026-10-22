@@ -184,6 +184,56 @@ class InventorySettingsServiceTest {
     }
 
     @Test
+    void lotAndExpirationStockInAnotherBranchDoesNotBlockInitialAssignmentOrAlterItsSettings() {
+        Fixture fixture = fixture(true);
+        enableInventory(fixture);
+        jdbc.update(
+                "UPDATE products SET tracking_lot = true, tracking_expiration = true WHERE id = ?",
+                fixture.product());
+        service.upsert(
+                fixture.otherBranch(),
+                fixture.product(),
+                new UpdateInventorySettingsRequest(
+                        new BigDecimal("2"), new BigDecimal("3"), fixture.otherLocation()));
+        jdbc.update(
+                """
+                INSERT INTO inventory_balances
+                    (tenant_id, branch_id, product_id, location_id, quantity, reserved_quantity)
+                VALUES (?, ?, ?, ?, 5, 0)
+                """,
+                fixture.tenant(), fixture.otherBranch(), fixture.product(), fixture.otherLocation());
+        UUID lotId = UUID.randomUUID();
+        jdbc.update(
+                """
+                INSERT INTO inventory_lots
+                    (id, tenant_id, product_id, lot_number, expiration_date)
+                VALUES (?, ?, ?, ?, CURRENT_DATE + 30)
+                """,
+                lotId, fixture.tenant(), fixture.product(), "LOT-" + lotId);
+        jdbc.update(
+                """
+                INSERT INTO inventory_lot_balances
+                    (tenant_id, branch_id, location_id, lot_id, quantity, reserved_quantity)
+                VALUES (?, ?, ?, ?, 5, 0)
+                """,
+                fixture.tenant(), fixture.otherBranch(), fixture.otherLocation(), lotId);
+
+        ProductInventorySettingsResponse north = service.upsert(
+                fixture.branch(),
+                fixture.product(),
+                new UpdateInventorySettingsRequest(BigDecimal.ONE, null, fixture.location()));
+        ProductInventorySettingsResponse south = service.get(
+                        fixture.otherBranch(), fixture.product())
+                .orElseThrow();
+
+        assertThat(north.defaultLocationId()).isEqualTo(fixture.location());
+        assertThat(south.defaultLocationId()).isEqualTo(fixture.otherLocation());
+        assertThat(south.minStock()).isEqualByComparingTo("2.000");
+        assertThat(south.reorderPoint()).isEqualByComparingTo("3.000");
+        assertThat(movementCount(fixture.tenant())).isZero();
+    }
+
+    @Test
     void activeInventoryRequiresLocationForNewProductsButPreservesLegacyNullBalance() {
         Fixture newProduct = fixture(true);
         enableInventory(newProduct);
@@ -236,7 +286,20 @@ class InventorySettingsServiceTest {
         given(branchAccessResolver.resolve(any())).willReturn(new BranchAccess(false, Set.of()));
         assertThatThrownBy(() -> service.get(fixture.branch(), fixture.product()))
                 .isInstanceOfSatisfying(BusinessException.class,
-                        exception -> assertThat(exception.getCode()).isEqualTo("BRANCH_ACCESS_DENIED"));
+                        exception -> {
+                            assertThat(exception.getStatus()).isEqualTo(org.springframework.http.HttpStatus.FORBIDDEN);
+                            assertThat(exception.getCode()).isEqualTo("BRANCH_ACCESS_DENIED");
+                        });
+        assertThatThrownBy(() -> service.upsert(
+                        fixture.branch(),
+                        fixture.product(),
+                        new UpdateInventorySettingsRequest(
+                                BigDecimal.ONE, null, fixture.location())))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> {
+                            assertThat(exception.getStatus()).isEqualTo(org.springframework.http.HttpStatus.FORBIDDEN);
+                            assertThat(exception.getCode()).isEqualTo("BRANCH_ACCESS_DENIED");
+                        });
 
         given(branchAccessResolver.resolve(any())).willReturn(new BranchAccess(true, Set.of()));
         given(entitlements.resolve(fixture.tenant())).willReturn(

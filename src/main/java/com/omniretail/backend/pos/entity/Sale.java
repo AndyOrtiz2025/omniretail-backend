@@ -91,6 +91,13 @@ public class Sale extends TenantScopedEntity {
     @Column(name = "tax_total", nullable = false, updatable = false, precision = 12, scale = 2)
     private BigDecimal taxTotal;
 
+    /** Envío a domicilio cobrado en la venta diferida; 0 en el resto de ventas. */
+    @NotNull
+    @DecimalMin("0.00")
+    @Column(name = "shipping_total", nullable = false, updatable = false, precision = 12, scale = 2)
+    @Builder.Default
+    private BigDecimal shippingTotal = BigDecimal.ZERO.setScale(2);
+
     @NotNull
     @DecimalMin("0.00")
     @Column(name = "total", nullable = false, updatable = false, precision = 12, scale = 2)

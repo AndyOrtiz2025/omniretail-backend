@@ -11,15 +11,26 @@ import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.omniretail.backend.catalog.entity.ProductSalesPriceTier;
+import com.omniretail.backend.catalog.entity.Promotion;
+import com.omniretail.backend.catalog.entity.PromotionDiscountType;
+import com.omniretail.backend.catalog.entity.PromotionStatus;
+import com.omniretail.backend.catalog.repository.ProductSalesPriceTierRepository;
+import com.omniretail.backend.catalog.repository.PromotionRepository;
+import java.time.Instant;
+import org.springframework.test.util.ReflectionTestUtils;
+import com.omniretail.backend.administration.dto.ShippingChannelConfigDto;
 import com.omniretail.backend.administration.entity.Branch;
 import com.omniretail.backend.administration.entity.BranchStatus;
 import com.omniretail.backend.administration.entity.EcommerceConfig;
+import com.omniretail.backend.administration.entity.ShippingChannel;
 import com.omniretail.backend.administration.entity.Tenant;
 import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.entity.UserType;
 import com.omniretail.backend.administration.repository.BranchRepository;
 import com.omniretail.backend.administration.repository.EcommerceConfigRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
+import com.omniretail.backend.administration.service.ShippingConfigService;
 import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductStatus;
@@ -82,6 +93,7 @@ class StorefrontCheckoutServiceTest {
     @Mock private ProductPriceResolver productPriceResolver;
     @Mock private ProductKitService productKitService;
     @Mock private OrderEmailNotifier orderEmailNotifier;
+    @Mock private ShippingConfigService shippingConfigService;
 
     private StorefrontCheckoutService service;
     private UUID tenantId;
@@ -98,12 +110,17 @@ class StorefrontCheckoutServiceTest {
                 productPriceResolver,
                 productKitService,
                 JsonMapper.builder().build(),
-                orderEmailNotifier);
+                orderEmailNotifier,
+                shippingConfigService);
+        // Sin configuración guardada: tarifa por defecto del canal (Q25, gratis desde Q300).
+        lenient().when(shippingConfigService.calculate(any(), eq(ShippingChannel.ecommerce), any()))
+                .thenAnswer(invocation -> ShippingConfigService.calculate(
+                        ShippingConfigService.ECOMMERCE_DEFAULT, invocation.getArgument(2)));
         tenantId = UUID.randomUUID();
         branchId = UUID.randomUUID();
         productId = UUID.randomUUID();
         lenient().when(productPriceResolver.resolveEffectivePrice(
-                        eq(tenantId), any(Product.class), any(), eq("ecommerce"), eq(branchId)))
+                        eq(tenantId), any(Product.class), any(), eq("ecommerce"), eq(branchId), any()))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("20.00"),
                         new BigDecimal("20.00"),
@@ -194,7 +211,7 @@ class StorefrontCheckoutServiceTest {
         Product product = product(false, ProductType.service);
         when(productRepository.findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
                 tenantId, productId, ProductStatus.published)).thenReturn(Optional.of(product));
-        when(productPriceResolver.resolveEffectivePrice(eq(tenantId), any(Product.class), any(), eq("ecommerce"), eq(branchId)))
+        when(productPriceResolver.resolveEffectivePrice(eq(tenantId), any(Product.class), any(), eq("ecommerce"), eq(branchId), any()))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("20.00"), new BigDecimal("12.00"),
                         new BigDecimal("8.00"), promotionId));
@@ -271,6 +288,148 @@ class StorefrontCheckoutServiceTest {
         ArgumentCaptor<Payment> paymentCaptor = ArgumentCaptor.forClass(Payment.class);
         verify(paymentRepository).save(paymentCaptor.capture());
         assertThat(paymentCaptor.getValue().getAmount()).isEqualByComparingTo("300.00");
+    }
+
+    @Test
+    void checkoutAppliesTheQuantityPriceTierLikeThePos() {
+        // 3 unidades caen en el escalón de Q15 (precio normal Q20).
+        when(productPriceResolver.resolveEffectivePrice(
+                        eq(tenantId), any(Product.class), any(), eq("ecommerce"), eq(branchId),
+                        eq(new BigDecimal("3"))))
+                .thenReturn(new ResolvedProductPrice(
+                        new BigDecimal("15.00"), new BigDecimal("15.00"),
+                        BigDecimal.ZERO.setScale(2), null));
+        stubCustomShippingCheckout("WEB-TIER", "70.00");
+
+        service.checkout("ferreteria", "checkout-1", request(new BigDecimal("3")));
+
+        ArgumentCaptor<com.omniretail.backend.ecommerce.entity.OrderItem> itemCaptor =
+                ArgumentCaptor.forClass(com.omniretail.backend.ecommerce.entity.OrderItem.class);
+        verify(orderItemRepository).save(itemCaptor.capture());
+        assertThat(itemCaptor.getValue().getUnitPrice()).isEqualByComparingTo("15.00");
+        assertThat(itemCaptor.getValue().getSubtotal()).isEqualByComparingTo("45.00");
+        ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
+        verify(orderRepository).save(orderCaptor.capture());
+        assertThat(orderCaptor.getValue().getSubtotal()).isEqualByComparingTo("45.00");
+        assertThat(orderCaptor.getValue().getTotal()).isEqualByComparingTo("70.00");
+    }
+
+    @Test
+    void checkoutChargesTierPriceWithTheDispatchBranchPromotion() {
+        // Mismo escenario que PublicStorefrontCatalogServiceTest: el detalle publica Q72 desde 2.
+        Product product = product(false, ProductType.service);
+        ReflectionTestUtils.setField(
+                service, "productPriceResolver", branchPromotionResolver(product, branchId));
+        stubCustomShippingCheckout(product, "WEB-BRANCH-PROMO", "241.00");
+
+        service.checkout("ferreteria", "checkout-1", request(new BigDecimal("3")));
+
+        // 3 unidades: escalón Q80 con el 10 % de la sucursal de despacho = Q72 c/u.
+        ArgumentCaptor<com.omniretail.backend.ecommerce.entity.OrderItem> itemCaptor =
+                ArgumentCaptor.forClass(com.omniretail.backend.ecommerce.entity.OrderItem.class);
+        verify(orderItemRepository).save(itemCaptor.capture());
+        assertThat(itemCaptor.getValue().getUnitPrice()).isEqualByComparingTo("80.00");
+        assertThat(itemCaptor.getValue().getDiscount()).isEqualByComparingTo("24.00");
+        assertThat(itemCaptor.getValue().getSubtotal()).isEqualByComparingTo("216.00");
+        ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
+        verify(orderRepository).save(orderCaptor.capture());
+        assertThat(orderCaptor.getValue().getSubtotal()).isEqualByComparingTo("216.00");
+    }
+
+    /**
+     * ProductPriceResolver real: escalón de Q80 desde 2 unidades (precio normal Q100) y una
+     * promoción del 10 % en e-commerce válida solo en {@code branchId}.
+     */
+    private ProductPriceResolver branchPromotionResolver(Product product, UUID branchId) {
+        ProductRepository products = mock(ProductRepository.class);
+        PromotionRepository promotions = mock(PromotionRepository.class);
+        ProductSalesPriceTierRepository tiers = mock(ProductSalesPriceTierRepository.class);
+        lenient().when(product.getTenantId()).thenReturn(tenantId);
+        lenient().when(product.getSalePrice()).thenReturn(new BigDecimal("100.00"));
+        when(tiers.findByTenantIdAndProductIdOrderByMinQuantityAsc(tenantId, productId))
+                .thenReturn(List.of(ProductSalesPriceTier.builder()
+                        .minQuantity(2).unitPrice(new BigDecimal("80.00")).active(true).build()));
+        Promotion branchOnly = Promotion.builder()
+                .name("10 % sucursal de despacho")
+                .discountType(PromotionDiscountType.percentage)
+                .discountValue(new BigDecimal("10"))
+                .startsAt(Instant.parse("2026-01-01T00:00:00Z"))
+                .status(PromotionStatus.active)
+                .channels(List.of("ecommerce"))
+                .branchIds(List.of(branchId))
+                .createdByUserId(UUID.randomUUID())
+                .build();
+        branchOnly.setTenantId(tenantId);
+        ReflectionTestUtils.setField(branchOnly, "id", UUID.randomUUID());
+        when(promotions.findApplicable(eq(tenantId), eq(productId), eq(PromotionStatus.active), any()))
+                .thenReturn(List.of(branchOnly));
+        return new ProductPriceResolver(products, promotions, tiers);
+    }
+
+    @Test
+    void checkoutChargesTheConfiguredFeeAboveTheOldDefaultThreshold() {
+        useCustomEcommerceShipping();
+        stubCustomShippingCheckout("WEB-CUSTOM", "340.00");
+
+        service.checkout("ferreteria", "checkout-1", request(new BigDecimal("15")));
+
+        // Con la tarifa por defecto Q300 ya sería gratis; la configurada cobra Q40 hasta Q500.
+        ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
+        verify(orderRepository).save(orderCaptor.capture());
+        assertThat(orderCaptor.getValue().getSubtotal()).isEqualByComparingTo("300.00");
+        assertThat(orderCaptor.getValue().getShippingTotal()).isEqualByComparingTo("40.00");
+        assertThat(orderCaptor.getValue().getTotal()).isEqualByComparingTo("340.00");
+        ArgumentCaptor<Payment> paymentCaptor = ArgumentCaptor.forClass(Payment.class);
+        verify(paymentRepository).save(paymentCaptor.capture());
+        assertThat(paymentCaptor.getValue().getAmount()).isEqualByComparingTo("340.00");
+    }
+
+    @Test
+    void checkoutOffersFreeShippingAtTheConfiguredThreshold() {
+        useCustomEcommerceShipping();
+        stubCustomShippingCheckout("WEB-CUSTOM-FREE", "500.00");
+
+        service.checkout("ferreteria", "checkout-1", request(new BigDecimal("25")));
+
+        ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
+        verify(orderRepository).save(orderCaptor.capture());
+        assertThat(orderCaptor.getValue().getSubtotal()).isEqualByComparingTo("500.00");
+        assertThat(orderCaptor.getValue().getShippingTotal()).isEqualByComparingTo("0.00");
+        assertThat(orderCaptor.getValue().getTotal()).isEqualByComparingTo("500.00");
+    }
+
+    /** Tarifa del tenant distinta de la de por defecto: Q40, gratis desde Q500. */
+    private void useCustomEcommerceShipping() {
+        ShippingChannelConfigDto custom =
+                new ShippingChannelConfigDto(true, new BigDecimal("40.00"), new BigDecimal("500.00"));
+        when(shippingConfigService.calculate(eq(tenantId), eq(ShippingChannel.ecommerce), any()))
+                .thenAnswer(invocation -> ShippingConfigService.calculate(custom, invocation.getArgument(2)));
+    }
+
+    private void stubCustomShippingCheckout(String orderNumber, String total) {
+        stubCustomShippingCheckout(product(false, ProductType.service), orderNumber, total);
+    }
+
+    private void stubCustomShippingCheckout(Product product, String orderNumber, String total) {
+        when(productRepository.findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
+                tenantId, productId, ProductStatus.published)).thenReturn(Optional.of(product));
+        Order savedOrder = mock(Order.class);
+        UUID orderId = UUID.randomUUID();
+        when(savedOrder.getId()).thenReturn(orderId);
+        when(savedOrder.getOrderNumber()).thenReturn(orderNumber);
+        when(savedOrder.getTrackingToken()).thenReturn("custom-tracking");
+        when(savedOrder.getTotal()).thenReturn(new BigDecimal(total));
+        when(savedOrder.getStatus()).thenReturn(OrderStatus.confirmed);
+        when(savedOrder.getDeliveryAddress()).thenReturn(
+                "{\"recipientName\":\"Maria\",\"line1\":\"7a Avenida\","
+                        + "\"line2\":null,\"city\":\"Guatemala\","
+                        + "\"stateOrDepartment\":null,\"recipientPhone\":\"55551234\"}");
+        when(savedOrder.getTenantId()).thenReturn(tenantId);
+        when(orderRepository.save(any(Order.class))).thenReturn(savedOrder);
+        Payment payment = mock(Payment.class);
+        when(payment.getStatus()).thenReturn(PaymentStatus.approved);
+        when(paymentRepository.save(any(Payment.class))).thenReturn(payment);
+        when(reservationRepository.findByTenantIdAndOrderId(tenantId, orderId)).thenReturn(List.of());
     }
 
     @Test
@@ -435,7 +594,7 @@ class StorefrontCheckoutServiceTest {
         when(product.getId()).thenReturn(productId);
         when(product.getSku()).thenReturn("SKU-1");
         when(product.getName()).thenReturn("Martillo");
-        when(product.getSalePrice()).thenReturn(new BigDecimal("20.00"));
+        lenient().when(product.getSalePrice()).thenReturn(new BigDecimal("20.00"));
         when(product.getTrackingStock()).thenReturn(trackingStock);
         lenient().when(product.getProductType()).thenReturn(type);
         if (trackingStock) {

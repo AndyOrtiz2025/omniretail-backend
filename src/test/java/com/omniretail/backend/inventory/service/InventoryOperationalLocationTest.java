@@ -524,6 +524,33 @@ class InventoryOperationalLocationTest {
     }
 
     @Test
+    void assignmentChangeIsBlockedWhenAnAvailableSerialRemainsElsewhere() {
+        Fixture fixture = createFixture(true);
+        UUID serialLocation = createLocation(fixture, fixture.branchId(), "active");
+        UUID next = createLocation(fixture, fixture.branchId(), "active");
+        UUID serialId = UUID.randomUUID();
+        jdbcTemplate.update(
+                """
+                INSERT INTO inventory_serials
+                    (id, tenant_id, branch_id, location_id, product_id,
+                     serial_number, status, version)
+                VALUES (?, ?, ?, ?, ?, ?, 'AVAILABLE', 0)
+                """,
+                serialId,
+                fixture.tenantId(),
+                fixture.branchId(),
+                serialLocation,
+                fixture.productId(),
+                "SER-" + serialId);
+
+        assertThatThrownBy(() -> operationalLocations.assertAssignmentChangeAllowed(
+                fixture.tenantId(), fixture.branchId(), fixture.productId(), next))
+                .isInstanceOf(BusinessException.class)
+                .extracting(exception -> ((BusinessException) exception).getCode())
+                .isEqualTo(InventoryOperationalLocationService.LOCATION_CHANGE_BLOCKED_CODE);
+    }
+
+    @Test
     void assigningTheLocationThatAlreadyHoldsAllTheStockIsAllowed() {
         Fixture fixture = createFixture(true);
         UUID shelf = createLocation(fixture, fixture.branchId(), "active");

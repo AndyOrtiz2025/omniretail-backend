@@ -5,6 +5,7 @@ import com.omniretail.backend.ecommerce.entity.DeliveryMethod;
 import com.omniretail.backend.ecommerce.entity.OrderStatus;
 import com.omniretail.backend.pos.dto.CreateSaleRequest;
 import com.omniretail.backend.pos.dto.PosSalesHistoryPageResponse;
+import com.omniretail.backend.pos.dto.PosShippingQuoteResponse;
 import com.omniretail.backend.pos.dto.SaleConfirmationResponse;
 import com.omniretail.backend.pos.dto.SaleDetailResponse;
 import com.omniretail.backend.pos.dto.SaleResponse;
@@ -17,6 +18,7 @@ import com.omniretail.backend.shared.security.RequirePermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.UUID;
@@ -62,6 +64,24 @@ public class SaleController {
     @RequirePermission("pos.sales.create")
     public SaleConfirmationResponse create(@Valid @RequestBody CreateSaleRequest request) {
         return service.create(request);
+    }
+
+    @Operation(
+            summary = "Quote POS home delivery shipping",
+            description = """
+                    Calcula el envío a domicilio que se sumará a una venta diferida según la configuración de envíos del canal POS (tarifa fija y umbral de envío gratis). El total devuelto es el que deben cubrir los pagos al confirmar la venta.
+                    
+                    **Parámetros de consulta:**
+                    * `subtotal`: Subtotal de la venta con descuentos aplicados (>= 0).
+                    
+                    **Permisos requeridos:**
+                    * `pos.sales.create`
+                    """
+    )
+    @GetMapping("/shipping-quote")
+    @RequirePermission("pos.sales.create")
+    public PosShippingQuoteResponse shippingQuote(@RequestParam BigDecimal subtotal) {
+        return service.shippingQuote(subtotal);
     }
 
     @Operation(

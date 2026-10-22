@@ -739,6 +739,9 @@ public class SaleReturnService {
         BigDecimal cash = payments.findByTenantIdAndSaleIdOrderByCreatedAtAscIdAsc(actor.tenantId(), sale.getId())
                 .stream().filter(payment -> payment.getMethod() == PaymentMethod.cash)
                 .map(Payment::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
+        // `total` sale solo de las líneas devueltas: el envío nunca se reembolsa en una devolución (solo al
+        // anular la venta completa). Prorratear contra sale.getTotal() reparte también el envío entre medios
+        // de pago, así que la suma reembolsada por todos los medios queda exactamente en `total`.
         BigDecimal cashRefund = sale.getTotal().signum() == 0 ? BigDecimal.ZERO
                 : total.multiply(cash).divide(sale.getTotal(), 2, RoundingMode.HALF_UP);
         if (cash.signum() <= 0 || cashRefund.signum() <= 0) {
