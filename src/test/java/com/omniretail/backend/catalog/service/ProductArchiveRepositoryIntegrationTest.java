@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.omniretail.backend.TestcontainersConfiguration;
 import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
+import com.omniretail.backend.inventory.repository.InventoryTransferItemRepository;
 import com.omniretail.backend.purchasing.repository.PurchaseOrderItemRepository;
 import java.util.List;
 import java.util.UUID;
@@ -25,6 +26,7 @@ class ProductArchiveRepositoryIntegrationTest {
     @Autowired private JdbcTemplate jdbc;
     @Autowired private InventoryBalanceRepository inventoryBalanceRepository;
     @Autowired private PurchaseOrderItemRepository purchaseOrderItemRepository;
+    @Autowired private InventoryTransferItemRepository inventoryTransferItemRepository;
 
     private UUID tenantId;
     private UUID productId;
@@ -131,6 +133,68 @@ class ProductArchiveRepositoryIntegrationTest {
                 """, tenantId, productId);
         assertThat(inventoryBalanceRepository
                         .existsPositiveStockByTenantIdAndProductId(tenantId, productId))
+                .isFalse();
+    }
+
+    @Test
+    void onlyPendingQuantityInAnInTransitTransferBlocksArchive() {
+        UUID destinationBranchId = UUID.randomUUID();
+        jdbc.update(
+                """
+                INSERT INTO branches (id, tenant_id, code, name, type, status)
+                VALUES (?, ?, ?, 'Destino', 'store', 'active')
+                """,
+                destinationBranchId,
+                tenantId,
+                "DST-" + destinationBranchId.toString().substring(0, 8));
+        UUID transferId = UUID.randomUUID();
+        jdbc.update(
+                """
+                INSERT INTO inventory_transfers
+                    (id, tenant_id, number, source_branch_id, destination_branch_id,
+                     status, operation_id, operation_fingerprint,
+                     prepared_by_user_id, prepared_at)
+                VALUES (?, ?, ?, ?, ?, 'inTransit', ?, 'fingerprint', ?, now())
+                """,
+                transferId,
+                tenantId,
+                "TR-" + transferId,
+                branchId,
+                destinationBranchId,
+                "op-" + transferId,
+                actorId);
+        jdbc.update(
+                """
+                INSERT INTO inventory_transfer_items
+                    (tenant_id, transfer_id, product_id, requested_quantity,
+                     dispatched_quantity, received_quantity)
+                VALUES (?, ?, ?, 5, 5, 2)
+                """,
+                tenantId,
+                transferId,
+                productId);
+
+        assertThat(inventoryTransferItemRepository
+                        .existsPendingInTransitByTenantIdAndProductId(tenantId, productId))
+                .isTrue();
+        assertThat(inventoryTransferItemRepository
+                        .existsPendingInTransitByTenantIdAndProductId(UUID.randomUUID(), productId))
+                .isFalse();
+
+        jdbc.update(
+                "UPDATE inventory_transfer_items SET received_quantity = dispatched_quantity "
+                        + "WHERE transfer_id = ?",
+                transferId);
+        assertThat(inventoryTransferItemRepository
+                        .existsPendingInTransitByTenantIdAndProductId(tenantId, productId))
+                .isFalse();
+
+        jdbc.update(
+                "UPDATE inventory_transfer_items SET received_quantity = 0 WHERE transfer_id = ?",
+                transferId);
+        jdbc.update("UPDATE inventory_transfers SET status = 'received' WHERE id = ?", transferId);
+        assertThat(inventoryTransferItemRepository
+                        .existsPendingInTransitByTenantIdAndProductId(tenantId, productId))
                 .isFalse();
     }
 

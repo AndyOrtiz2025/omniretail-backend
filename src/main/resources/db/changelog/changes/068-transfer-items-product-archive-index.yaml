@@ -1,0 +1,13 @@
+databaseChangeLog:
+  - changeSet:
+      id: 068-transfer-items-product-archive-index
+      author: AndyOrtiz2025
+      changes:
+        - createIndex:
+            tableName: inventory_transfer_items
+            indexName: idx_transfer_items_tenant_product
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: product_id

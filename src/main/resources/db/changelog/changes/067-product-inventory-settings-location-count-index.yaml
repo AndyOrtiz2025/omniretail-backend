@@ -1,0 +1,13 @@
+databaseChangeLog:
+  - changeSet:
+      id: 067-product-inventory-settings-location-count-index
+      author: AndyOrtiz2025
+      changes:
+        - createIndex:
+            tableName: product_inventory_settings
+            indexName: idx_product_inventory_settings_tenant_location
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: default_location_id

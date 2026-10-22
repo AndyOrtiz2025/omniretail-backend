@@ -20,6 +20,7 @@ import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.AuthenticatedUser;
 import com.omniretail.backend.shared.security.CurrentUser;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -71,7 +72,11 @@ public class LocationService {
             locations = locationRepository.findAllFilteredForBranches(
                     tenantId, access.branchIds(), parentId, type, status, pageable);
         }
-        return PageResponse.from(locations, LocationResponse::from);
+        Map<UUID, Long> counts = assignedProductCounts(tenantId, locations.getContent());
+        return PageResponse.from(
+                locations,
+                location -> LocationResponse.from(
+                        location, counts.getOrDefault(location.getId(), 0L)));
     }
 
     public LocationResponse getById(UUID id) {
@@ -79,7 +84,7 @@ public class LocationService {
         ensureInventoryEnabled();
         Location location = requireLocation(actor.tenantId(), id);
         ensureBranchAccess(branchAccessResolver.resolve(actor), location.getBranchId());
-        return LocationResponse.from(location);
+        return LocationResponse.from(location, assignedProductCount(actor.tenantId(), location));
     }
 
     @Transactional
@@ -109,7 +114,7 @@ public class LocationService {
                 .status(request.status() == null ? LocationStatus.active : request.status())
                 .build();
         location.setTenantId(tenantId);
-        return LocationResponse.from(locationRepository.saveAndFlush(location));
+        return LocationResponse.from(locationRepository.saveAndFlush(location), 0L);
     }
 
     @Transactional
@@ -136,7 +141,8 @@ public class LocationService {
 
         location.setName(request.name().trim());
         location.setStatus(request.status());
-        return LocationResponse.from(locationRepository.saveAndFlush(location));
+        Location saved = locationRepository.saveAndFlush(location);
+        return LocationResponse.from(saved, assignedProductCount(tenantId, saved));
     }
 
     @Transactional
@@ -280,6 +286,28 @@ public class LocationService {
                     "La ubicación está asignada a productos y no puede archivarse ni inactivarse. "
                             + "Asigne otra ubicación a esos productos primero.");
         }
+    }
+
+    private Map<UUID, Long> assignedProductCounts(UUID tenantId, java.util.List<Location> locations) {
+        if (locations.isEmpty()) {
+            return Map.of();
+        }
+        return productInventorySettingsRepository
+                .countAssignedProductsByLocation(
+                        tenantId, locations.stream().map(Location::getId).toList())
+                .stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        ProductInventorySettingsRepository.AssignedProductCountProjection::getLocationId,
+                        ProductInventorySettingsRepository.AssignedProductCountProjection::getAssignedProductCount));
+    }
+
+    private long assignedProductCount(UUID tenantId, Location location) {
+        return productInventorySettingsRepository
+                .countAssignedProductsByLocation(tenantId, java.util.List.of(location.getId()))
+                .stream()
+                .findFirst()
+                .map(ProductInventorySettingsRepository.AssignedProductCountProjection::getAssignedProductCount)
+                .orElse(0L);
     }
 
     private static boolean isValidParentType(

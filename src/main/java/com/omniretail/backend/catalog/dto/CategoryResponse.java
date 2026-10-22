@@ -14,6 +14,8 @@ public record CategoryResponse(
         String description,
         String imageUrl,
         CategoryStatus status,
+        Long productCount,
+        Long archivedProductCount,
         Instant createdAt,
         Instant updatedAt) {
 
@@ -27,6 +29,25 @@ public record CategoryResponse(
                 category.getDescription(),
                 category.getImageUrl(),
                 category.getStatus(),
+                null,
+                null,
+                category.getCreatedAt(),
+                category.getUpdatedAt());
+    }
+
+    public static CategoryResponse from(
+            Category category, long productCount, long archivedProductCount) {
+        return new CategoryResponse(
+                category.getId(),
+                category.getTenantId(),
+                category.getParentId(),
+                category.getName(),
+                category.getSlug(),
+                category.getDescription(),
+                category.getImageUrl(),
+                category.getStatus(),
+                productCount,
+                archivedProductCount,
                 category.getCreatedAt(),
                 category.getUpdatedAt());
     }

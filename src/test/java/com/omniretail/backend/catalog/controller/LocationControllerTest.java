@@ -427,7 +427,7 @@ class LocationControllerTest {
                         .content(createBody(
                                 fixture.firstBranchId(), null, "BOD-01", "Bodega", "warehouse", null)))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.*", hasSize(10)))
+                .andExpect(jsonPath("$.*", hasSize(11)))
                 .andExpect(jsonPath("$.tenantId").value(fixture.tenantId().toString()))
                 .andExpect(jsonPath("$.branchId").value(fixture.firstBranchId().toString()))
                 .andExpect(jsonPath("$.parentId").value(nullValue()))
@@ -435,6 +435,7 @@ class LocationControllerTest {
                 .andExpect(jsonPath("$.name").value("Bodega"))
                 .andExpect(jsonPath("$.type").value("warehouse"))
                 .andExpect(jsonPath("$.status").value("active"))
+                .andExpect(jsonPath("$.assignedProductCount").value(0))
                 .andExpect(jsonPath("$.createdAt").isNotEmpty())
                 .andExpect(jsonPath("$.updatedAt").isNotEmpty());
     }
@@ -1025,6 +1026,63 @@ class LocationControllerTest {
     }
 
     @Test
+    void assignedProductCountIsDistinctTenantBranchScopedAndWorksOnTheRequestedPage() throws Exception {
+        Fixture fixture = createFixture(true, "all");
+        UUID first = warehouse(fixture, "A");
+        UUID second = warehouse(fixture, "B");
+        UUID firstProduct = insertProduct(fixture.tenantId());
+        UUID secondProduct = insertProduct(fixture.tenantId());
+        UUID mismatchedBranchProduct = insertProduct(fixture.tenantId());
+        insertInventorySetting(
+                fixture.tenantId(), fixture.firstBranchId(), firstProduct, first);
+        insertInventorySetting(
+                fixture.tenantId(), fixture.firstBranchId(), secondProduct, first);
+        insertInventorySetting(
+                fixture.tenantId(), fixture.secondBranchId(), mismatchedBranchProduct, first);
+
+        Fixture foreign = createFixture(true, "all");
+        UUID foreignLocation = warehouse(foreign, "FOREIGN");
+        insertInventorySetting(
+                foreign.tenantId(), foreign.firstBranchId(), insertProduct(foreign.tenantId()), foreignLocation);
+
+        mockMvc.perform(get(LOCATIONS)
+                        .header("Authorization", token(fixture.actor()))
+                        .param("branchId", fixture.firstBranchId().toString())
+                        .param("page", "1")
+                        .param("size", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].id").value(first.toString()))
+                .andExpect(jsonPath("$.items[0].assignedProductCount").value(2));
+
+        mockMvc.perform(get(LOCATIONS)
+                        .header("Authorization", token(fixture.actor()))
+                        .param("branchId", fixture.firstBranchId().toString())
+                        .param("page", "2")
+                        .param("size", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].id").value(second.toString()))
+                .andExpect(jsonPath("$.items[0].assignedProductCount").value(0));
+    }
+
+    @Test
+    void assignedLocationCannotBeArchivedEvenWhenPhysicalStockIsZero() throws Exception {
+        Fixture fixture = createFixture(true, "all");
+        UUID location = warehouse(fixture, "ASSIGNED");
+        UUID product = insertProduct(fixture.tenantId());
+        insertInventorySetting(
+                fixture.tenantId(), fixture.firstBranchId(), product, location);
+
+        mockMvc.perform(delete(LOCATIONS + "/" + location)
+                        .header("Authorization", token(fixture.actor())))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("LOCATION_ASSIGNED_TO_PRODUCTS"));
+        mockMvc.perform(get(LOCATIONS + "/" + location)
+                        .header("Authorization", token(fixture.actor())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.assignedProductCount").value(1));
+    }
+
+    @Test
     void listDefaultsToCodeAscending() throws Exception {
         Fixture fixture = createFixture(true, "all");
         UUID c = warehouse(fixture, "C");
@@ -1046,7 +1104,7 @@ class LocationControllerTest {
         mockMvc.perform(get(LOCATIONS + "/" + location)
                         .header("Authorization", token(fixture.actor())))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.*", hasSize(10)))
+                .andExpect(jsonPath("$.*", hasSize(11)))
                 .andExpect(jsonPath("$.id").value(location.toString()))
                 .andExpect(jsonPath("$.tenantId").value(fixture.tenantId().toString()))
                 .andExpect(jsonPath("$.branchId").value(fixture.firstBranchId().toString()))
@@ -1055,6 +1113,7 @@ class LocationControllerTest {
                 .andExpect(jsonPath("$.name").value("W"))
                 .andExpect(jsonPath("$.type").value("warehouse"))
                 .andExpect(jsonPath("$.status").value("active"))
+                .andExpect(jsonPath("$.assignedProductCount").value(0))
                 .andExpect(jsonPath("$.createdAt").isNotEmpty())
                 .andExpect(jsonPath("$.updatedAt").isNotEmpty());
     }
@@ -1416,6 +1475,20 @@ class LocationControllerTest {
                 productId,
                 fromLocationId,
                 toLocationId);
+    }
+
+    private void insertInventorySetting(
+            UUID tenantId, UUID branchId, UUID productId, UUID locationId) {
+        jdbcTemplate.update(
+                """
+                INSERT INTO product_inventory_settings
+                    (tenant_id, branch_id, product_id, default_location_id)
+                VALUES (?, ?, ?, ?)
+                """,
+                tenantId,
+                branchId,
+                productId,
+                locationId);
     }
 
     private void setBranchStatus(UUID branchId, String statusValue) {

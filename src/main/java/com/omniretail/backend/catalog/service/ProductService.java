@@ -27,6 +27,7 @@ import com.omniretail.backend.catalog.repository.UnitConversionRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
 import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
 import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
+import com.omniretail.backend.inventory.repository.InventoryTransferItemRepository;
 import com.omniretail.backend.pos.repository.SaleItemRepository;
 import com.omniretail.backend.purchasing.repository.PurchaseOrderItemRepository;
 import com.omniretail.backend.purchasing.repository.SupplierProductRepository;
@@ -65,6 +66,7 @@ public class ProductService {
     private final UnitConversionRepository unitConversionRepository;
     private final InventoryBalanceRepository inventoryBalanceRepository;
     private final InventoryMovementRepository inventoryMovementRepository;
+    private final InventoryTransferItemRepository inventoryTransferItemRepository;
     private final SupplierProductRepository supplierProductRepository;
     private final PurchaseOrderItemRepository purchaseOrderItemRepository;
     private final SaleItemRepository saleItemRepository;
@@ -292,6 +294,12 @@ public class ProductService {
                     "PRODUCT_ARCHIVE_HAS_OPEN_PO",
                     "El producto no puede archivarse porque aparece en una orden de compra abierta.");
         }
+        if (inventoryTransferItemRepository.existsPendingInTransitByTenantIdAndProductId(
+                tenantId, product.getId())) {
+            throw BusinessException.conflict(
+                    "PRODUCT_ARCHIVE_IN_TRANSIT",
+                    "El producto no puede archivarse mientras tenga mercancía pendiente de recibir en un traslado.");
+        }
         if (productKitComponentRepository.existsInPublishedKit(tenantId, product.getId())) {
             throw BusinessException.conflict("KIT_COMPONENT_IN_USE",
                     "El producto es componente de un kit publicado y no puede archivarse.");
@@ -388,8 +396,9 @@ public class ProductService {
     }
 
     private void requireActiveCategory(UUID categoryId, UUID tenantId) {
-        if (!categoryRepository.existsByIdAndTenantIdAndStatus(
-                categoryId, tenantId, CategoryStatus.active)) {
+        if (categoryRepository.findForShareByTenantIdAndIdAndStatus(
+                        tenantId, categoryId, CategoryStatus.active)
+                .isEmpty()) {
             throw new BusinessException(
                     HttpStatus.NOT_FOUND,
                     "CATEGORY_NOT_FOUND",

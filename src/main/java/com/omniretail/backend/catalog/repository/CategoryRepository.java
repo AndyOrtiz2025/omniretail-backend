@@ -20,6 +20,18 @@ public interface CategoryRepository extends JpaRepository<Category, UUID> {
     Optional<Category> findForUpdateByTenantIdAndId(
             @Param("tenantId") UUID tenantId, @Param("id") UUID id);
 
+    @Lock(LockModeType.PESSIMISTIC_READ)
+    @Query("""
+            select category from Category category
+            where category.tenantId = :tenantId
+              and category.id = :id
+              and category.status = :status
+            """)
+    Optional<Category> findForShareByTenantIdAndIdAndStatus(
+            @Param("tenantId") UUID tenantId,
+            @Param("id") UUID id,
+            @Param("status") CategoryStatus status);
+
     Optional<Category> findByTenantIdAndSlug(UUID tenantId, String slug);
 
     List<Category> findByTenantIdAndStatus(UUID tenantId, CategoryStatus status);

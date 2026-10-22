@@ -6,6 +6,8 @@ import com.omniretail.backend.catalog.dto.CategoryUpdateRequest;
 import com.omniretail.backend.catalog.entity.Category;
 import com.omniretail.backend.catalog.entity.CategoryStatus;
 import com.omniretail.backend.catalog.repository.CategoryRepository;
+import com.omniretail.backend.catalog.repository.ProductRepository;
+import com.omniretail.backend.catalog.repository.ProductRepository.CategoryProductCountProjection;
 import com.omniretail.backend.shared.exception.BusinessException;
 import com.omniretail.backend.shared.security.CurrentUser;
 import com.omniretail.backend.shared.media.MediaStorageService;
@@ -13,6 +15,7 @@ import java.text.Normalizer;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
@@ -34,16 +37,35 @@ public class CategoryService {
             "La jerarquía de categorías no puede contener ciclos.";
 
     private final CategoryRepository categoryRepository;
+    private final ProductRepository productRepository;
     private final MediaStorageService mediaStorageService;
     private final CurrentUser currentUser;
 
-    public List<CategoryResponse> list(CategoryStatus status) {
+    public List<CategoryResponse> list(CategoryStatus status, boolean includeCounts) {
         UUID tenantId = currentUser.require().tenantId();
         List<Category> categories = status == null
                 ? categoryRepository.findByTenantIdOrderByNameAsc(tenantId)
                 : categoryRepository.findByTenantIdAndStatusOrderByNameAsc(
                         tenantId, status);
-        return categories.stream().map(CategoryResponse::from).toList();
+        if (!includeCounts || categories.isEmpty()) {
+            return categories.stream().map(CategoryResponse::from).toList();
+        }
+        Map<UUID, CategoryProductCountProjection> counts = productRepository
+                .countProductsByCategory(
+                        tenantId, categories.stream().map(Category::getId).toList())
+                .stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        CategoryProductCountProjection::getCategoryId,
+                        projection -> projection));
+        return categories.stream()
+                .map(category -> {
+                    CategoryProductCountProjection count = counts.get(category.getId());
+                    return CategoryResponse.from(
+                            category,
+                            count == null ? 0L : count.getProductCount(),
+                            count == null ? 0L : count.getArchivedProductCount());
+                })
+                .toList();
     }
 
     public CategoryResponse getById(UUID id) {
@@ -88,7 +110,7 @@ public class CategoryService {
 
         if (category.getStatus() != CategoryStatus.archived
                 && request.status() == CategoryStatus.archived) {
-            ensureHasNoActiveChildren(tenantId, category.getId());
+            ensureCanArchive(tenantId, category.getId());
         }
 
         String slug = category.getSlug();
@@ -120,11 +142,11 @@ public class CategoryService {
     @Transactional
     public void archive(UUID id) {
         UUID tenantId = currentUser.require().tenantId();
-        Category category = requireCategory(tenantId, id);
+        Category category = requireCategoryForUpdate(tenantId, id);
         if (category.getStatus() == CategoryStatus.archived) {
             return;
         }
-        ensureHasNoActiveChildren(tenantId, category.getId());
+        ensureCanArchive(tenantId, category.getId());
         category.setStatus(CategoryStatus.archived);
         categoryRepository.saveAndFlush(category);
     }
@@ -191,12 +213,9 @@ public class CategoryService {
         if (parentId == null) {
             return null;
         }
-        Category parent = categoryRepository.findByTenantIdAndId(tenantId, parentId)
+        return categoryRepository.findForShareByTenantIdAndIdAndStatus(
+                        tenantId, parentId, CategoryStatus.active)
                 .orElseThrow(CategoryService::parentNotFound);
-        if (parent.getStatus() != CategoryStatus.active) {
-            throw parentNotFound();
-        }
-        return parent;
     }
 
     private void validateHierarchy(UUID tenantId, UUID categoryId, UUID parentId) {
@@ -235,6 +254,16 @@ public class CategoryService {
             throw BusinessException.conflict(
                     "CATEGORY_HAS_ACTIVE_CHILDREN",
                     "No se puede archivar una categoría que tiene categorías hijas activas.");
+        }
+    }
+
+    private void ensureCanArchive(UUID tenantId, UUID categoryId) {
+        ensureHasNoActiveChildren(tenantId, categoryId);
+        if (productRepository.existsByTenantIdAndCategoryIdAndStatusNot(
+                tenantId, categoryId, com.omniretail.backend.catalog.entity.ProductStatus.archived)) {
+            throw BusinessException.conflict(
+                    "CATEGORY_HAS_PRODUCTS",
+                    "No se puede archivar una categoría que tiene productos no archivados asociados.");
         }
     }
 

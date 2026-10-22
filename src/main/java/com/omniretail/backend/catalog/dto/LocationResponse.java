@@ -15,6 +15,7 @@ public record LocationResponse(
         String name,
         LocationType type,
         LocationStatus status,
+        long assignedProductCount,
         Instant createdAt,
         Instant updatedAt) {
 
@@ -28,6 +29,22 @@ public record LocationResponse(
                 location.getName(),
                 location.getType(),
                 location.getStatus(),
+                0L,
+                location.getCreatedAt(),
+                location.getUpdatedAt());
+    }
+
+    public static LocationResponse from(Location location, long assignedProductCount) {
+        return new LocationResponse(
+                location.getId(),
+                location.getTenantId(),
+                location.getBranchId(),
+                location.getParentId(),
+                location.getCode(),
+                location.getName(),
+                location.getType(),
+                location.getStatus(),
+                assignedProductCount,
                 location.getCreatedAt(),
                 location.getUpdatedAt());
     }
