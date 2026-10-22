@@ -183,6 +183,56 @@ class CategoryControllerTest {
     }
 
     @Test
+    void listCountsDirectPublishedAndArchivedProductsWithoutChildrenOrOtherTenants() throws Exception {
+        UUID tenantA = insertTenant();
+        UUID tenantB = insertTenant();
+        UUID parent = insertCategory(tenantA, null, "Parent", "parent-count", "active");
+        UUID child = insertCategory(tenantA, parent, "Child", "child-count", "active");
+        UUID empty = insertCategory(tenantA, null, "Empty", "empty-count", "active");
+        insertProduct(tenantA, parent, "published");
+        insertProduct(tenantA, parent, "archived");
+        insertProduct(tenantA, child, "published");
+        UUID foreignCategory = insertCategory(tenantB, null, "Foreign", "foreign-count", "active");
+        insertProduct(tenantB, foreignCategory, "published");
+
+        mockMvc.perform(get(CATEGORIES)
+                        .header("Authorization", token(tenantA))
+                        .param("includeCounts", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.id == '%s')].productCount".formatted(parent)).value(1))
+                .andExpect(jsonPath("$[?(@.id == '%s')].archivedProductCount".formatted(parent)).value(1))
+                .andExpect(jsonPath("$[?(@.id == '%s')].productCount".formatted(child)).value(1))
+                .andExpect(jsonPath("$[?(@.id == '%s')].productCount".formatted(empty)).value(0))
+                .andExpect(jsonPath("$[?(@.id == '%s')]".formatted(foreignCategory)).isEmpty());
+    }
+
+    @Test
+    void countsRemainConsistentAfterReassignmentAndArchiveWhileLegacyRequestGetsNullCounts()
+            throws Exception {
+        UUID tenantId = insertTenant();
+        UUID first = insertCategory(tenantId, null, "First", "first-count", "active");
+        UUID second = insertCategory(tenantId, null, "Second", "second-count", "active");
+        UUID product = insertProduct(tenantId, first, "published");
+
+        mockMvc.perform(get(CATEGORIES).header("Authorization", token(tenantId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].productCount").value(nullValue()))
+                .andExpect(jsonPath("$[0].archivedProductCount").value(nullValue()));
+
+        jdbcTemplate.update("UPDATE products SET category_id = ? WHERE id = ?", second, product);
+        jdbcTemplate.update("UPDATE products SET status = 'archived' WHERE id = ?", product);
+
+        mockMvc.perform(get(CATEGORIES)
+                        .header("Authorization", token(tenantId))
+                        .param("includeCounts", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.id == '%s')].productCount".formatted(first)).value(0))
+                .andExpect(jsonPath("$[?(@.id == '%s')].archivedProductCount".formatted(first)).value(0))
+                .andExpect(jsonPath("$[?(@.id == '%s')].productCount".formatted(second)).value(0))
+                .andExpect(jsonPath("$[?(@.id == '%s')].archivedProductCount".formatted(second)).value(1));
+    }
+
+    @Test
     void activeStatusFilterOnlyReturnsActiveCategories() throws Exception {
         UUID tenantId = insertTenant();
         UUID active = insertCategory(tenantId, null, "Activa", "activa", "active");
@@ -652,10 +702,35 @@ class CategoryControllerTest {
     }
 
     @Test
-    void deleteAllowsArchivingCategoryWithAssociatedProducts() throws Exception {
+    void deleteBlocksArchivingCategoryWithPublishedProductsAndKeepsState() throws Exception {
         UUID tenantId = insertTenant();
         UUID categoryId = insertCategory(tenantId, null, "Categoría", "categoria", "active");
         insertProduct(tenantId, categoryId);
+
+        mockMvc.perform(delete(CATEGORIES + "/" + categoryId)
+                        .header("Authorization", token(tenantId)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("CATEGORY_HAS_PRODUCTS"));
+
+        org.assertj.core.api.Assertions.assertThat(categoryStatus(categoryId))
+                .isEqualTo("active");
+
+        mockMvc.perform(put(CATEGORIES + "/" + categoryId)
+                        .header("Authorization", token(tenantId))
+                        .contentType(APPLICATION_JSON)
+                        .content(updateBody(null, "Still active", null, "archived")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("CATEGORY_HAS_PRODUCTS"));
+        org.assertj.core.api.Assertions.assertThat(categoryStatus(categoryId))
+                .isEqualTo("active");
+    }
+
+    @Test
+    void deleteAllowsArchivingCategoryWithOnlyArchivedProducts() throws Exception {
+        UUID tenantId = insertTenant();
+        UUID categoryId = insertCategory(
+                tenantId, null, "Archived products", "archived-products", "active");
+        insertProduct(tenantId, categoryId, "archived");
 
         mockMvc.perform(delete(CATEGORIES + "/" + categoryId)
                         .header("Authorization", token(tenantId)))
@@ -784,6 +859,10 @@ class CategoryControllerTest {
     }
 
     private UUID insertProduct(UUID tenantId, UUID categoryId) {
+        return insertProduct(tenantId, categoryId, "published");
+    }
+
+    private UUID insertProduct(UUID tenantId, UUID categoryId, String status) {
         UUID unitId = UUID.randomUUID();
         UUID productId = UUID.randomUUID();
         String suffix = UUID.randomUUID().toString();
@@ -798,15 +877,16 @@ class CategoryControllerTest {
                 "U-" + suffix.substring(0, 8));
         jdbcTemplate.update(
                 """
-                INSERT INTO products (id, tenant_id, sku, name, category_id, base_unit_id)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO products (id, tenant_id, sku, name, category_id, base_unit_id, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 productId,
                 tenantId,
                 "SKU-" + suffix,
                 "Producto " + suffix,
                 categoryId,
-                unitId);
+                unitId,
+                status);
         return productId;
     }
 

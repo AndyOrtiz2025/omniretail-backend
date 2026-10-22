@@ -18,6 +18,7 @@ import com.omniretail.backend.catalog.dto.ProductDto;
 import com.omniretail.backend.catalog.dto.ProductTrackingDto;
 import com.omniretail.backend.catalog.dto.ProductUpdateRequest;
 import com.omniretail.backend.catalog.entity.CategoryStatus;
+import com.omniretail.backend.catalog.entity.Category;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductStatus;
 import com.omniretail.backend.catalog.entity.ProductType;
@@ -31,6 +32,7 @@ import com.omniretail.backend.catalog.repository.UnitConversionRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
 import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
 import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
+import com.omniretail.backend.inventory.repository.InventoryTransferItemRepository;
 import com.omniretail.backend.pos.repository.SaleItemRepository;
 import com.omniretail.backend.purchasing.repository.PurchaseOrderItemRepository;
 import com.omniretail.backend.purchasing.repository.SupplierProductRepository;
@@ -68,6 +70,7 @@ class ProductManagementServiceTest {
     @Mock private UnitConversionRepository unitConversionRepository;
     @Mock private InventoryBalanceRepository inventoryBalanceRepository;
     @Mock private InventoryMovementRepository inventoryMovementRepository;
+    @Mock private InventoryTransferItemRepository inventoryTransferItemRepository;
     @Mock private SupplierProductRepository supplierProductRepository;
     @Mock private PurchaseOrderItemRepository purchaseOrderItemRepository;
     @Mock private SaleItemRepository saleItemRepository;
@@ -91,6 +94,7 @@ class ProductManagementServiceTest {
                 unitConversionRepository,
                 inventoryBalanceRepository,
                 inventoryMovementRepository,
+                inventoryTransferItemRepository,
                 supplierProductRepository,
                 purchaseOrderItemRepository,
                 saleItemRepository,
@@ -182,13 +186,14 @@ class ProductManagementServiceTest {
         service.update(PRODUCT_ID, request(
                 "sku", null, ProductType.physical, CATEGORY_ID, BASE_UNIT_ID,
                 null, null, tracking(false, false, false, false)));
-        verify(categoryRepository, never()).existsByIdAndTenantIdAndStatus(any(), any(), any());
+        verify(categoryRepository, never()).findForShareByTenantIdAndIdAndStatus(any(), any(), any());
         verify(unitRepository, never()).existsByIdAndTenantIdAndStatus(any(), any(), any());
 
         UUID newCategory = UUID.randomUUID();
         UUID newUnit = UUID.randomUUID();
-        given(categoryRepository.existsByIdAndTenantIdAndStatus(
-                newCategory, TENANT, CategoryStatus.active)).willReturn(true);
+        given(categoryRepository.findForShareByTenantIdAndIdAndStatus(
+                TENANT, newCategory, CategoryStatus.active))
+                .willReturn(Optional.of(Category.builder().build()));
         given(unitRepository.existsByIdAndTenantIdAndStatus(
                 newUnit, TENANT, UnitStatus.active)).willReturn(true);
         service.update(PRODUCT_ID, request(
@@ -455,10 +460,22 @@ class ProductManagementServiceTest {
     }
 
     @Test
+    void archiveRejectsMerchandisePendingInTransit() {
+        given(inventoryTransferItemRepository.existsPendingInTransitByTenantIdAndProductId(
+                TENANT, PRODUCT_ID)).willReturn(true);
+
+        assertCode(() -> service.archive(PRODUCT_ID), "PRODUCT_ARCHIVE_IN_TRANSIT");
+
+        assertThat(product.getStatus()).isEqualTo(ProductStatus.published);
+        verify(productRepository, never()).saveAndFlush(product);
+    }
+
+    @Test
     void restoreValidatesReferencesIsIdempotentAndHidesCrossTenantProducts() {
         product.setStatus(ProductStatus.archived);
-        given(categoryRepository.existsByIdAndTenantIdAndStatus(CATEGORY_ID, TENANT, CategoryStatus.active))
-                .willReturn(true);
+        given(categoryRepository.findForShareByTenantIdAndIdAndStatus(
+                TENANT, CATEGORY_ID, CategoryStatus.active))
+                .willReturn(Optional.of(Category.builder().build()));
         given(unitRepository.existsByIdAndTenantIdAndStatus(BASE_UNIT_ID, TENANT, UnitStatus.active))
                 .willReturn(true);
 
@@ -478,8 +495,9 @@ class ProductManagementServiceTest {
         product.setStatus(ProductStatus.archived);
         assertCode(() -> service.restore(PRODUCT_ID), "CATEGORY_NOT_FOUND");
 
-        given(categoryRepository.existsByIdAndTenantIdAndStatus(CATEGORY_ID, TENANT, CategoryStatus.active))
-                .willReturn(true);
+        given(categoryRepository.findForShareByTenantIdAndIdAndStatus(
+                TENANT, CATEGORY_ID, CategoryStatus.active))
+                .willReturn(Optional.of(Category.builder().build()));
         given(unitRepository.existsByIdAndTenantIdAndStatus(BASE_UNIT_ID, TENANT, UnitStatus.active))
                 .willReturn(true);
         product.setProductType(ProductType.kit);
@@ -623,8 +641,9 @@ class ProductManagementServiceTest {
     }
 
     private void allowCreateReferences() {
-        given(categoryRepository.existsByIdAndTenantIdAndStatus(
-                any(), any(), any())).willReturn(true);
+        given(categoryRepository.findForShareByTenantIdAndIdAndStatus(
+                any(), any(), any()))
+                .willReturn(Optional.of(Category.builder().build()));
         given(unitRepository.existsByIdAndTenantIdAndStatus(
                 any(), any(), any())).willReturn(true);
     }

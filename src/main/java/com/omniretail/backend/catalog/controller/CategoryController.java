@@ -45,6 +45,8 @@ public class CategoryController {
                     
                     **Parámetros de consulta:**
                     * `status`: Filtro opcional por estado (`active`, `archived`).
+                    * `includeCounts`: Si es `true`, incluye `productCount` (no archivados) y
+                      `archivedProductCount` para productos asociados directamente; no agrega subcategorías.
                     
                     **Permisos requeridos:**
                     * `catalog.categories.read`
@@ -53,8 +55,9 @@ public class CategoryController {
     @GetMapping
     @RequirePermission("catalog.categories.read")
     public List<CategoryResponse> list(
-            @RequestParam(required = false) CategoryStatus status) {
-        return categoryService.list(status);
+            @RequestParam(required = false) CategoryStatus status,
+            @RequestParam(defaultValue = "false") boolean includeCounts) {
+        return categoryService.list(status, includeCounts);
     }
 
     @Operation(

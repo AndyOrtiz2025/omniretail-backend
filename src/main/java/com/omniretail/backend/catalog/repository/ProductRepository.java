@@ -37,6 +37,11 @@ public interface ProductRepository extends JpaRepository<Product, UUID>, JpaSpec
     List<Product> findAllForUpdateByTenantIdAndIdIn(
             @Param("tenantId") UUID tenantId, @Param("ids") Collection<UUID> ids);
 
+    @Lock(LockModeType.PESSIMISTIC_READ)
+    @Query("select product from Product product where product.tenantId = :tenantId and product.id in :ids order by product.id")
+    List<Product> findAllForShareByTenantIdAndIdIn(
+            @Param("tenantId") UUID tenantId, @Param("ids") Collection<UUID> ids);
+
     Optional<Product> findByTenantIdAndSku(UUID tenantId, String sku);
 
     Optional<Product> findByTenantIdAndBarcode(UUID tenantId, String barcode);
@@ -56,7 +61,29 @@ public interface ProductRepository extends JpaRepository<Product, UUID>, JpaSpec
 
     List<Product> findByTenantIdAndCategoryId(UUID tenantId, UUID categoryId);
 
+    boolean existsByTenantIdAndCategoryIdAndStatusNot(
+            UUID tenantId, UUID categoryId, ProductStatus status);
+
+    @Query(value = """
+            SELECT p.category_id AS "categoryId",
+                   COUNT(*) FILTER (WHERE p.status = 'published') AS "productCount",
+                   COUNT(*) FILTER (WHERE p.status = 'archived') AS "archivedProductCount"
+            FROM products p
+            WHERE p.tenant_id = :tenantId
+              AND p.category_id IN (:categoryIds)
+            GROUP BY p.category_id
+            """, nativeQuery = true)
+    List<CategoryProductCountProjection> countProductsByCategory(
+            @Param("tenantId") UUID tenantId,
+            @Param("categoryIds") Collection<UUID> categoryIds);
+
     boolean existsByTenantIdAndSku(UUID tenantId, String sku);
 
     boolean existsByTenantIdAndSkuAndIdNot(UUID tenantId, String sku, UUID id);
+
+    interface CategoryProductCountProjection {
+        UUID getCategoryId();
+        long getProductCount();
+        long getArchivedProductCount();
+    }
 }

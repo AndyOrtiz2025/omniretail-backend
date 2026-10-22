@@ -61,6 +61,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -70,6 +72,8 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @SpringBootTest
 @ActiveProfiles("test")
@@ -90,6 +94,7 @@ class InventoryTransferServiceIntegrationTest {
     @Autowired private PackingService packingService;
     @Autowired private DispatchService dispatchService;
     @Autowired private JdbcTemplate jdbc;
+    @Autowired private PlatformTransactionManager transactionManager;
     @MockitoBean private CurrentUser currentUser;
     @MockitoBean private BranchAccessResolver branchAccessResolver;
     @MockitoBean private TenantEntitlementResolver entitlements;
@@ -1229,6 +1234,38 @@ class InventoryTransferServiceIntegrationTest {
         assertDestinationBalance("2.000", "0.000");
     }
 
+    @Test
+    void finalReceiptWaitsForTheProductLockUsedByGlobalArchive() throws Exception {
+        jdbc.update(
+                "UPDATE inventory_balances SET quantity = 2.000 WHERE tenant_id = ? AND product_id = ?",
+                fixture.tenantId(),
+                fixture.productId());
+        InventoryTransferResponse transfer = dispatchedTransfer("archive-race", "2.000");
+        assertBalance("0.000", "0.000");
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        AtomicReference<Future<?>> receiving = new AtomicReference<>();
+        try {
+            new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+                jdbc.queryForObject(
+                        "SELECT id FROM products WHERE tenant_id = ? AND id = ? FOR UPDATE",
+                        UUID.class,
+                        fixture.tenantId(),
+                        fixture.productId());
+                receiving.set(executor.submit(() -> service.receiveTransfer(
+                        transfer.id(), receiptRequest(transfer, "archive-race", "2.000"))));
+                awaitBlockedSessions(1);
+                assertThat(receiving.get().isDone()).isFalse();
+            });
+
+            receiving.get().get(20, TimeUnit.SECONDS);
+            assertThat(service.getTransfer(transfer.id()).status())
+                    .isEqualTo(InventoryTransferStatus.received);
+            assertDestinationBalance("2.000", "0.000");
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
     private void enableLocations() {
         jdbc.update(
                 """
@@ -1237,6 +1274,21 @@ class InventoryTransferServiceIntegrationTest {
                 """,
                 UUID.randomUUID(),
                 fixture.tenantId());
+    }
+
+    private void awaitBlockedSessions(int expected) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < deadline) {
+            Integer blocked = jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM pg_stat_activity "
+                            + "WHERE datname = current_database() AND wait_event_type = 'Lock'",
+                    Integer.class);
+            if (blocked != null && blocked >= expected) {
+                return;
+            }
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(10));
+        }
+        throw new IllegalStateException("La recepción no esperó el bloqueo del producto.");
     }
 
     private void assignDestination(UUID locationId) {

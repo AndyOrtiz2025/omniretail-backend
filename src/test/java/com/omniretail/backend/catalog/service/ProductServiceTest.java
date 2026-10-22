@@ -17,6 +17,7 @@ import com.omniretail.backend.catalog.dto.ProductCreateRequest;
 import com.omniretail.backend.catalog.dto.ProductDto;
 import com.omniretail.backend.catalog.dto.ProductTrackingDto;
 import com.omniretail.backend.catalog.entity.CategoryStatus;
+import com.omniretail.backend.catalog.entity.Category;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductPriceHistory;
 import com.omniretail.backend.catalog.entity.ProductMedia;
@@ -33,6 +34,7 @@ import com.omniretail.backend.catalog.repository.UnitConversionRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
 import com.omniretail.backend.inventory.repository.InventoryBalanceRepository;
 import com.omniretail.backend.inventory.repository.InventoryMovementRepository;
+import com.omniretail.backend.inventory.repository.InventoryTransferItemRepository;
 import com.omniretail.backend.pos.repository.SaleItemRepository;
 import com.omniretail.backend.purchasing.repository.PurchaseOrderItemRepository;
 import com.omniretail.backend.purchasing.repository.SupplierProductRepository;
@@ -42,6 +44,7 @@ import com.omniretail.backend.shared.security.CurrentUser;
 import com.omniretail.backend.shared.security.TenantCapabilityGuard;
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -84,6 +87,9 @@ class ProductServiceTest {
     private InventoryMovementRepository inventoryMovementRepository;
 
     @Mock
+    private InventoryTransferItemRepository inventoryTransferItemRepository;
+
+    @Mock
     private SupplierProductRepository supplierProductRepository;
 
     @Mock
@@ -120,6 +126,7 @@ class ProductServiceTest {
                 unitConversionRepository,
                 inventoryBalanceRepository,
                 inventoryMovementRepository,
+                inventoryTransferItemRepository,
                 supplierProductRepository,
                 purchaseOrderItemRepository,
                 saleItemRepository,
@@ -296,9 +303,9 @@ class ProductServiceTest {
     @Test
     void categoryFromAnotherTenantIsRejected() {
         ProductCreateRequest request = validRequest();
-        given(categoryRepository.existsByIdAndTenantIdAndStatus(
-                        request.categoryId(), TENANT_ID, CategoryStatus.active))
-                .willReturn(false);
+        given(categoryRepository.findForShareByTenantIdAndIdAndStatus(
+                        TENANT_ID, request.categoryId(), CategoryStatus.active))
+                .willReturn(Optional.empty());
 
         assertNotFound(() -> service.create(request), "CATEGORY_NOT_FOUND");
         verify(productRepository, never()).saveAndFlush(any());
@@ -307,9 +314,9 @@ class ProductServiceTest {
     @Test
     void missingCategoryIsRejected() {
         ProductCreateRequest request = validRequest();
-        given(categoryRepository.existsByIdAndTenantIdAndStatus(
-                        request.categoryId(), TENANT_ID, CategoryStatus.active))
-                .willReturn(false);
+        given(categoryRepository.findForShareByTenantIdAndIdAndStatus(
+                        TENANT_ID, request.categoryId(), CategoryStatus.active))
+                .willReturn(Optional.empty());
 
         assertNotFound(() -> service.create(request), "CATEGORY_NOT_FOUND");
     }
@@ -317,9 +324,9 @@ class ProductServiceTest {
     @Test
     void archivedCategoryIsRejected() {
         ProductCreateRequest request = validRequest();
-        given(categoryRepository.existsByIdAndTenantIdAndStatus(
-                        request.categoryId(), TENANT_ID, CategoryStatus.active))
-                .willReturn(false);
+        given(categoryRepository.findForShareByTenantIdAndIdAndStatus(
+                        TENANT_ID, request.categoryId(), CategoryStatus.active))
+                .willReturn(Optional.empty());
 
         assertNotFound(() -> service.create(request), "CATEGORY_NOT_FOUND");
     }
@@ -327,9 +334,9 @@ class ProductServiceTest {
     @Test
     void baseUnitFromAnotherTenantIsRejected() {
         ProductCreateRequest request = validRequest();
-        given(categoryRepository.existsByIdAndTenantIdAndStatus(
-                        request.categoryId(), TENANT_ID, CategoryStatus.active))
-                .willReturn(true);
+        given(categoryRepository.findForShareByTenantIdAndIdAndStatus(
+                        TENANT_ID, request.categoryId(), CategoryStatus.active))
+                .willReturn(Optional.of(Category.builder().build()));
         given(unitRepository.existsByIdAndTenantIdAndStatus(
                         request.baseUnitId(), TENANT_ID, UnitStatus.active))
                 .willReturn(false);
@@ -341,9 +348,9 @@ class ProductServiceTest {
     @Test
     void missingUnitIsRejected() {
         ProductCreateRequest request = validRequest();
-        given(categoryRepository.existsByIdAndTenantIdAndStatus(
-                        request.categoryId(), TENANT_ID, CategoryStatus.active))
-                .willReturn(true);
+        given(categoryRepository.findForShareByTenantIdAndIdAndStatus(
+                        TENANT_ID, request.categoryId(), CategoryStatus.active))
+                .willReturn(Optional.of(Category.builder().build()));
         given(unitRepository.existsByIdAndTenantIdAndStatus(
                         request.baseUnitId(), TENANT_ID, UnitStatus.active))
                 .willReturn(false);
@@ -354,9 +361,9 @@ class ProductServiceTest {
     @Test
     void archivedUnitIsRejected() {
         ProductCreateRequest request = validRequest();
-        given(categoryRepository.existsByIdAndTenantIdAndStatus(
-                        request.categoryId(), TENANT_ID, CategoryStatus.active))
-                .willReturn(true);
+        given(categoryRepository.findForShareByTenantIdAndIdAndStatus(
+                        TENANT_ID, request.categoryId(), CategoryStatus.active))
+                .willReturn(Optional.of(Category.builder().build()));
         given(unitRepository.existsByIdAndTenantIdAndStatus(
                         request.baseUnitId(), TENANT_ID, UnitStatus.active))
                 .willReturn(false);
@@ -367,9 +374,9 @@ class ProductServiceTest {
     @Test
     void optionalInventoryUnitFromAnotherTenantIsRejected() {
         ProductCreateRequest request = validRequest();
-        given(categoryRepository.existsByIdAndTenantIdAndStatus(
-                        request.categoryId(), TENANT_ID, CategoryStatus.active))
-                .willReturn(true);
+        given(categoryRepository.findForShareByTenantIdAndIdAndStatus(
+                        TENANT_ID, request.categoryId(), CategoryStatus.active))
+                .willReturn(Optional.of(Category.builder().build()));
         given(unitRepository.existsByIdAndTenantIdAndStatus(
                         request.baseUnitId(), TENANT_ID, UnitStatus.active))
                 .willReturn(true);
@@ -384,9 +391,9 @@ class ProductServiceTest {
     @Test
     void saleUnitFromAnotherTenantIsRejected() {
         ProductCreateRequest request = requestWithInventoryUnit(null);
-        given(categoryRepository.existsByIdAndTenantIdAndStatus(
-                        request.categoryId(), TENANT_ID, CategoryStatus.active))
-                .willReturn(true);
+        given(categoryRepository.findForShareByTenantIdAndIdAndStatus(
+                        TENANT_ID, request.categoryId(), CategoryStatus.active))
+                .willReturn(Optional.of(Category.builder().build()));
         given(unitRepository.existsByIdAndTenantIdAndStatus(
                         request.baseUnitId(), TENANT_ID, UnitStatus.active))
                 .willReturn(true);
@@ -430,9 +437,9 @@ class ProductServiceTest {
 
     private void allowValidCreation() {
         given(businessConfigService.getConfig()).willReturn(fullBusinessConfig());
-        given(categoryRepository.existsByIdAndTenantIdAndStatus(
+        given(categoryRepository.findForShareByTenantIdAndIdAndStatus(
                         any(UUID.class), any(UUID.class), any(CategoryStatus.class)))
-                .willReturn(true);
+                .willReturn(Optional.of(Category.builder().build()));
         given(unitRepository.existsByIdAndTenantIdAndStatus(
                         any(UUID.class), any(UUID.class), any(UnitStatus.class)))
                 .willReturn(true);

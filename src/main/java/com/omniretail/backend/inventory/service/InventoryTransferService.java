@@ -441,6 +441,16 @@ public class InventoryTransferService {
                 actor.tenantId(), transfer.getDestinationBranchId(), payload.destinationLocationId());
         List<InventoryTransferItem> transferItems = itemRepository
                 .findByTenantIdAndTransferIdOrderByIdAsc(actor.tenantId(), transfer.getId());
+        // Orden producto -> mutacion de inventario: coordina el ultimo recibo con el archivado global.
+        // Sin este lock, archive() podria leer stock=0 antes del commit de la recepcion y luego observar
+        // el traslado ya recibido, omitiendo ambas protecciones.
+        productRepository.findAllForShareByTenantIdAndIdIn(
+                actor.tenantId(),
+                transferItems.stream()
+                        .map(InventoryTransferItem::getProductId)
+                        .distinct()
+                        .sorted()
+                        .toList());
         Map<UUID, InventoryTransferItem> itemsById = transferItems.stream()
                 .collect(Collectors.toMap(InventoryTransferItem::getId, Function.identity()));
         TransferTraceHistory traceHistory = transferTraceHistory(
