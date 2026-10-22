@@ -1,6 +1,7 @@
 package com.omniretail.backend.catalog.service;
 
 import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
+import com.omniretail.backend.catalog.dto.ResolvedTierPrice;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.Promotion;
 import com.omniretail.backend.catalog.entity.PromotionDiscountType;
@@ -12,6 +13,7 @@ import com.omniretail.backend.shared.exception.BusinessException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -83,6 +85,23 @@ public class ProductPriceResolver {
             }
         }
         return best;
+    }
+
+    /**
+     * Precio vigente de cada escalón activo, ordenado por cantidad mínima. Usa la misma resolución
+     * que el cobro, así quien muestre estos precios muestra exactamente lo que se cobrará.
+     */
+    public List<ResolvedTierPrice> resolveTierPrices(
+            UUID tenantId, Product product, Instant at, String channel, UUID branchId) {
+        return priceTierRepository.findByTenantIdAndProductIdOrderByMinQuantityAsc(
+                        tenantId, product.getId()).stream()
+                .filter(tier -> Boolean.TRUE.equals(tier.getActive()))
+                .map(tier -> new ResolvedTierPrice(
+                        tier.getMinQuantity(),
+                        resolveEffectivePrice(
+                                tenantId, product, at, channel, branchId,
+                                BigDecimal.valueOf(tier.getMinQuantity()))))
+                .toList();
     }
 
     private static ResolvedProductPrice calculate(BigDecimal basePrice, Promotion promotion) {

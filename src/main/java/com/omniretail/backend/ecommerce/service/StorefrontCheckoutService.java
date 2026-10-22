@@ -157,8 +157,9 @@ public class StorefrontCheckoutService {
         for (int i = 0; i < products.size(); i++) {
             Product product = products.get(i);
             BigDecimal quantity = quantities.get(i);
+            // Con la cantidad para aplicar el precio por cantidad, igual que el POS.
             ResolvedProductPrice resolved = productPriceResolver.resolveEffectivePrice(
-                    tenantId, product, pricingAt, "ecommerce", branch.getId());
+                    tenantId, product, pricingAt, "ecommerce", branch.getId(), quantity);
             BigDecimal lineDiscount = resolved.discountAmount().multiply(quantity)
                     .setScale(2, RoundingMode.HALF_UP);
             BigDecimal lineTotal = resolved.effectivePrice().multiply(quantity)
@@ -174,7 +175,7 @@ public class StorefrontCheckoutService {
                     .inventoryQuantity(inventoryQuantity(tenantId, product, quantity))
                     .fulfillmentComponents(KitFulfillmentSnapshot.encode(
                             productKitService.fulfillment(tenantId, product, quantity)))
-                    .unitPrice(product.getSalePrice())
+                    .unitPrice(resolved.basePrice())
                     .discount(lineDiscount)
                     .subtotal(lineTotal)
                     .build());

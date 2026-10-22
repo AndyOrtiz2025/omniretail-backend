@@ -1,5 +1,6 @@
 package com.omniretail.backend.ecommerce.service;
 
+import static org.mockito.ArgumentMatchers.eq;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
@@ -7,6 +8,13 @@ import static org.mockito.Mockito.when;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.lenient;
 
+import com.omniretail.backend.catalog.entity.ProductSalesPriceTier;
+import com.omniretail.backend.catalog.entity.Promotion;
+import com.omniretail.backend.catalog.entity.PromotionDiscountType;
+import com.omniretail.backend.catalog.entity.PromotionStatus;
+import com.omniretail.backend.catalog.repository.ProductSalesPriceTierRepository;
+import com.omniretail.backend.catalog.repository.PromotionRepository;
+import org.springframework.test.util.ReflectionTestUtils;
 import com.omniretail.backend.administration.entity.EcommerceConfig;
 import com.omniretail.backend.administration.entity.Branch;
 import com.omniretail.backend.administration.entity.BranchStatus;
@@ -21,6 +29,7 @@ import com.omniretail.backend.catalog.entity.AttributeDefinition;
 import com.omniretail.backend.catalog.entity.AttributeDefinitionStatus;
 import com.omniretail.backend.catalog.entity.ProductAttributeValue;
 import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
+import com.omniretail.backend.catalog.dto.ResolvedTierPrice;
 import com.omniretail.backend.catalog.entity.CategoryStatus;
 import com.omniretail.backend.catalog.entity.Product;
 import com.omniretail.backend.catalog.entity.ProductMedia;
@@ -72,11 +81,14 @@ class PublicStorefrontCatalogServiceTest {
 
     @InjectMocks private PublicStorefrontCatalogService service;
 
+    private UUID tenantId;
+    private UUID productId;
+
     @BeforeEach
     void setUpPriceResolver() {
         lenient().when(productPriceResolver.resolveEffectivePrice(
                         any(), any(Product.class), any(Instant.class),
-                        org.mockito.ArgumentMatchers.eq("ecommerce"), org.mockito.ArgumentMatchers.isNull()))
+                        org.mockito.ArgumentMatchers.eq("ecommerce"), org.mockito.ArgumentMatchers.nullable(UUID.class)))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("75.00"),
                         new BigDecimal("75.00"),
@@ -247,6 +259,93 @@ class PublicStorefrontCatalogServiceTest {
 
         assertThat(response.inStock()).isFalse();
         assertThat(response.availableQuantity()).isEqualByComparingTo("0");
+    }
+
+    @Test
+    void productDetailPublishesTheResolvedQuantityPrices() {
+        UUID tenantId = UUID.randomUUID();
+        Product product = trackedProduct(UUID.randomUUID(), UUID.randomUUID());
+        Tenant tenant = tenant(tenantId);
+        UUID promotionId = UUID.randomUUID();
+        when(tenantRepository.findBySlug("ferreteria-los-simpson")).thenReturn(Optional.of(tenant));
+        when(productRepository.findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
+                tenantId, product.getId(), ProductStatus.published)).thenReturn(Optional.of(product));
+        when(ecommerceConfigRepository.findByTenantId(tenantId)).thenReturn(Optional.empty());
+        when(productPriceResolver.resolveTierPrices(
+                org.mockito.ArgumentMatchers.eq(tenantId),
+                org.mockito.ArgumentMatchers.eq(product),
+                any(Instant.class),
+                org.mockito.ArgumentMatchers.eq("ecommerce"),
+                org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(List.of(new ResolvedTierPrice(2, new ResolvedProductPrice(
+                        new BigDecimal("80.00"), new BigDecimal("72.00"),
+                        new BigDecimal("8.00"), promotionId))));
+
+        var response = service.getProduct("ferreteria-los-simpson", product.getId());
+
+        assertThat(response.priceTiers()).singleElement().satisfies(tier -> {
+            assertThat(tier.minQuantity()).isEqualTo(2);
+            assertThat(tier.unitPrice()).isEqualByComparingTo("80.00");
+            assertThat(tier.effectivePrice()).isEqualByComparingTo("72.00");
+            assertThat(tier.discountAmount()).isEqualByComparingTo("8.00");
+            assertThat(tier.promotionId()).isEqualTo(promotionId);
+        });
+    }
+
+    @Test
+    void productDetailPricesWithTheDispatchBranchLikeTheCheckout() {
+        // Mismo escenario que StorefrontCheckoutServiceTest: el checkout cobra Q72 desde 2.
+        tenantId = UUID.randomUUID();
+        productId = UUID.randomUUID();
+        UUID branchId = UUID.randomUUID();
+        Product product = trackedProduct(productId, UUID.randomUUID());
+        Tenant tenant = tenant(tenantId);
+        when(tenantRepository.findBySlug("ferreteria-los-simpson")).thenReturn(Optional.of(tenant));
+        when(productRepository.findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
+                tenantId, productId, ProductStatus.published)).thenReturn(Optional.of(product));
+        ecommerceBranch(tenantId, branchId);
+        ReflectionTestUtils.setField(
+                service, "productPriceResolver", branchPromotionResolver(product, branchId));
+
+        var response = service.getProduct("ferreteria-los-simpson", productId);
+
+        // Una unidad: Q100 con el 10 % de la sucursal = Q90. Desde 2: Q80 con el 10 % = Q72.
+        assertThat(response.effectivePrice()).isEqualByComparingTo("90.00");
+        assertThat(response.priceTiers()).singleElement().satisfies(tier -> {
+            assertThat(tier.minQuantity()).isEqualTo(2);
+            assertThat(tier.unitPrice()).isEqualByComparingTo("80.00");
+            assertThat(tier.effectivePrice()).isEqualByComparingTo("72.00");
+        });
+    }
+
+    /**
+     * ProductPriceResolver real: escalón de Q80 desde 2 unidades (precio normal Q100) y una
+     * promoción del 10 % en e-commerce válida solo en {@code branchId}.
+     */
+    private ProductPriceResolver branchPromotionResolver(Product product, UUID branchId) {
+        ProductRepository products = mock(ProductRepository.class);
+        PromotionRepository promotions = mock(PromotionRepository.class);
+        ProductSalesPriceTierRepository tiers = mock(ProductSalesPriceTierRepository.class);
+        lenient().when(product.getTenantId()).thenReturn(tenantId);
+        lenient().when(product.getSalePrice()).thenReturn(new BigDecimal("100.00"));
+        when(tiers.findByTenantIdAndProductIdOrderByMinQuantityAsc(tenantId, productId))
+                .thenReturn(List.of(ProductSalesPriceTier.builder()
+                        .minQuantity(2).unitPrice(new BigDecimal("80.00")).active(true).build()));
+        Promotion branchOnly = Promotion.builder()
+                .name("10 % sucursal de despacho")
+                .discountType(PromotionDiscountType.percentage)
+                .discountValue(new BigDecimal("10"))
+                .startsAt(Instant.parse("2026-01-01T00:00:00Z"))
+                .status(PromotionStatus.active)
+                .channels(List.of("ecommerce"))
+                .branchIds(List.of(branchId))
+                .createdByUserId(UUID.randomUUID())
+                .build();
+        branchOnly.setTenantId(tenantId);
+        ReflectionTestUtils.setField(branchOnly, "id", UUID.randomUUID());
+        when(promotions.findApplicable(eq(tenantId), eq(productId), eq(PromotionStatus.active), any()))
+                .thenReturn(List.of(branchOnly));
+        return new ProductPriceResolver(products, promotions, tiers);
     }
 
     @Test

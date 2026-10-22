@@ -11,6 +11,14 @@ import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.omniretail.backend.catalog.entity.ProductSalesPriceTier;
+import com.omniretail.backend.catalog.entity.Promotion;
+import com.omniretail.backend.catalog.entity.PromotionDiscountType;
+import com.omniretail.backend.catalog.entity.PromotionStatus;
+import com.omniretail.backend.catalog.repository.ProductSalesPriceTierRepository;
+import com.omniretail.backend.catalog.repository.PromotionRepository;
+import java.time.Instant;
+import org.springframework.test.util.ReflectionTestUtils;
 import com.omniretail.backend.administration.dto.ShippingChannelConfigDto;
 import com.omniretail.backend.administration.entity.Branch;
 import com.omniretail.backend.administration.entity.BranchStatus;
@@ -112,7 +120,7 @@ class StorefrontCheckoutServiceTest {
         branchId = UUID.randomUUID();
         productId = UUID.randomUUID();
         lenient().when(productPriceResolver.resolveEffectivePrice(
-                        eq(tenantId), any(Product.class), any(), eq("ecommerce"), eq(branchId)))
+                        eq(tenantId), any(Product.class), any(), eq("ecommerce"), eq(branchId), any()))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("20.00"),
                         new BigDecimal("20.00"),
@@ -203,7 +211,7 @@ class StorefrontCheckoutServiceTest {
         Product product = product(false, ProductType.service);
         when(productRepository.findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
                 tenantId, productId, ProductStatus.published)).thenReturn(Optional.of(product));
-        when(productPriceResolver.resolveEffectivePrice(eq(tenantId), any(Product.class), any(), eq("ecommerce"), eq(branchId)))
+        when(productPriceResolver.resolveEffectivePrice(eq(tenantId), any(Product.class), any(), eq("ecommerce"), eq(branchId), any()))
                 .thenReturn(new ResolvedProductPrice(
                         new BigDecimal("20.00"), new BigDecimal("12.00"),
                         new BigDecimal("8.00"), promotionId));
@@ -283,6 +291,82 @@ class StorefrontCheckoutServiceTest {
     }
 
     @Test
+    void checkoutAppliesTheQuantityPriceTierLikeThePos() {
+        // 3 unidades caen en el escalón de Q15 (precio normal Q20).
+        when(productPriceResolver.resolveEffectivePrice(
+                        eq(tenantId), any(Product.class), any(), eq("ecommerce"), eq(branchId),
+                        eq(new BigDecimal("3"))))
+                .thenReturn(new ResolvedProductPrice(
+                        new BigDecimal("15.00"), new BigDecimal("15.00"),
+                        BigDecimal.ZERO.setScale(2), null));
+        stubCustomShippingCheckout("WEB-TIER", "70.00");
+
+        service.checkout("ferreteria", "checkout-1", request(new BigDecimal("3")));
+
+        ArgumentCaptor<com.omniretail.backend.ecommerce.entity.OrderItem> itemCaptor =
+                ArgumentCaptor.forClass(com.omniretail.backend.ecommerce.entity.OrderItem.class);
+        verify(orderItemRepository).save(itemCaptor.capture());
+        assertThat(itemCaptor.getValue().getUnitPrice()).isEqualByComparingTo("15.00");
+        assertThat(itemCaptor.getValue().getSubtotal()).isEqualByComparingTo("45.00");
+        ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
+        verify(orderRepository).save(orderCaptor.capture());
+        assertThat(orderCaptor.getValue().getSubtotal()).isEqualByComparingTo("45.00");
+        assertThat(orderCaptor.getValue().getTotal()).isEqualByComparingTo("70.00");
+    }
+
+    @Test
+    void checkoutChargesTierPriceWithTheDispatchBranchPromotion() {
+        // Mismo escenario que PublicStorefrontCatalogServiceTest: el detalle publica Q72 desde 2.
+        Product product = product(false, ProductType.service);
+        ReflectionTestUtils.setField(
+                service, "productPriceResolver", branchPromotionResolver(product, branchId));
+        stubCustomShippingCheckout(product, "WEB-BRANCH-PROMO", "241.00");
+
+        service.checkout("ferreteria", "checkout-1", request(new BigDecimal("3")));
+
+        // 3 unidades: escalón Q80 con el 10 % de la sucursal de despacho = Q72 c/u.
+        ArgumentCaptor<com.omniretail.backend.ecommerce.entity.OrderItem> itemCaptor =
+                ArgumentCaptor.forClass(com.omniretail.backend.ecommerce.entity.OrderItem.class);
+        verify(orderItemRepository).save(itemCaptor.capture());
+        assertThat(itemCaptor.getValue().getUnitPrice()).isEqualByComparingTo("80.00");
+        assertThat(itemCaptor.getValue().getDiscount()).isEqualByComparingTo("24.00");
+        assertThat(itemCaptor.getValue().getSubtotal()).isEqualByComparingTo("216.00");
+        ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
+        verify(orderRepository).save(orderCaptor.capture());
+        assertThat(orderCaptor.getValue().getSubtotal()).isEqualByComparingTo("216.00");
+    }
+
+    /**
+     * ProductPriceResolver real: escalón de Q80 desde 2 unidades (precio normal Q100) y una
+     * promoción del 10 % en e-commerce válida solo en {@code branchId}.
+     */
+    private ProductPriceResolver branchPromotionResolver(Product product, UUID branchId) {
+        ProductRepository products = mock(ProductRepository.class);
+        PromotionRepository promotions = mock(PromotionRepository.class);
+        ProductSalesPriceTierRepository tiers = mock(ProductSalesPriceTierRepository.class);
+        lenient().when(product.getTenantId()).thenReturn(tenantId);
+        lenient().when(product.getSalePrice()).thenReturn(new BigDecimal("100.00"));
+        when(tiers.findByTenantIdAndProductIdOrderByMinQuantityAsc(tenantId, productId))
+                .thenReturn(List.of(ProductSalesPriceTier.builder()
+                        .minQuantity(2).unitPrice(new BigDecimal("80.00")).active(true).build()));
+        Promotion branchOnly = Promotion.builder()
+                .name("10 % sucursal de despacho")
+                .discountType(PromotionDiscountType.percentage)
+                .discountValue(new BigDecimal("10"))
+                .startsAt(Instant.parse("2026-01-01T00:00:00Z"))
+                .status(PromotionStatus.active)
+                .channels(List.of("ecommerce"))
+                .branchIds(List.of(branchId))
+                .createdByUserId(UUID.randomUUID())
+                .build();
+        branchOnly.setTenantId(tenantId);
+        ReflectionTestUtils.setField(branchOnly, "id", UUID.randomUUID());
+        when(promotions.findApplicable(eq(tenantId), eq(productId), eq(PromotionStatus.active), any()))
+                .thenReturn(List.of(branchOnly));
+        return new ProductPriceResolver(products, promotions, tiers);
+    }
+
+    @Test
     void checkoutChargesTheConfiguredFeeAboveTheOldDefaultThreshold() {
         useCustomEcommerceShipping();
         stubCustomShippingCheckout("WEB-CUSTOM", "340.00");
@@ -323,7 +407,10 @@ class StorefrontCheckoutServiceTest {
     }
 
     private void stubCustomShippingCheckout(String orderNumber, String total) {
-        Product product = product(false, ProductType.service);
+        stubCustomShippingCheckout(product(false, ProductType.service), orderNumber, total);
+    }
+
+    private void stubCustomShippingCheckout(Product product, String orderNumber, String total) {
         when(productRepository.findByTenantIdAndIdAndStatusAndChannelEcommerceTrue(
                 tenantId, productId, ProductStatus.published)).thenReturn(Optional.of(product));
         Order savedOrder = mock(Order.class);
@@ -507,7 +594,7 @@ class StorefrontCheckoutServiceTest {
         when(product.getId()).thenReturn(productId);
         when(product.getSku()).thenReturn("SKU-1");
         when(product.getName()).thenReturn("Martillo");
-        when(product.getSalePrice()).thenReturn(new BigDecimal("20.00"));
+        lenient().when(product.getSalePrice()).thenReturn(new BigDecimal("20.00"));
         when(product.getTrackingStock()).thenReturn(trackingStock);
         lenient().when(product.getProductType()).thenReturn(type);
         if (trackingStock) {

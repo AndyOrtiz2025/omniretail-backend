@@ -28,7 +28,9 @@ public record PublicStorefrontProductResponse(
         boolean inStock,
         BigDecimal availableQuantity,
         List<PublicStorefrontProductAttributeResponse> attributes,
-        List<PublicStorefrontProductAvailabilityResponse> availability) {
+        List<PublicStorefrontProductAvailabilityResponse> availability,
+        /** Precios por cantidad vigentes; solo en el detalle del producto (vacío en el listado). */
+        List<PublicStorefrontPriceTierResponse> priceTiers) {
 
     public static PublicStorefrontProductResponse from(
             Product product,
@@ -53,7 +55,8 @@ public record PublicStorefrontProductResponse(
                 inStock,
                 availableQuantity,
                 List.of(),
-                null);
+                null,
+                List.of());
     }
 
     public static PublicStorefrontProductResponse from(
@@ -68,7 +71,8 @@ public record PublicStorefrontProductResponse(
             boolean inStock,
             BigDecimal availableQuantity,
             List<PublicStorefrontProductAttributeResponse> attributes,
-            List<PublicStorefrontProductAvailabilityResponse> availability) {
+            List<PublicStorefrontProductAvailabilityResponse> availability,
+            List<PublicStorefrontPriceTierResponse> priceTiers) {
         return new PublicStorefrontProductResponse(
                 product.getId(),
                 product.getSku(),
@@ -90,6 +94,7 @@ public record PublicStorefrontProductResponse(
                 inStock,
                 availableQuantity,
                 attributes,
-                availability);
+                availability,
+                priceTiers);
     }
 }

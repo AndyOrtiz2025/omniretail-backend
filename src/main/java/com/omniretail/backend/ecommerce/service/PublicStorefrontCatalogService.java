@@ -30,6 +30,7 @@ import com.omniretail.backend.catalog.repository.ProductMediaRepository;
 import com.omniretail.backend.catalog.repository.UnitConversionRepository;
 import com.omniretail.backend.catalog.repository.UnitRepository;
 import com.omniretail.backend.catalog.service.ProductPriceResolver;
+import com.omniretail.backend.ecommerce.dto.PublicStorefrontPriceTierResponse;
 import com.omniretail.backend.ecommerce.dto.PublicStorefrontProductResponse;
 import com.omniretail.backend.ecommerce.dto.PublicStorefrontProductAttributeResponse;
 import com.omniretail.backend.ecommerce.dto.PublicStorefrontProductAvailabilityResponse;
@@ -79,14 +80,15 @@ public class PublicStorefrontCatalogService {
         List<Product> products = productRepository
                 .findByTenantIdAndStatusAndChannelEcommerceTrue(tenantId, ProductStatus.published);
         Instant pricingAt = Instant.now();
-        Map<UUID, BigDecimal> availableByProduct = availableByProduct(tenantId);
+        UUID ecommerceBranchId = ecommerceBranchId(tenantId);
+        Map<UUID, BigDecimal> availableByProduct = availableByProduct(tenantId, ecommerceBranchId);
         Map<UUID, BigDecimal> availableKits = availableKits(tenantId, products, availableByProduct);
         Map<UUID, BigDecimal> saleUnitFactors = saleUnitFactors(tenantId, products);
         Map<UUID, ProductMedia> primaryMedia = primaryMediaByProduct(tenantId, products);
 
         return products.stream()
                 .map(product -> toResponse(
-                        product, activeCategories, units, tenantId, pricingAt,
+                        product, activeCategories, units, tenantId, ecommerceBranchId, pricingAt,
                         availableByProduct, availableKits, saleUnitFactors, primaryMedia.get(product.getId())))
                 .toList();
     }
@@ -104,7 +106,8 @@ public class PublicStorefrontCatalogService {
                 .filter(found -> found.getTenantId().equals(tenantId))
                 .map(Unit::getName)
                 .orElse(null);
-        Map<UUID, BigDecimal> availableByProduct = availableByProduct(tenantId);
+        UUID ecommerceBranchId = ecommerceBranchId(tenantId);
+        Map<UUID, BigDecimal> availableByProduct = availableByProduct(tenantId, ecommerceBranchId);
         Map<UUID, BigDecimal> saleUnitFactors = saleUnitFactors(tenantId, List.of(product));
         StockAvailability stock = stockAvailability(
                 product,
@@ -112,19 +115,26 @@ public class PublicStorefrontCatalogService {
                 availableKits(tenantId, List.of(product), availableByProduct),
                 saleUnitFactors);
         ProductMedia primaryMedia = primaryMediaByProduct(tenantId, List.of(product)).get(product.getId());
+        Instant pricingAt = Instant.now();
         return PublicStorefrontProductResponse.from(
                 product,
                 category != null ? category.getName() : null,
                 category != null ? category.getImageUrl() : null,
                 saleUnitId,
                 saleUnitName,
-                productPriceResolver.resolveEffectivePrice(tenantId, product, Instant.now(), "ecommerce", null),
+                productPriceResolver.resolveEffectivePrice(
+                        tenantId, product, pricingAt, "ecommerce", ecommerceBranchId),
                 primaryMedia != null ? primaryMedia.getUrl() : null,
                 primaryMedia != null ? primaryMedia.getAltText() : null,
                 stock.inStock(),
                 stock.availableQuantity(),
                 attributes(tenantId, product.getId()),
-                availability(tenantId, product, saleUnitFactors));
+                availability(tenantId, product, saleUnitFactors),
+                productPriceResolver.resolveTierPrices(
+                                tenantId, product, pricingAt, "ecommerce", ecommerceBranchId)
+                        .stream()
+                        .map(PublicStorefrontPriceTierResponse::from)
+                        .toList());
     }
 
     private PublicStorefrontProductResponse toResponse(
@@ -132,6 +142,7 @@ public class PublicStorefrontCatalogService {
             Map<UUID, Category> categories,
             Map<UUID, Unit> units,
             UUID tenantId,
+            UUID ecommerceBranchId,
             Instant pricingAt,
             Map<UUID, BigDecimal> availableByProduct,
             Map<UUID, BigDecimal> availableKits,
@@ -148,7 +159,7 @@ public class PublicStorefrontCatalogService {
                 saleUnitId,
                 saleUnit != null ? saleUnit.getName() : null,
                 productPriceResolver.resolveEffectivePrice(
-                        tenantId, product, pricingAt, "ecommerce", null),
+                        tenantId, product, pricingAt, "ecommerce", ecommerceBranchId),
                 primaryMedia != null ? primaryMedia.getUrl() : null,
                 primaryMedia != null ? primaryMedia.getAltText() : null,
                 stock.inStock(),
@@ -169,15 +180,24 @@ public class PublicStorefrontCatalogService {
     }
 
     /**
+     * Sucursal que atiende el e-commerce, la misma con la que el checkout cobra: los precios
+     * publicados deben incluir las promociones limitadas a esa sucursal. {@code null} si no hay.
+     */
+    private UUID ecommerceBranchId(UUID tenantId) {
+        return ecommerceConfigRepository.findByTenantId(tenantId)
+                .map(EcommerceConfig::getDefaultBranchId)
+                .orElse(null);
+    }
+
+    /**
      * Disponible (cantidad - reservado) en unidad base por producto en la sucursal que atiende el
      * e-commerce. La ubicacion se resuelve por la politica operativa del inventario; el storefront
      * nunca decide ni suma estantes por su cuenta.
      */
-    private Map<UUID, BigDecimal> availableByProduct(UUID tenantId) {
-        return ecommerceConfigRepository.findByTenantId(tenantId)
-                .map(EcommerceConfig::getDefaultBranchId)
-                .map(branchId -> inventoryOperationalLocationService.availableByProduct(tenantId, branchId))
-                .orElse(Map.of());
+    private Map<UUID, BigDecimal> availableByProduct(UUID tenantId, UUID ecommerceBranchId) {
+        return ecommerceBranchId == null
+                ? Map.of()
+                : inventoryOperationalLocationService.availableByProduct(tenantId, ecommerceBranchId);
     }
 
     private List<PublicStorefrontProductAttributeResponse> attributes(UUID tenantId, UUID productId) {
