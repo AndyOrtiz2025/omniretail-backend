@@ -42,3 +42,8 @@ https://{$SITE_ADDRESS} {
 		}
 	}
 }
+
+# Redirección de www al dominio raíz (los certificados HTTPS los gestiona Caddy solo).
+https://www.marjym.com {
+	redir https://marjym.com{uri} permanent
+}
