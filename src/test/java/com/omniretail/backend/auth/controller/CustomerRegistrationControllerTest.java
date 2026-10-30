@@ -37,6 +37,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -359,6 +361,64 @@ class CustomerRegistrationControllerTest {
                 .andExpect(jsonPath("$.fields.password").value("La contraseña es obligatoria."));
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "<script>alert(1)</script>",
+            "Ana<b>",
+            "Robert'); DROP TABLE users;--",
+            "Ana2",
+            "Ana\\u0000Pérez",
+            "Ana\\nPérez",
+            "Ana\\u001bPérez",
+            "Ana\\u200bPérez",
+            "Ana\\u202ePérez"})
+    void unsafeNamesAreRejectedWithoutCreatingAnything(String jsonName) throws Exception {
+        Tenant tenant = tenantWithCustomerRole();
+        String email = uniqueEmail();
+
+        registerWithJsonName(tenant.getSlug(), jsonName, email)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.fields.name").value(
+                        "El nombre solo puede contener letras, espacios, apóstrofos y guiones."));
+        assertThat(userRepository.existsByTenantIdAndEmail(tenant.getId(), email)).isFalse();
+        assertThat(emailSender.settledMessagesTo(email)).isEmpty();
+    }
+
+    @Test
+    void nameLongerThanTheProfileLimitIsRejected() throws Exception {
+        register(tenantWithCustomerRole().getSlug(), "A".repeat(101), uniqueEmail(), null, PASSWORD)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fields.name").value("El nombre no puede superar 100 caracteres."));
+    }
+
+    @Test
+    void nameIsStoredInCanonicalForm() throws Exception {
+        Tenant tenant = tenantWithCustomerRole();
+        String email = uniqueEmail();
+
+        // "José" con el acento como caracter combinado (NFD), espacios repetidos y apostrofo tipografico.
+        registerWithJsonName(tenant.getSlug(), "  Jose\\u0301   O\\u2019Neil ", email)
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.user.name").value("José O'Neil"));
+
+        User user = userRepository.findByTenantIdAndEmail(tenant.getId(), email).orElseThrow();
+        assertThat(user.getName()).isEqualTo("José O'Neil").hasSize(11);
+        assertThat(customerRepository.findById(user.getCustomerId()).orElseThrow().getName())
+                .isEqualTo("José O'Neil");
+    }
+
+    @Test
+    void emailRejectedByTheEntityConstraintIsAValidationErrorNotAServerError() throws Exception {
+        Tenant tenant = tenantWithCustomerRole();
+
+        register(tenant.getSlug(), "Ana", "a<b@c.d", null, PASSWORD)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.fields.email").value("Ingrese un correo con formato válido."));
+        assertThat(userRepository.existsByTenantIdAndEmail(tenant.getId(), "a<b@c.d")).isFalse();
+    }
+
     @Test
     void passwordEqualToEmailIsRejected() throws Exception {
         String email = "Ana1!x@test.local";
@@ -458,6 +518,16 @@ class CustomerRegistrationControllerTest {
         String body = """
                 {"name": %s, "email": %s, "phone": %s, "password": %s}
                 """.formatted(json(name), json(email), json(phone), json(password));
+        return mockMvc.perform(post("/api/v1/public/" + slug + "/auth/register")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body));
+    }
+
+    /** {@code jsonName} va tal cual dentro de las comillas: permite enviar escapes JSON como \u0000. */
+    private ResultActions registerWithJsonName(String slug, String jsonName, String email) throws Exception {
+        String body = """
+                {"name": "%s", "email": %s, "phone": null, "password": %s}
+                """.formatted(jsonName, json(email), json(PASSWORD));
         return mockMvc.perform(post("/api/v1/public/" + slug + "/auth/register")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body));
