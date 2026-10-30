@@ -1,0 +1,14 @@
+databaseChangeLog:
+  - changeSet:
+      id: 069-products-tenant-status-index
+      author: joga17000
+      changes:
+        # Catalogo publico y listados por estado: findByTenantIdAndStatus*(tenant_id, status).
+        - createIndex:
+            tableName: products
+            indexName: idx_products_tenant_status
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: status

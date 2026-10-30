@@ -2,6 +2,9 @@ package com.omniretail.backend.catalog.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -14,6 +17,7 @@ import com.omniretail.backend.catalog.entity.ProductSalesPriceTier;
 import com.omniretail.backend.catalog.entity.Promotion;
 import com.omniretail.backend.catalog.entity.PromotionDiscountType;
 import com.omniretail.backend.catalog.entity.PromotionStatus;
+import com.omniretail.backend.catalog.repository.ProductPromotion;
 import com.omniretail.backend.catalog.repository.ProductRepository;
 import com.omniretail.backend.catalog.repository.ProductSalesPriceTierRepository;
 import com.omniretail.backend.catalog.repository.PromotionRepository;
@@ -55,6 +59,89 @@ class ProductPriceResolverTest {
         ReflectionTestUtils.setField(product, "id", productId);
         lenient().when(productRepository.findByTenantIdAndId(tenantId, productId))
                 .thenReturn(Optional.of(product));
+    }
+
+    @Test
+    void batchResolutionUsesOneQueryAndTheSameRulesAsTheSingleProductResolution() {
+        UUID otherId = UUID.randomUUID();
+        Product other = Product.builder().sku("SKU-2").name("Otro")
+                .salePrice(new BigDecimal("50.00")).build();
+        other.setTenantId(tenantId);
+        ReflectionTestUtils.setField(other, "id", otherId);
+        UUID branchId = UUID.randomUUID();
+        Promotion ecommerce = promotion(PromotionDiscountType.percentage, "10", List.of("ecommerce"), List.of());
+        Promotion posOnly = promotion(PromotionDiscountType.percentage, "50", List.of("pos"), List.of());
+        Promotion otherBranch = promotion(
+                PromotionDiscountType.percentage, "40", List.of("ecommerce"), List.of(UUID.randomUUID()));
+        when(promotionRepository.findApplicableByProductIds(
+                tenantId, List.of(productId, otherId), PromotionStatus.active, at))
+                .thenReturn(List.of(
+                        new ProductPromotion(productId, posOnly),
+                        new ProductPromotion(productId, ecommerce),
+                        new ProductPromotion(productId, otherBranch)));
+
+        var prices = resolver.resolveEffectivePrices(
+                tenantId, List.of(product, other), at, "ecommerce", branchId);
+
+        assertThat(prices.get(productId).effectivePrice()).isEqualByComparingTo("89.99");
+        assertThat(prices.get(productId).promotionId()).isEqualTo(ecommerce.getId());
+        assertThat(prices.get(otherId).effectivePrice()).isEqualByComparingTo("50.00");
+        assertThat(prices.get(otherId).promotionId()).isNull();
+        verify(promotionRepository, never()).findApplicable(any(), any(), any(), any());
+        verifyNoInteractions(priceTierRepository);
+    }
+
+    @Test
+    void batchResolutionSplitsLargeCatalogsIntoBoundedQueries() {
+        List<Product> catalog = new java.util.ArrayList<>();
+        for (int index = 0; index < ProductPriceResolver.PRODUCT_BATCH_SIZE + 1; index++) {
+            Product item = Product.builder().sku("SKU-" + index).name("P" + index)
+                    .salePrice(BigDecimal.TEN).build();
+            item.setTenantId(tenantId);
+            ReflectionTestUtils.setField(item, "id", UUID.randomUUID());
+            catalog.add(item);
+        }
+        when(promotionRepository.findApplicableByProductIds(any(), any(), any(), any()))
+                .thenReturn(List.of());
+
+        var prices = resolver.resolveEffectivePrices(tenantId, catalog, at, "ecommerce", null);
+
+        assertThat(prices).hasSize(catalog.size());
+        verify(promotionRepository, times(2)).findApplicableByProductIds(any(), any(), any(), any());
+    }
+
+    @Test
+    void batchResolutionWithoutProductsDoesNotQuery() {
+        assertThat(resolver.resolveEffectivePrices(tenantId, List.of(), at, "ecommerce", null)).isEmpty();
+        verifyNoInteractions(promotionRepository);
+    }
+
+    @Test
+    void batchResolutionRejectsProductsFromAnotherTenant() {
+        Product foreign = Product.builder().sku("X").name("Ajeno").salePrice(BigDecimal.ONE).build();
+        foreign.setTenantId(UUID.randomUUID());
+
+        assertThatThrownBy(() -> resolver.resolveEffectivePrices(
+                tenantId, List.of(product, foreign), at, "ecommerce", null))
+                .isInstanceOf(BusinessException.class);
+        verifyNoInteractions(promotionRepository);
+    }
+
+    private Promotion promotion(
+            PromotionDiscountType type, String value, List<String> channels, List<UUID> branchIds) {
+        Promotion promotion = Promotion.builder()
+                .name("Promo " + value)
+                .discountType(type)
+                .discountValue(new BigDecimal(value))
+                .startsAt(at.minusSeconds(60))
+                .status(PromotionStatus.active)
+                .channels(channels)
+                .branchIds(branchIds)
+                .createdByUserId(UUID.randomUUID())
+                .build();
+        promotion.setTenantId(tenantId);
+        ReflectionTestUtils.setField(promotion, "id", UUID.randomUUID());
+        return promotion;
     }
 
     @Test
