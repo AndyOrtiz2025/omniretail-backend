@@ -47,7 +47,7 @@ public class PublicStorefrontConfigService {
                 .map(banner -> jsonMapper.readValue(banner.getSlides(), SLIDES_TYPE))
                 .orElseGet(List::of);
         List<Branch> branches = branchRepository.findByTenantIdAndStatus(tenant.getId(), BranchStatus.active).stream()
-                .filter(branch -> branch.getType() == BranchType.store)
+                .filter(branch -> branch.getType() != BranchType.warehouse)
                 .toList();
         return PublicStorefrontConfigResponse.from(
                 config, slides, branches,

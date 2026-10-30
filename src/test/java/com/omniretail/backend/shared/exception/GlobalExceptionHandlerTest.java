@@ -2,6 +2,10 @@ package com.omniretail.backend.shared.exception;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import jakarta.validation.ConstraintViolationException;
+import jakarta.validation.Validation;
+import jakarta.validation.ValidatorFactory;
+import jakarta.validation.constraints.Email;
 import java.sql.SQLException;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -59,6 +63,20 @@ class GlobalExceptionHandlerTest {
                 new DataIntegrityViolationException("x", new RuntimeException("envoltorio", sql));
 
         assertError(handle(ex), HttpStatus.CONFLICT, "DUPLICATE_RESOURCE");
+    }
+
+    @Test
+    void jakartaConstraintViolationIsAValidationErrorWithTheFieldName() {
+        record Account(@Email String email) {}
+        try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
+            var violations = factory.getValidator().validate(new Account("a<b@c.d"));
+
+            ResponseEntity<ApiError> response =
+                    handler.handleConstraintViolation(new ConstraintViolationException(violations), request);
+
+            assertError(response, HttpStatus.BAD_REQUEST, "VALIDATION_ERROR");
+            assertThat(response.getBody().fields()).containsOnlyKeys("email");
+        }
     }
 
     private ResponseEntity<ApiError> handle(DataIntegrityViolationException ex) {

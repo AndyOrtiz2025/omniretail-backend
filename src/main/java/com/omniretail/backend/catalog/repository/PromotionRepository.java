@@ -4,6 +4,7 @@ import com.omniretail.backend.catalog.entity.Promotion;
 import com.omniretail.backend.catalog.entity.PromotionStatus;
 import jakarta.persistence.LockModeType;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -55,6 +56,29 @@ public interface PromotionRepository extends JpaRepository<Promotion, UUID> {
     List<Promotion> findApplicable(
             @Param("tenantId") UUID tenantId,
             @Param("productId") UUID productId,
+            @Param("status") PromotionStatus status,
+            @Param("at") Instant at);
+
+    /**
+     * Version en lote de {@link #findApplicable}: mismas condiciones y mismo orden, para todos los
+     * productos de una sola vez (evita una consulta por producto en el catalogo publico).
+     */
+    @Query("""
+            select new com.omniretail.backend.catalog.repository.ProductPromotion(
+                association.productId, promotion)
+            from PromotionProduct association, Promotion promotion
+            where association.tenantId = :tenantId
+              and association.promotionId = promotion.id
+              and association.productId in :productIds
+              and promotion.tenantId = :tenantId
+              and promotion.status = :status
+              and promotion.startsAt <= :at
+              and (promotion.endsAt is null or promotion.endsAt > :at)
+            order by promotion.startsAt desc, promotion.id asc
+            """)
+    List<ProductPromotion> findApplicableByProductIds(
+            @Param("tenantId") UUID tenantId,
+            @Param("productIds") Collection<UUID> productIds,
             @Param("status") PromotionStatus status,
             @Param("at") Instant at);
 }

@@ -26,6 +26,9 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    private static final String VALIDATION_ERROR = "VALIDATION_ERROR";
+    private static final String INVALID_REQUEST_MESSAGE = "La solicitud tiene datos invalidos.";
+
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<ApiError> handleBusiness(BusinessException ex, HttpServletRequest request) {
         return build(ex.getStatus(), ex.getCode(), ex.getMessage(), request, null);
@@ -44,12 +47,28 @@ public class GlobalExceptionHandler {
         Map<String, String> fields = new LinkedHashMap<>();
         ex.getBindingResult().getFieldErrors()
                 .forEach(error -> fields.putIfAbsent(error.getField(), error.getDefaultMessage()));
-        return build(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "La solicitud tiene datos invalidos.", request, fields);
+        return build(HttpStatus.BAD_REQUEST, VALIDATION_ERROR, INVALID_REQUEST_MESSAGE, request, fields);
     }
 
     @ExceptionHandler(FieldValidationException.class)
     public ResponseEntity<ApiError> handleFieldValidation(FieldValidationException ex, HttpServletRequest request) {
-        return build(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", ex.getMessage(), request, ex.getFields());
+        return build(HttpStatus.BAD_REQUEST, VALIDATION_ERROR, ex.getMessage(), request, ex.getFields());
+    }
+
+    /**
+     * Red de seguridad: una restriccion Jakarta de una entidad que falla al guardar es un dato invalido
+     * del cliente (400), no un error del servidor. Los servicios validan antes; esto evita el 500 si
+     * alguno no lo hace.
+     */
+    @ExceptionHandler(jakarta.validation.ConstraintViolationException.class)
+    public ResponseEntity<ApiError> handleConstraintViolation(
+            jakarta.validation.ConstraintViolationException ex, HttpServletRequest request) {
+        Map<String, String> fields = new LinkedHashMap<>();
+        ex.getConstraintViolations().forEach(violation -> {
+            String path = violation.getPropertyPath().toString();
+            fields.putIfAbsent(path.substring(path.lastIndexOf('.') + 1), violation.getMessage());
+        });
+        return build(HttpStatus.BAD_REQUEST, VALIDATION_ERROR, INVALID_REQUEST_MESSAGE, request, fields);
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)

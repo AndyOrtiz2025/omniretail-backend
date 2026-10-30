@@ -26,6 +26,7 @@ import com.omniretail.backend.ecommerce.service.OrderEmailNotifier;
 import com.omniretail.backend.ecommerce.entity.OrderItem;
 import com.omniretail.backend.ecommerce.entity.OrderSource;
 import com.omniretail.backend.ecommerce.entity.OrderStatus;
+import com.omniretail.backend.ecommerce.entity.TransportMode;
 import com.omniretail.backend.ecommerce.repository.InventoryReservationRepository;
 import com.omniretail.backend.ecommerce.repository.OrderItemRepository;
 import com.omniretail.backend.ecommerce.repository.OrderRepository;
@@ -1222,12 +1223,8 @@ public class SaleService {
                     "ORDER_IDEMPOTENCY_KEY_INVALID",
                     "La llave de idempotencia del pedido es invalida.");
         }
-        if (input.transportMode() == null) {
-            throw new BusinessException(
-                    HttpStatus.BAD_REQUEST,
-                    "TRANSPORT_MODE_REQUIRED",
-                    "El modo de transporte es requerido.");
-        }
+        TransportMode transportMode =
+                normalizeDeferredTransportMode(input.deliveryMethod(), input.transportMode());
         Map<String, Object> normalizedAddress = null;
         if (input.deliveryMethod() == DeliveryMethod.home_delivery) {
             CreateSaleRequest.DeliveryAddress address = input.deliveryAddress();
@@ -1314,10 +1311,34 @@ public class SaleService {
         return new NormalizedDeferredOrder(
                 idempotencyKey,
                 input.deliveryMethod(),
-                input.transportMode(),
+                transportMode,
                 normalizedAddress,
                 notification,
                 storePickupContact);
+    }
+
+    private static TransportMode normalizeDeferredTransportMode(
+            DeliveryMethod deliveryMethod, TransportMode requested) {
+        if (deliveryMethod == DeliveryMethod.home_delivery) {
+            if (requested == null) {
+                return TransportMode.own_fleet;
+            }
+            if (requested != TransportMode.own_fleet
+                    && requested != TransportMode.third_party) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "POS_HOME_DELIVERY_TRANSPORT_MODE_INVALID",
+                        "La entrega a domicilio POS solo admite flota propia o transporte externo.");
+            }
+            return requested;
+        }
+        if (requested == null) {
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "TRANSPORT_MODE_REQUIRED",
+                    "El modo de transporte es requerido.");
+        }
+        return requested;
     }
 
     private static boolean isSupportedDeferredDeliveryMethod(DeliveryMethod deliveryMethod) {
@@ -1500,7 +1521,7 @@ public class SaleService {
     private record NormalizedDeferredOrder(
             String idempotencyKey,
             DeliveryMethod deliveryMethod,
-            com.omniretail.backend.ecommerce.entity.TransportMode transportMode,
+            TransportMode transportMode,
             Map<String, Object> deliveryAddress,
             Map<String, Object> notificationContact,
             Map<String, Object> storePickupContact) {}

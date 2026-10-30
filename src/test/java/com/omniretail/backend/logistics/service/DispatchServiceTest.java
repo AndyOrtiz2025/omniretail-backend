@@ -151,6 +151,8 @@ class DispatchServiceTest {
         assertThat(result.recipientName()).isEqualTo("Ana Lopez");
         assertThat(result.recipientPhone()).isEqualTo("+502 5555-5555");
         assertThat(result.deliveryAddress().get("line1").asText()).isEqualTo("Zona 1");
+        assertThat(result.transportMode())
+                .isEqualTo(com.omniretail.backend.ecommerce.entity.TransportMode.third_party);
         assertThat(result.pickingStatus()).isEqualTo(
                 com.omniretail.backend.logistics.entity.PickingStatus.completed);
         assertThat(result.pickingCompletedAt()).isNotNull();
@@ -305,6 +307,26 @@ class DispatchServiceTest {
         assertCode(() -> service.confirm(missingTracking.branchId(), missingTracking.orderId(), noTracking),
                 "BAD_REQUEST");
         assertUntouched(missingTracking);
+    }
+
+    @Test
+    void ownFleetPreservesExistingOptionalCarrierAndTrackingRules() {
+        DispatchTestFixture.Data fixture = fixture(2);
+        jdbc.update(
+                "UPDATE orders SET transport_mode = 'own_fleet' WHERE id = ?",
+                fixture.orderId());
+        ConfirmDispatchRequest request = new ConfirmDispatchRequest(
+                "own-fleet-without-guide", null, null, explicitPackages());
+
+        DispatchResponse result = service.confirm(
+                fixture.branchId(), fixture.orderId(), request);
+
+        assertThat(result.transportMode())
+                .isEqualTo(com.omniretail.backend.ecommerce.entity.TransportMode.own_fleet);
+        assertThat(result.carrierName()).isNull();
+        assertThat(result.trackingNumber()).isNull();
+        assertThat(text("orders", "status", "id", fixture.orderId())).isEqualTo("dispatched");
+        assertThat(count("dispatches", "order_id", fixture.orderId())).isOne();
     }
 
     @Test

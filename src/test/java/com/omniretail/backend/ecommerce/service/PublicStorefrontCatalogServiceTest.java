@@ -86,6 +86,19 @@ class PublicStorefrontCatalogServiceTest {
 
     @BeforeEach
     void setUpPriceResolver() {
+        lenient().when(productPriceResolver.resolveEffectivePrices(
+                        any(), any(), any(Instant.class),
+                        org.mockito.ArgumentMatchers.eq("ecommerce"), org.mockito.ArgumentMatchers.nullable(UUID.class)))
+                .thenAnswer(invocation -> {
+                    java.util.Collection<Product> products = invocation.getArgument(1);
+                    java.util.Map<UUID, ResolvedProductPrice> prices = new java.util.HashMap<>();
+                    products.forEach(product -> prices.put(product.getId(), new ResolvedProductPrice(
+                            new BigDecimal("75.00"),
+                            new BigDecimal("75.00"),
+                            BigDecimal.ZERO.setScale(2),
+                            null)));
+                    return prices;
+                });
         lenient().when(productPriceResolver.resolveEffectivePrice(
                         any(), any(Product.class), any(Instant.class),
                         org.mockito.ArgumentMatchers.eq("ecommerce"), org.mockito.ArgumentMatchers.nullable(UUID.class)))
@@ -139,16 +152,20 @@ class PublicStorefrontCatalogServiceTest {
         when(unitRepository.findByTenantId(tenantId)).thenReturn(List.of(unit));
         when(productRepository.findByTenantIdAndStatusAndChannelEcommerceTrue(
                 tenantId, ProductStatus.published)).thenReturn(List.of(product));
-        when(productPriceResolver.resolveEffectivePrice(
+        when(productPriceResolver.resolveEffectivePrices(
                 org.mockito.ArgumentMatchers.eq(tenantId),
-                org.mockito.ArgumentMatchers.eq(product),
+                org.mockito.ArgumentMatchers.eq(List.of(product)),
                 any(Instant.class), org.mockito.ArgumentMatchers.eq("ecommerce"),
                 org.mockito.ArgumentMatchers.isNull()))
-                .thenReturn(new ResolvedProductPrice(
+                .thenReturn(java.util.Map.of(productId, new ResolvedProductPrice(
                         new BigDecimal("75.00"), new BigDecimal("60.00"),
-                        new BigDecimal("15.00"), promotionId));
+                        new BigDecimal("15.00"), promotionId)));
 
         var result = service.listProducts("ferreteria-los-simpson");
+
+        // Precios en lote: el listado nunca resuelve producto por producto (N+1).
+        org.mockito.Mockito.verify(productPriceResolver, org.mockito.Mockito.never())
+                .resolveEffectivePrice(any(), any(Product.class), any(Instant.class), any(), any());
 
         assertThat(result).singleElement().satisfies(item -> {
             assertThat(item.salePrice()).isEqualByComparingTo("75.00");
