@@ -22,7 +22,7 @@ class CustomerRegistrationNameRuleTest {
             "José", "A", "Ana Lucía de los Ángeles",
             "", " ", "Ana ", " Ana", "Ana  Pérez", "Ana--Pérez", "Ana-", "-Ana", "Ana'", "'Ana",
             "Ana2", "<script>alert(1)</script>", "Ana<b>", "Ana & Luis", "Robert'); DROP TABLE users;--",
-            "Ana\u0000Pérez", "Ana\nPérez", "Ana\tPérez", "Ana\u001bPérez", "Ana​Pérez", "Ana‮Pérez",
+            "Ana\u0000Pérez", "Ana\nPérez", "Ana\tPérez", "Ana\u001bPérez", "Ana\u200BPérez", "Ana\u202EPérez",
             "́Ana", "Ana - Pérez"})
     void possessiveRuleAcceptsExactlyTheSameNamesAsTheBacktrackingOne(String name) {
         assertThat(CustomerRegistrationService.PERSON_NAME.matcher(name).matches())
