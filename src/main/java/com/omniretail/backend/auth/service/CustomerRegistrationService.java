@@ -25,6 +25,7 @@ import com.omniretail.backend.shared.notification.EmailMessage;
 import com.omniretail.backend.shared.notification.EmailPurpose;
 import com.omniretail.backend.shared.notification.EmailRequestedEvent;
 import jakarta.validation.Validator;
+import java.text.Normalizer;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -68,7 +69,19 @@ public class CustomerRegistrationService {
     static final String REGISTRATION_FAILED_MESSAGE = "No se pudo completar el registro.";
     static final String INVALID_TOKEN_MESSAGE = "Este enlace no es válido o ya expiró.";
 
-    private static final int NAME_MAX_LENGTH = 200;
+    /** Mismo tope que TEXT_FIELD_POLICY.NAME_MAX_LENGTH del frontend (perfil y registro). */
+    static final int NAME_MAX_LENGTH = 100;
+    /**
+     * Misma regla que PERSON_NAME_PATTERN (person-name-policy.ts del frontend): letras Unicode con sus
+     * marcas, separadas por un unico espacio, apostrofo o guion. Deja fuera HTML, digitos, simbolos,
+     * caracteres de control e invisibles (ancho cero, overrides bidi) y saltos de linea.
+     */
+    static final Pattern PERSON_NAME = Pattern.compile("^\\p{L}[\\p{L}\\p{M}]*(?:[ '-][\\p{L}\\p{M}]+)*$");
+    static final String NAME_INVALID_MESSAGE =
+            "El nombre solo puede contener letras, espacios, apóstrofos y guiones.";
+    private static final Pattern TYPOGRAPHIC_APOSTROPHES = Pattern.compile("[\u2019\u2018\u00B4`]");
+    private static final Pattern TYPOGRAPHIC_DASHES = Pattern.compile("[\u2010\u2011\u2012\u2013\u2014]");
+    private static final Pattern REPEATED_SPACES = Pattern.compile(" {2,}");
     private static final int EMAIL_MAX_LENGTH = 254;
     private static final int PHONE_DIGITS = 8;
     private static final Pattern DIGITS = Pattern.compile("\\d+");
@@ -118,7 +131,7 @@ public class CustomerRegistrationService {
     @Transactional
     public RegisterCustomerResponse register(String slug, RegisterCustomerRequest request) {
         validate(request);
-        String name = request.name().trim();
+        String name = normalizeName(request.name());
         String email = request.email().trim().toLowerCase(Locale.ROOT);
         String phone = request.phone() == null || request.phone().isBlank() ? null : request.phone().trim();
         RegisterCustomerResponse accepted = RegisterCustomerResponse.accepted(name, email);
@@ -284,15 +297,30 @@ public class CustomerRegistrationService {
         eventPublisher.publishEvent(new EmailRequestedEvent(verificationEmail(user, tenant.getName(), token)));
     }
 
+    /**
+     * Forma canonica del nombre antes de validar y guardar, igual que normalizePersonName del frontend:
+     * NFC, apostrofos y guiones tipograficos a ASCII, sin espacios en los extremos y sin espacios
+     * repetidos. No quita caracteres no permitidos: un nombre invalido se rechaza, no se recorta.
+     */
+    static String normalizeName(String raw) {
+        if (raw == null) return "";
+        String name = Normalizer.normalize(raw, Normalizer.Form.NFC);
+        name = TYPOGRAPHIC_APOSTROPHES.matcher(name).replaceAll("'");
+        name = TYPOGRAPHIC_DASHES.matcher(name).replaceAll("-");
+        return REPEATED_SPACES.matcher(name.trim()).replaceAll(" ");
+    }
+
     /** Mismas reglas y mensajes que register.validation.ts; devuelve todos los campos con error a la vez. */
     private void validate(RegisterCustomerRequest request) {
         Map<String, String> errors = new LinkedHashMap<>();
 
-        String name = request.name() == null ? "" : request.name().trim();
+        String name = normalizeName(request.name());
         if (name.isEmpty()) {
             errors.put("name", "El nombre es obligatorio.");
         } else if (name.length() > NAME_MAX_LENGTH) {
             errors.put("name", "El nombre no puede superar " + NAME_MAX_LENGTH + " caracteres.");
+        } else if (!PERSON_NAME.matcher(name).matches()) {
+            errors.put("name", NAME_INVALID_MESSAGE);
         }
 
         String email = request.email() == null ? "" : request.email().trim();
@@ -300,7 +328,10 @@ public class CustomerRegistrationService {
             errors.put("email", "El correo es obligatorio.");
         } else if (email.length() > EMAIL_MAX_LENGTH) {
             errors.put("email", "El correo no puede superar " + EMAIL_MAX_LENGTH + " caracteres.");
-        } else if (!validator.validateValue(RegisterCustomerRequest.class, "email", email).isEmpty()) {
+        } else if (!validator.validateValue(RegisterCustomerRequest.class, "email", email).isEmpty()
+                // La entidad aplica un @Email mas estricto que el patron del formulario: sin esta
+                // comprobacion, un correo como a<b@c.d pasaba aqui y fallaba al guardar (500).
+                || !validator.validateValue(User.class, "email", email.toLowerCase(Locale.ROOT)).isEmpty()) {
             errors.put("email", "Ingrese un correo con formato válido.");
         }
 
