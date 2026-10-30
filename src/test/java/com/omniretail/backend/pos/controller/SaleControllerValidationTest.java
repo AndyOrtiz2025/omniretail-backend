@@ -1,6 +1,7 @@
 package com.omniretail.backend.pos.controller;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -302,5 +303,34 @@ class SaleControllerValidationTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
         verifyNoInteractions(service);
+    }
+
+    @Test
+    void homeDeliveryAcceptsSelectedOrOmittedTransportMode() throws Exception {
+        String base = """
+                {"branchId":"11111111-1111-1111-1111-111111111111",
+                 "cashShiftId":"22222222-2222-2222-2222-222222222222",
+                 "confirmationId":"%s",
+                 "items":[{"productId":"44444444-4444-4444-4444-444444444444","quantity":1}],
+                 "payments":[{"method":"cash","amount":20}],
+                 "deferredOrder":{"idempotencyKey":"%s","deliveryMethod":"home_delivery",%s
+                   "deliveryAddress":{"recipientName":"Cliente","recipientPhone":"5555-5555",
+                     "line1":"Zona 1","city":"Guatemala","country":"Guatemala"}}}
+                """;
+
+        mvc.perform(post("/pos/sales")
+                        .contentType(APPLICATION_JSON)
+                        .content(base.formatted(
+                                UUID.randomUUID(), "external-transport", "\"transportMode\":\"third_party\",")))
+                .andExpect(status().isCreated());
+        verify(service).create(argThat(request ->
+                request.deferredOrder().transportMode()
+                        == com.omniretail.backend.ecommerce.entity.TransportMode.third_party));
+
+        mvc.perform(post("/pos/sales")
+                        .contentType(APPLICATION_JSON)
+                        .content(base.formatted(UUID.randomUUID(), "legacy-transport", "")))
+                .andExpect(status().isCreated());
+        verify(service).create(argThat(request -> request.deferredOrder().transportMode() == null));
     }
 }

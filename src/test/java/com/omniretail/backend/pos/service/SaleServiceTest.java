@@ -891,6 +891,7 @@ class SaleServiceTest {
 
         assertThat(result.sourceOrderId()).isEqualTo(order.getId());
         assertThat(result.order().id()).isEqualTo(order.getId());
+        assertThat(result.order().transportMode()).isEqualTo(TransportMode.own_fleet);
         assertThat(result.pickingOrder().id()).isEqualTo(picking.getId());
         verify(jsonMapper).writeValueAsString(argThat(value ->
                 value instanceof Map<?, ?> guest
@@ -948,6 +949,133 @@ class SaleServiceTest {
                         ex -> assertThat(ex.getCode()).isEqualTo("PAYMENT_TOTAL_MISMATCH"));
         verify(sales, never()).saveAndFlush(any());
         verifyNoInteractions(orders, payments);
+    }
+
+    @Test
+    void deferredHomeDeliveryPersistsSelectedThirdPartyTransport() {
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+        stubSalePersistence();
+        Order order = stubDeferredOrderPersistence();
+        when(pickingService.ensureForOrder(tenant, order.getId()))
+                .thenReturn(Optional.of(picking(order)));
+        CreateSaleRequest base = deferredRequest(
+                new BigDecimal("20.00"), BigDecimal.ONE, UUID.randomUUID());
+        CreateSaleRequest request = new CreateSaleRequest(
+                base.branchId(),
+                base.cashShiftId(),
+                base.customerId(),
+                base.taxTotal(),
+                base.items(),
+                base.payments(),
+                base.confirmationId(),
+                base.document(),
+                null,
+                new CreateSaleRequest.DeferredOrder(
+                        base.deferredOrder().idempotencyKey(),
+                        DeliveryMethod.home_delivery,
+                        TransportMode.third_party,
+                        base.deferredOrder().deliveryAddress(),
+                        base.deferredOrder().notificationContact()));
+
+        var result = service.create(request);
+
+        ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
+        verify(orders).saveAndFlush(orderCaptor.capture());
+        assertThat(orderCaptor.getValue().getSource()).isEqualTo(OrderSource.pos);
+        assertThat(orderCaptor.getValue().getTransportMode()).isEqualTo(TransportMode.third_party);
+        assertThat(result.order().transportMode()).isEqualTo(TransportMode.third_party);
+    }
+
+    @Test
+    void deferredHomeDeliveryDefaultsMissingTransportToOwnFleet() {
+        when(products.findByTenantIdAndId(tenant, productId)).thenReturn(Optional.of(product()));
+        stubSalePersistence();
+        Order order = stubDeferredOrderPersistence();
+        when(pickingService.ensureForOrder(tenant, order.getId()))
+                .thenReturn(Optional.of(picking(order)));
+        CreateSaleRequest base = deferredRequest(
+                new BigDecimal("20.00"), BigDecimal.ONE, UUID.randomUUID());
+        CreateSaleRequest request = new CreateSaleRequest(
+                base.branchId(),
+                base.cashShiftId(),
+                base.customerId(),
+                base.taxTotal(),
+                base.items(),
+                base.payments(),
+                base.confirmationId(),
+                base.document(),
+                null,
+                new CreateSaleRequest.DeferredOrder(
+                        base.deferredOrder().idempotencyKey(),
+                        DeliveryMethod.home_delivery,
+                        null,
+                        base.deferredOrder().deliveryAddress(),
+                        base.deferredOrder().notificationContact()));
+
+        var result = service.create(request);
+
+        ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
+        verify(orders).saveAndFlush(orderCaptor.capture());
+        assertThat(orderCaptor.getValue().getTransportMode()).isEqualTo(TransportMode.own_fleet);
+        assertThat(result.order().transportMode()).isEqualTo(TransportMode.own_fleet);
+    }
+
+    @Test
+    void deferredHomeDeliveryMissingTransportHasSameIdempotencyFingerprintAsOwnFleet() {
+        reset(currentUser, branchAccess);
+        CreateSaleRequest explicit = deferredRequest(
+                new BigDecimal("20.00"), BigDecimal.ONE, UUID.randomUUID());
+        CreateSaleRequest omitted = new CreateSaleRequest(
+                explicit.branchId(),
+                explicit.cashShiftId(),
+                explicit.customerId(),
+                explicit.taxTotal(),
+                explicit.items(),
+                explicit.payments(),
+                explicit.confirmationId(),
+                explicit.document(),
+                explicit.sourceOrderId(),
+                new CreateSaleRequest.DeferredOrder(
+                        explicit.deferredOrder().idempotencyKey(),
+                        DeliveryMethod.home_delivery,
+                        null,
+                        explicit.deferredOrder().deliveryAddress(),
+                        explicit.deferredOrder().notificationContact()));
+
+        String explicitFingerprint = ReflectionTestUtils.invokeMethod(service, "fingerprint", explicit);
+        String omittedFingerprint = ReflectionTestUtils.invokeMethod(service, "fingerprint", omitted);
+
+        assertThat(omittedFingerprint).isEqualTo(explicitFingerprint);
+    }
+
+    @Test
+    void deferredHomeDeliveryRejectsTransportModesOutsideOwnFleetAndThirdParty() {
+        reset(branchAccess);
+        CreateSaleRequest base = deferredRequest(
+                new BigDecimal("20.00"), BigDecimal.ONE, UUID.randomUUID());
+        CreateSaleRequest request = new CreateSaleRequest(
+                base.branchId(),
+                base.cashShiftId(),
+                base.customerId(),
+                base.taxTotal(),
+                base.items(),
+                base.payments(),
+                base.confirmationId(),
+                base.document(),
+                null,
+                new CreateSaleRequest.DeferredOrder(
+                        base.deferredOrder().idempotencyKey(),
+                        DeliveryMethod.home_delivery,
+                        TransportMode.customer,
+                        base.deferredOrder().deliveryAddress(),
+                        base.deferredOrder().notificationContact()));
+
+        assertThatThrownBy(() -> service.create(request))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        error -> assertThat(error.getCode())
+                                .isEqualTo("POS_HOME_DELIVERY_TRANSPORT_MODE_INVALID"));
+        verifyNoInteractions(products, orders, sales, reservationLifecycle, pickingService);
     }
 
     @Test
@@ -1020,6 +1148,7 @@ class SaleServiceTest {
         var result = service.create(storePickup);
 
         assertThat(result.order().deliveryMethod()).isEqualTo(DeliveryMethod.store_pickup);
+        assertThat(result.order().transportMode()).isEqualTo(TransportMode.customer);
         assertThat(result.order().deliveryAddress()).isNull();
         ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
         verify(orders).saveAndFlush(orderCaptor.capture());
@@ -1034,6 +1163,29 @@ class SaleServiceTest {
         verifyNoInteractions(inventory, traceabilityMutation);
         verifyNoInteractions(inventoryMovements);
         verify(shippingConfig, never()).calculate(any(), any(), any());
+    }
+
+    @Test
+    void rejectsStorePickupWithoutTransportMode() {
+        reset(branchAccess);
+        CreateSaleRequest valid = deferredRequest(
+                new BigDecimal("20.00"), BigDecimal.ONE, UUID.randomUUID());
+        CreateSaleRequest storePickup = new CreateSaleRequest(
+                valid.branchId(), valid.cashShiftId(), valid.customerId(), valid.taxTotal(),
+                valid.items(), valid.payments(), valid.confirmationId(), valid.document(), null,
+                new CreateSaleRequest.DeferredOrder(
+                        valid.deferredOrder().idempotencyKey(),
+                        DeliveryMethod.store_pickup,
+                        null,
+                        null,
+                        new CreateSaleRequest.NotificationContact("not_applicable", null),
+                        new CreateSaleRequest.StorePickupContact("Cliente", "5555-5555")));
+
+        assertThatThrownBy(() -> service.create(storePickup))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        error -> assertThat(error.getCode()).isEqualTo("TRANSPORT_MODE_REQUIRED"));
+        verifyNoInteractions(products, orders, sales, reservationLifecycle, pickingService);
     }
 
     @Test
