@@ -75,8 +75,12 @@ public class CustomerRegistrationService {
      * Misma regla que PERSON_NAME_PATTERN (person-name-policy.ts del frontend): letras Unicode con sus
      * marcas, separadas por un unico espacio, apostrofo o guion. Deja fuera HTML, digitos, simbolos,
      * caracteres de control e invisibles (ancho cero, overrides bidi) y saltos de linea.
+     *
+     * <p>Cuantificadores posesivos ({@code *+}, {@code ++}): letras y separadores no comparten
+     * caracteres, asi que devolver una letra nunca permite otra coincidencia. Acepta exactamente lo
+     * mismo que la forma con backtracking, pero sin apilar estados (sin riesgo de StackOverflowError).
      */
-    static final Pattern PERSON_NAME = Pattern.compile("^\\p{L}[\\p{L}\\p{M}]*(?:[ '-][\\p{L}\\p{M}]+)*$");
+    static final Pattern PERSON_NAME = Pattern.compile("^\\p{L}[\\p{L}\\p{M}]*+(?:[ '-][\\p{L}\\p{M}]++)*+$");
     static final String NAME_INVALID_MESSAGE =
             "El nombre solo puede contener letras, espacios, apóstrofos y guiones.";
     private static final Pattern TYPOGRAPHIC_APOSTROPHES = Pattern.compile("[\u2019\u2018\u00B4`]");
