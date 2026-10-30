@@ -9,6 +9,8 @@ import com.omniretail.backend.catalog.service.ProductPriceResolver;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import com.omniretail.backend.catalog.repository.ProductRepository;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,6 +30,7 @@ class CatalogPromotionsJpaTest {
     @Autowired private JdbcTemplate jdbc;
     @Autowired private PromotionRepository promotionRepository;
     @Autowired private ProductPriceResolver productPriceResolver;
+    @Autowired private ProductRepository productRepository;
 
     @Test
     void applicableQueryIgnoresScheduledExpiredAndCancelledPromotions() {
@@ -47,6 +50,60 @@ class CatalogPromotionsJpaTest {
                 fixture.tenant(), fixture.product(), PromotionStatus.active, at);
 
         assertThat(result).extracting(Promotion::getId).containsExactly(applicable);
+    }
+
+    @Test
+    void batchApplicableQueryMatchesThePerProductQueryAndStaysInsideTheTenant() {
+        Fixture fixture = fixture();
+        Fixture otherTenant = fixture();
+        Instant at = Instant.parse("2026-09-29T12:00:00Z");
+        UUID older = insertPromotion(
+                fixture, "Antigua", "percentage", "10.00",
+                at.minusSeconds(600), null, "active", false);
+        UUID newer = insertPromotion(
+                fixture, "Reciente", "percentage", "15.00",
+                at.minusSeconds(60), null, "active", false);
+        insertPromotion(fixture, "Programada", "percentage", "20.00",
+                at.plusSeconds(1), null, "active", false);
+        insertPromotion(fixture, "Cancelada", "fixed_price", "1.00",
+                at.minusSeconds(120), null, "cancelled", true);
+        insertPromotion(otherTenant, "Ajena", "percentage", "50.00",
+                at.minusSeconds(60), null, "active", false);
+
+        var batch = promotionRepository.findApplicableByProductIds(
+                fixture.tenant(), List.of(fixture.product(), otherTenant.product()),
+                PromotionStatus.active, at);
+
+        assertThat(batch).extracting(match -> match.productId()).containsOnly(fixture.product());
+        assertThat(batch).extracting(match -> match.promotion().getId())
+                .containsExactly(newer, older)
+                .containsExactlyElementsOf(promotionRepository.findApplicable(
+                                fixture.tenant(), fixture.product(), PromotionStatus.active, at)
+                        .stream().map(Promotion::getId).toList());
+    }
+
+    @Test
+    void batchPriceResolutionMatchesTheSingleProductResolution() {
+        Fixture fixture = fixture();
+        Instant at = Instant.parse("2026-09-29T12:00:00Z");
+        insertPromotion(fixture, "Oferta", "percentage", "25.00",
+                at.minusSeconds(60), null, "active", false);
+        Product product = productRepository.findById(fixture.product()).orElseThrow();
+
+        var batch = productPriceResolver.resolveEffectivePrices(
+                fixture.tenant(), List.of(product), at, "ecommerce", null);
+
+        assertThat(batch.get(fixture.product())).isEqualTo(productPriceResolver.resolveEffectivePrice(
+                fixture.tenant(), product, at, "ecommerce", null));
+        assertThat(batch.get(fixture.product()).effectivePrice()).isEqualByComparingTo("75.00");
+    }
+
+    @Test
+    void migrationInstallsTheProductsTenantStatusIndex() {
+        assertThat(jdbc.queryForObject("""
+                SELECT indexdef FROM pg_indexes
+                WHERE tablename = 'products' AND indexname = 'idx_products_tenant_status'
+                """, String.class)).contains("(tenant_id, status)");
     }
 
     @Test

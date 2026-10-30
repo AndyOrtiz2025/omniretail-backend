@@ -9,6 +9,7 @@ import com.omniretail.backend.administration.entity.TenantStatus;
 import com.omniretail.backend.administration.repository.EcommerceConfigRepository;
 import com.omniretail.backend.administration.repository.BranchRepository;
 import com.omniretail.backend.administration.repository.TenantRepository;
+import com.omniretail.backend.catalog.dto.ResolvedProductPrice;
 import com.omniretail.backend.catalog.entity.Category;
 import com.omniretail.backend.catalog.entity.AttributeDefinitionStatus;
 import com.omniretail.backend.catalog.entity.AttributeDefinition;
@@ -85,10 +86,12 @@ public class PublicStorefrontCatalogService {
         Map<UUID, BigDecimal> availableKits = availableKits(tenantId, products, availableByProduct);
         Map<UUID, BigDecimal> saleUnitFactors = saleUnitFactors(tenantId, products);
         Map<UUID, ProductMedia> primaryMedia = primaryMediaByProduct(tenantId, products);
+        Map<UUID, ResolvedProductPrice> prices = productPriceResolver.resolveEffectivePrices(
+                tenantId, products, pricingAt, "ecommerce", ecommerceBranchId);
 
         return products.stream()
                 .map(product -> toResponse(
-                        product, activeCategories, units, tenantId, ecommerceBranchId, pricingAt,
+                        product, activeCategories, units, prices.get(product.getId()),
                         availableByProduct, availableKits, saleUnitFactors, primaryMedia.get(product.getId())))
                 .toList();
     }
@@ -141,9 +144,7 @@ public class PublicStorefrontCatalogService {
             Product product,
             Map<UUID, Category> categories,
             Map<UUID, Unit> units,
-            UUID tenantId,
-            UUID ecommerceBranchId,
-            Instant pricingAt,
+            ResolvedProductPrice price,
             Map<UUID, BigDecimal> availableByProduct,
             Map<UUID, BigDecimal> availableKits,
             Map<UUID, BigDecimal> saleUnitFactors,
@@ -158,8 +159,7 @@ public class PublicStorefrontCatalogService {
                 category != null ? category.getImageUrl() : null,
                 saleUnitId,
                 saleUnit != null ? saleUnit.getName() : null,
-                productPriceResolver.resolveEffectivePrice(
-                        tenantId, product, pricingAt, "ecommerce", ecommerceBranchId),
+                price,
                 primaryMedia != null ? primaryMedia.getUrl() : null,
                 primaryMedia != null ? primaryMedia.getAltText() : null,
                 stock.inStock(),
