@@ -67,7 +67,7 @@ public record CreateSaleRequest(
     public record DeferredOrder(
             @NotBlank @Size(max = 124) String idempotencyKey,
             @NotNull DeliveryMethod deliveryMethod,
-            @NotNull TransportMode transportMode,
+            TransportMode transportMode,
             @Valid DeliveryAddress deliveryAddress,
             @Valid NotificationContact notificationContact,
             @Valid StorePickupContact storePickupContact) {
