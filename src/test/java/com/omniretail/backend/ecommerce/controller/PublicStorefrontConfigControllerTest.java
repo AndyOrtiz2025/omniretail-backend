@@ -1,5 +1,9 @@
 package com.omniretail.backend.ecommerce.controller;
 
+import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.containsInAnyOrder;
+import static org.hamcrest.Matchers.hasItem;
+import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -61,9 +65,11 @@ class PublicStorefrontConfigControllerTest {
                 .andExpect(jsonPath("$.guestTrackingEnabled").value(true))
                 .andExpect(jsonPath("$.slides[0].title").value("Oferta de temporada"))
                 .andExpect(jsonPath("$.slides[0].imageUrl").value("https://cdn.example.com/banner.png"))
-                .andExpect(jsonPath("$.branches[0].code").value("CENTRAL"))
-                .andExpect(jsonPath("$.branches[0].phone").value("5555-1111"))
-                .andExpect(jsonPath("$.branches.length()").value(1));
+                .andExpect(jsonPath("$.branches.length()").value(2))
+                .andExpect(jsonPath("$.branches[*].code", containsInAnyOrder("CENTRO", "CENTRAL")))
+                .andExpect(jsonPath("$.branches[*].code", not(hasItem("BODEGA"))))
+                .andExpect(jsonPath("$.branches[?(@.code == 'CENTRO')].phone", contains("5555-2222")))
+                .andExpect(jsonPath("$.branches[?(@.code == 'CENTRAL')].phone", contains("5555-1111")));
     }
 
     @Test
@@ -104,6 +110,18 @@ class PublicStorefrontConfigControllerTest {
                 .build();
         banners.setTenantId(tenant.getId());
         heroBannerConfigRepository.save(banners);
+
+        Branch main = Branch.builder()
+                .code("CENTRO")
+                .name("Sucursal Principal")
+                .type(BranchType.main)
+                .address("Zona 10")
+                .phone("5555-2222")
+                .email("principal@example.com")
+                .status(BranchStatus.active)
+                .build();
+        main.setTenantId(tenant.getId());
+        branchRepository.save(main);
 
         Branch store = Branch.builder()
                 .code("CENTRAL")
